@@ -1,0 +1,37 @@
+.bottom-nav {
+  display: flex;
+  flex-shrink: 0;
+  height: calc(var(--nav-height) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--shelf);
+  border-top: 1px solid var(--contour);
+}
+
+.bottom-nav__tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  text-decoration: none;
+}
+
+.bottom-nav__icon {
+  width: 24px;
+  height: 24px;
+}
+
+.bottom-nav__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bottom-nav__tab--active {
+  color: var(--chalk);
+}

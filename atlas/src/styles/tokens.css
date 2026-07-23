@@ -1,0 +1,55 @@
+/*
+  Atlas design tokens — see 00-PLAN.md §8.
+  No component may hardcode a colour, font or spacing value; everything
+  reads from these custom properties.
+*/
+
+:root {
+  /* Palette */
+  --abyss: #0c1216; /* page background */
+  --shelf: #161f25; /* cards, sheets */
+  --contour: #26343c; /* borders, unvisited landmass */
+  --haze: #8fa3ad; /* secondary text */
+  --chalk: #e9eef0; /* primary text */
+
+  /* Status ramp — the only saturated colours in the app */
+  --wishlist: #5b7c99; /* cold slate blue */
+  --transit: #6f8f7a; /* muted sage */
+  --visited: #4fc08d; /* clear green */
+  --lived: #e8a33d; /* amber */
+
+  /* Type */
+  --font-display: 'Archivo Expanded', system-ui, sans-serif;
+  --font-body: 'Public Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-display: 3rem;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+
+  /* Layout */
+  --nav-height: 64px;
+  --tap-target-min: 44px;
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --easing-standard: ease-out;
+}
