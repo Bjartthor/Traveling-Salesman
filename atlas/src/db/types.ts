@@ -41,7 +41,7 @@ export interface City {
   name: string
   asciiName: string
   countryCode: string
-  subdivisionId: string
+  subdivisionId: string | null // null for cities in countries with no admin-1 data (§02 acceptance)
   lat: number
   lon: number
   population: number
@@ -112,6 +112,10 @@ export interface Settings {
   autoSync: boolean
   lastSyncAt: number | null
   deviceId: string
+  // Device-local reference-data marker: which geo build has been seeded into
+  // this device's IndexedDB. NOT a user preference — Phase 7 sync must not
+  // overwrite it from a remote (like deviceId, it is per-device). 0 = unseeded.
+  geoDataVersion: number
 }
 
 export interface SyncState {

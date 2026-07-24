@@ -1,0 +1,130 @@
+.debug {
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.debug__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  color: var(--chalk);
+}
+
+.debug__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.debug__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--haze);
+}
+
+.debug__stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+
+.debug__stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+}
+
+.debug__stat-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  color: var(--chalk);
+}
+
+.debug__stat-label {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.debug__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.debug__chip {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  border: 1px solid var(--contour);
+  color: var(--chalk);
+}
+
+.debug__chip--ok {
+  border-color: color-mix(in srgb, var(--visited) 50%, var(--contour));
+}
+
+.debug__chip--bad {
+  border-color: var(--lived);
+  color: var(--lived);
+}
+
+.debug__mono {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--haze);
+  word-break: break-word;
+}
+
+.debug__input {
+  width: 100%;
+  min-height: var(--tap-target-min);
+  padding: var(--space-3) var(--space-4);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  color: var(--chalk);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+}
+
+.debug__results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.debug__result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--contour);
+}
+
+.debug__result-name {
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  color: var(--chalk);
+}
+
+.debug__result-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  color: var(--haze);
+}

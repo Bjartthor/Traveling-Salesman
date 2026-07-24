@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Geo build pipeline: downloaded source datasets (regenerable, large).
+# The committed artefacts live in public/geo/ — see tools/README.md.
+tools/.cache
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

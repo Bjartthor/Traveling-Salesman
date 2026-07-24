@@ -1,0 +1,146 @@
+.geo-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: var(--abyss);
+}
+
+.geo-gate__panel {
+  width: 100%;
+  max-width: 30rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  text-align: left;
+}
+
+.geo-gate__eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--haze);
+}
+
+.geo-gate__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-display);
+  line-height: 1.02;
+  color: var(--chalk);
+}
+
+.geo-gate__detail {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--haze);
+}
+
+.geo-gate__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--contour);
+  overflow: hidden;
+}
+
+.geo-gate__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--visited);
+  transition: width var(--duration-base) var(--easing-standard);
+}
+
+.geo-gate__bar-fill--indeterminate {
+  width: 40%;
+  animation: geo-gate-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes geo-gate-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.geo-gate__status {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.12em;
+  color: var(--haze);
+}
+
+.geo-gate__button {
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  min-height: var(--tap-target-min);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  background: var(--shelf);
+  color: var(--chalk);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--easing-standard);
+}
+
+.geo-gate__button:hover {
+  border-color: var(--haze);
+}
+
+.geo-gate__button-note {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  color: var(--haze);
+}
+
+/* Thin determinate strip shown while cities finish after "Start exploring". */
+.geo-strip {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  background: var(--shelf);
+  border-bottom: 1px solid var(--contour);
+}
+
+.geo-strip__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--visited) 22%, transparent);
+  transition: width var(--duration-base) var(--easing-standard);
+}
+
+.geo-strip__label {
+  position: relative;
+  padding: 0 var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  color: var(--haze);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .geo-gate__bar-fill--indeterminate {
+    animation: none;
+  }
+  .geo-gate__bar-fill,
+  .geo-strip__fill {
+    transition: none;
+  }
+}

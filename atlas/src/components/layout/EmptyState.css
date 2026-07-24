@@ -22,3 +22,19 @@
 .empty-state__action {
   margin-top: var(--space-2);
 }
+
+.empty-state__link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-target-min);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  color: var(--haze);
+  text-decoration: none;
+  border-bottom: 1px solid var(--contour);
+}
+
+.empty-state__link:hover {
+  color: var(--chalk);
+}

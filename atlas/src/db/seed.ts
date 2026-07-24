@@ -13,6 +13,7 @@ export async function seedDatabase(): Promise<void> {
       autoSync: true,
       lastSyncAt: null,
       deviceId: crypto.randomUUID(),
+      geoDataVersion: 0, // reference data not seeded yet — see src/geo/loader.ts
     })
   }
 

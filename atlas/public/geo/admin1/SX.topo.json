@@ -1,0 +1,1 @@
+{"type":"Topology","arcs":[[[0,100],[100,-67],[-15,-33],[-75,39],[-10,61]]],"transform":{"scale":[0.0008943577571156426,0.0004300943999999163],"translate":[-63.107004360999944,18.01911041900007]},"objects":{"admin1":{"type":"GeometryCollection","geometries":[{"arcs":[[0]],"type":"Polygon","properties":{"id":"SX.","name":"Sint Maarten"}}]}}}

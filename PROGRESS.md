@@ -93,3 +93,98 @@ populates them.
 - No hardcoded colours in `src/components` (or `src/screens`, `src/App.css`) — grepped for hex/rgb
   literals, zero hits.
 - `npm run lint` is clean.
+
+## Phase 2 — Geographic data pipeline (done)
+
+A repeatable Node build script turns public datasets into small committed artefacts in
+`atlas/public/geo/`, plus a runtime loader that seeds them into IndexedDB on first run with a
+progress screen, and an in-memory city search. Verified through a temporary debug screen — no map
+rendering or place-adding UI yet (that's Phases 3–4, by design).
+
+### What was built
+
+- **Build pipeline** (`atlas/tools/`, run with `npm run build:geo`, Node 20 only):
+  [`build-geo.mjs`](atlas/tools/build-geo.mjs) downloads sources into gitignored `tools/.cache/`,
+  reconciles Natural Earth ↔ GeoNames, **fails loud (exit 1) naming any unmatched country**, and
+  writes the artefacts. [`fixups.mjs`](atlas/tools/fixups.mjs) holds every override with a reason.
+  [`tools/README.md`](atlas/tools/README.md) documents regeneration + each fixup;
+  [`tools/minor_fixes.md`](atlas/tools/minor_fixes.md) documents deferred issues.
+- **Artefacts** (`atlas/public/geo/`, ~7.1 MB committed): `world.topo.json` (96 KB, object
+  `countries`, `{code,name}`), `admin1/<CC>.topo.json` (240 files, object `admin1`, `{id,name}`),
+  `countries.json` (250 rows), `subdivisions.json` (3865 rows), `cities.json.gz` (170k cities,
+  columnar `{fields,rows}`).
+- **Runtime loader** [`src/geo/loader.ts`](atlas/src/geo/loader.ts): `ensureReferenceData()` (first
+  run / version bump only; touches **only** reference tables), `loadWorldTopology()` and
+  `loadCountryTopology()` (lazy, memoised, resolves `null` for missing admin-1 files).
+- **Search** [`src/geo/search.ts`](atlas/src/geo/search.ts): `searchCities()` over an in-memory
+  index (built once, memoised), population-weighted with prefix promotion. `normalize`/`tokenize`
+  utilities (diacritic-stripping).
+- **First-run UX**: [`geoStore.ts`](atlas/src/geo/geoStore.ts) (Zustand) + [`GeoGate.tsx`](atlas/src/geo/GeoGate.tsx)
+  — "Loading world data" screen with a determinate bar; once countries land, a "Start exploring"
+  button reveals the app while cities finish behind a thin progress strip.
+- **Debug/verify screen** [`DebugScreen.tsx`](atlas/src/screens/DebugScreen.tsx) at `#/debug` (link
+  on the You screen) — counts, required-territory checks, topology probe, live search with timing.
+- **Data-model touch-ups**: `City.subdivisionId` widened to `string | null`; `Settings.geoDataVersion`
+  added (device-local, seeded to 0). No Dexie version bump — Phase 1 already declared the indexes.
+
+### Deviations from the plan, and why
+
+1. **Territory polygons — "relax + document" (your call).** NE 1:50m *Countries* has no separate
+   polygon for 13 GeoNames territories (Gibraltar, the French DOMs, Christmas/Cocos, Svalbard,
+   Bonaire, Bouvet, Tokelau, US Minor Outlying). They still get country **rows** (trackable) but are
+   not distinct map landmasses in v1. Listed in `KNOWN_NO_POLYGON`; the validator treats them as
+   expected so *other* gaps still fail the build. **Fully documented with a graft-it-later recipe in
+   [minor_fixes.md](atlas/tools/minor_fixes.md) §1.** The reverse direction is clean — every polygon
+   maps to a country row.
+2. **Runtime search is in-memory, not the Dexie `*searchTokens` prefix index.** The acceptance test
+   `"vík"` must match an *interior* substring (vík inside Reykjavík/Keflavík — Vík í Mýrdal itself is
+   <1000 pop, below the cities1000 cut), which a prefix index cannot do. `searchTokens` is left `[]`
+   (index stays declared but inert — no migration) to spare the first-run seed a 170k-row multi-entry
+   index build for zero runtime gain. Warm 3-char query measured **~32–38 ms** (budget 100 ms).
+3. **Search ranking = population × match-weight** (name/field-prefix ×3, word-prefix ×2, interior
+   ×1) rather than hard tiers. Hard tiers filled the whole `"vík"` page with worldwide "Vik*" prefix
+   towns and pushed Reykjavík off; the weighting satisfies *both* `"reykja"→Reykjavík first` and
+   `"vík"→Reykjavík returned`, matching the brief's literal "ranks by population descending, **with**
+   exact-prefix promoted above substring".
+4. **`cities.json.gz` is ~4.2 MB, not the plan's 2–3 MB.** The real cities1000 is 170k rows (plan
+   assumed ~150k) and 4-dp coords are plan-mandated. Columnar encoding + asciiName-dedup got it 5.2 →
+   4.2 MB; further shrink needs dropping precision or the id key. One-time download, SW+IDB cached.
+   See [minor_fixes.md](atlas/tools/minor_fixes.md) §3.
+5. **gzip served two ways.** GitHub Pages serves `.gz` raw; Vite dev sets `Content-Encoding: gzip`
+   so the browser pre-decompresses. The loader sniffs the gzip magic bytes (`1f 8b`) and only
+   `DecompressionStream`s when needed — robust on both. (Found and fixed during browser verification.)
+6. **Dependencies:** used Node 20's global `fetch` instead of `node-fetch` (plan listed it); added
+   `d3-geo` for spherical country centroids. `mapshaper` emits TopoJSON directly, so `topojson-client`
+   isn't used in the build (kept as a dep for Phase-3 runtime decoding). All dev-only.
+7. **NE 10m admin-1 is more complete than the plan assumed** — Vatican/Monaco/Singapore *do* have
+   admin-1 files; the 10 countries with no file are the small no-polygon territories. The loader
+   handles a missing file gracefully (verified `loadCountryTopology('BV') === null`).
+8. **Seed throughput:** `bulkAdd` (after `clear()`) + 10k-row chunks. First-run seed ≈ 50 s on this
+   desktop (mostly IndexedDB index writes for 170k rows); the progress bar + "Start exploring" escape
+   cover it, and it only runs once.
+
+### Left undone (correctly, per scope)
+
+No map rendering (Phase 3), no add/edit places or the online **Photon** city fallback (Phase 4), no
+attribution line on the About screen yet (Phase 7). `DebugScreen` + its You-screen link are
+temporary Phase-2 scaffolding to delete once real screens exist.
+
+### Verified
+
+- `npm run build:geo` completes from a clean cache, exit 0, prints the size report. **Fail-loud
+  confirmed**: removing GI from `KNOWN_NO_POLYGON` exits 1 with "GeoNames country GI (Gibraltar) has
+  no Natural Earth polygon…", then restored.
+- Sizes: world.topo.json 96 KB (< 500 KB), largest admin-1 RU 76 KB (< 150 KB), cities 170,486 with
+  170,103 resolving to a subdivision (383 → null, 0.2%). 250 countries, exactly **193 UN members**.
+- Browser (Vite dev): first-run screen → seed → `geoDataVersion` 1, 250/3865/170486 rows. All 7
+  required territories present (GL/FO/PR/HK/MO/GI/NC). Topology: world 237 geometries, IS admin-1 9
+  regions, BV admin-1 null. Search `"reykja"`→Reykjavík first; `"vík"`→Reykjavík returned; warm query
+  ~32–38 ms. Error path (aborted fetch → "Couldn't load world data" + retry) works.
+- `npx tsc --noEmit` and `npm run lint` clean.
+
+### Notes for the next session
+
+- Run geo/dev with Node 20 (`nvm use 20`); the non-login shell still defaults to apt Node 18.
+- Map (Phase 3) consumes `world.topo.json` object `countries` (props `code`,`name`) and
+  `admin1/<CC>.topo.json` object `admin1` (props `id`=`<CC>.<geonamesAdmin1>`, `name`) via
+  `loadWorldTopology()`/`loadCountryTopology()`; decode with `topojson-client` (already a dep).
