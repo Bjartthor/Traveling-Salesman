@@ -1,0 +1,55 @@
+.world-map {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  background: var(--abyss);
+}
+
+.world-map__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Let d3-zoom own one-finger drag and pinch; the browser must not also
+     scroll/zoom the page underneath the gesture. */
+  touch-action: none;
+}
+
+.world-map__ocean {
+  fill: var(--abyss);
+}
+
+.world-map__country {
+  stroke: var(--abyss);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+  transition: fill var(--duration-fast) var(--easing-standard);
+}
+
+.world-map__country:hover {
+  stroke: var(--haze);
+}
+
+.world-map__subdivision {
+  stroke: var(--abyss);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-map__country {
+    transition: none;
+  }
+}
+
+.world-map--error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  color: var(--haze);
+  text-align: center;
+}

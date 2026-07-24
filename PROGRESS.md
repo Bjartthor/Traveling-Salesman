@@ -188,3 +188,155 @@ temporary Phase-2 scaffolding to delete once real screens exist.
 - Map (Phase 3) consumes `world.topo.json` object `countries` (props `code`,`name`) and
   `admin1/<CC>.topo.json` object `admin1` (props `id`=`<CC>.<geonamesAdmin1>`, `name`) via
   `loadWorldTopology()`/`loadCountryTopology()`; decode with `topojson-client` (already a dep).
+
+## Phase 3 — World map and coverage statistics (done)
+
+The Map tab: a pannable, zoomable choropleth coloured by status, a tap-to-cycle headline
+percentage, the "depth scale" coverage strip, a collapsible legend, and a read-only country
+detail sheet. Two scope questions were asked and confirmed before writing code (see Deviations
+1–2) since they affected architecture, not just presentation.
+
+### What was built
+
+- **Stats module** [`src/stats/coverage.ts`](atlas/src/stats/coverage.ts) — pure, no React/Dexie:
+  `buildStatusIndex`, `countryCoverage`/`landAreaCoverage`/`populationCoverage`/`metricCoverage`,
+  `transitCoverage`, `continentsTouched`, `countVisited`, `countrySubdivisionsVisited`,
+  `countCitiesVisited`, `visitDateRange`, `worldSummary`, `nextStatMode`. Every function takes
+  plain arrays/`Map`s and returns plain data.
+  [`coverage.test.ts`](atlas/src/stats/coverage.test.ts) — 16 tests against one hand-checked
+  4-country fixture (round numbers chosen so every percentage is checkable by hand); also covers
+  the "Seven seas (open ocean)" pseudo-continent exclusion and soft-delete/kind filtering.
+- **Map** [`src/components/map/WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx):
+  `geoNaturalEarth1` fitted to the container via `ResizeObserver` + `fitSize([...], {type:'Sphere'})`;
+  path `d` strings memoised only on projection/topology (never on status — status changes only
+  touch the `fill` style, matching the phase brief's perf note). Pan/zoom via `d3-zoom`
+  (`scaleExtent [1,12]`, `translateExtent`/`extent` both `[[0,0],[w,h]]` so the map can't be
+  dragged off-screen, `clickDistance(6)` so a tap isn't swallowed as a drag); the transform is
+  applied with `g.setAttribute` directly inside the `'zoom'` handler — bypassing React state
+  during the gesture — and React state (`scale`) only updates on `'end'`, which is all the
+  admin-1 threshold check needs. Tapping a country sets `selectedCode` (opens the sheet); once
+  `selectedCode` is set **and** `scale >= ADMIN1_ZOOM_THRESHOLD` (constant, `4`), its admin-1
+  topology loads lazily and renders on top, resolving to nothing (no error) when the file doesn't
+  exist. [`topo.ts`](atlas/src/components/map/topo.ts) wraps `topojson-client` decoding;
+  [`statusColor.ts`](atlas/src/components/map/statusColor.ts) is the one shared status→colour/label
+  map used by the map, legend, strip and sheet.
+- **Country sheet** [`CountrySheet.tsx`](atlas/src/components/map/CountrySheet.tsx) — the Phase 3
+  stopgap named in the brief: name, ISO code, status badge, regions/cities visited within that
+  country, first/last visited if the country has its own entry. Read-only, no editing.
+- **Headline** [`CoverageHeadline.tsx`](atlas/src/components/map/CoverageHeadline.tsx) +
+  [`useTweenedNumber.ts`](atlas/src/components/map/useTweenedNumber.ts) — tap cycles
+  countries → area → population; a `requestAnimationFrame` ease-out tween animates the digits,
+  skipped (jumps straight to the target) under `prefers-reduced-motion`.
+- **Coverage strip** [`CoverageStrip.tsx`](atlas/src/components/map/CoverageStrip.tsx) — four
+  status-coloured segments sized by each status's share of whichever metric is currently
+  selected, hairline tick row underneath with `0` and the formatted total, under 32px tall.
+- **Legend** [`Legend.tsx`](atlas/src/components/map/Legend.tsx) — native `<details>`/`<summary>`,
+  no JS state needed.
+- **Screen** [`MapScreen.tsx`](atlas/src/screens/MapScreen.tsx) rewritten — live-queries
+  `countries`/`entries`/`settings` via `dexie-react-hooks`, builds the three status indexes and the
+  current metric, wires headline/map/strip/legend/sheet together. Fresh-install state (no active
+  entries) is the real grey map plus one line of guidance pointing at Places — not the shared
+  `EmptyState` placeholder used by the other still-empty tabs.
+
+### Deviations from the plan, and why
+
+1. **Cascade explicitly deferred to Phase 4 (asked, confirmed).** The phase table (plan §10)
+   assigns "cascade rules" to Phase 4, but Phase 3's own task text uses the term "effective status"
+   for map fill, which reads like plan §5's cascade. Asked before writing code; confirmed reading:
+   Phase 3 reads each entry's own status directly by `kind`+`refId`, nothing derived from children.
+   **Consequence:** a country with only a city or subdivision entry (no entry of its own) shows
+   unvisited/grey on the map until Phase 4 builds `recomputeAncestors` and the write path that
+   would create the derived country entry. This matches the acceptance test's own phrasing
+   ("manually inserting entries **rows**" — plural, implying direct rows at whatever level you
+   want reflected) and keeps `recomputeAncestors` — which the plan flags as "the piece most likely
+   to go subtly wrong" — as one deliverable owned entirely by Phase 4, tests included.
+2. **Coverage strip = 4 status segments of the current metric (asked, confirmed).** Plan §8 says
+   the strip shows "the three percentages"; the phase brief says "segmented in the status colours,
+   proportional to the current metric" (singular). There are 4 status colours, not 3, so these
+   don't literally agree. Confirmed the phase brief's reading: one bar for whichever metric
+   (countries/area/population) is currently selected, split into wishlist/transit/visited/lived by
+   each status's share of that metric's denominator.
+3. **Introduced Vitest** — no test runner existed in the repo (Phase 1/2 didn't need one); the
+   brief requires `coverage.ts` be "fully unit-tested." Added as a devDependency with a `test`
+   script. [`vitest.config.ts`](atlas/vitest.config.ts) is a **separate** file from
+   `vite.config.ts`, not merged in, so the PWA/Workbox plugin never runs under the test runner.
+4. **`d3-geo` and `topojson-client` moved from `devDependencies` to `dependencies`** — Phase 2 only
+   needed them in the Node build script; Phase 3 imports both into `src/`, so they now ship in the
+   client bundle. Added `d3-zoom` and `d3-selection` (plus `@types/*`, `@types/geojson`,
+   `@types/topojson-specification`) as direct, explicit dependencies rather than relying on
+   hoisted transitives.
+5. **Admin-1 zoom threshold is a picked constant** (`ADMIN1_ZOOM_THRESHOLD = 4`, i.e. 4× the
+   whole-world fit) — the brief says "past a threshold" without a number. Documented inline;
+   verified in-browser that zooming Germany to the `scaleExtent` max (12×) via wheel-zoom loads and
+   renders all 16 admin-1 regions distinctly.
+6. **"Continents touched out of seven" excludes GeoNames' `"Seven seas (open ocean)"` bucket** —
+   found while inspecting `countries.json`: 8 distinct `continent` values exist, not 7, because a
+   handful of scattered island territories get bucketed into that pseudo-continent. Excluded it
+   explicitly in `coverage.ts` with a comment; the other 7 are the real ones a person visits.
+7. **No dedicated UI for the `countryDenominator` (all/UN-members) setting.** Phase 3's task list
+   doesn't include Settings screen work, and the acceptance criterion only requires that switching
+   it changes the number — it doesn't say where the switch lives. Verified by updating
+   `settings.countryDenominator` directly (browser console / dynamic import of `db`); left for
+   whichever later phase builds out the Settings screen for real.
+8. **`.app-content` needed `min-height: 0` added** ([`App.css`](atlas/src/App.css)) — without it,
+   the `flex: 1` chain down to the map (`MapScreen` → `.map-screen__map-wrap` → `WorldMap`) doesn't
+   actually constrain to the viewport; the map would grow to its content size and the page would
+   scroll instead of the map filling available space. Standard flexbox fix, one line.
+
+### Left undone (correctly, per scope)
+
+No editing from the map — the country sheet is read-only, exactly as instructed ("Do not do yet").
+No cascade/`recomputeAncestors` (Phase 4). No Settings UI for `statMode`/`countryDenominator`
+(not in Phase 3's task list; both are wired in the data layer and verified directly). `CountrySheet`
+is deliberately the stopgap version named in the brief — Phase 4 replaces it with the full,
+editable country detail screen.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (16/16), and `npm run build` all clean.
+- Browser (Vite dev, 375×812 mobile viewport, dark colour scheme):
+  - All 237 country paths render, including small island territories (Vatican, Monaco, San Marino,
+    Nauru, Tuvalu, Liechtenstein, Åland, etc.).
+  - Inserting rows **through Dexie** (`db.entries.add`, not raw IndexedDB — see note below)
+    recolours the map immediately with no reload, across all four statuses and both country and
+    subdivision kinds.
+  - Headline cycles countries → area → population → countries; land-area (0.3%) and population
+    (1.09%→displayed 1.1%) both hand-checked against the raw `countries` table and matched exactly.
+  - Coverage strip's four segment widths hand-checked against land-area-weighted status shares —
+    matched (e.g. France/transit 0.365% against a computed 0.370%, within float rounding).
+  - Country denominator switch (250 "all" → 193 "unMember") changed 0.8% → 1.0% as expected.
+  - Zooming into Germany (wheel-zoom to the 12× `scaleExtent` max) loads and renders all 16
+    admin-1 regions as distinct shapes with independent status colouring; the sheet correctly
+    reported "Regions visited 1/16" against a single subdivision-level test entry.
+  - Zooming into Singapore loads 5 admin-1 regions, no error, no console errors.
+  - **Pan clamping verified to the pixel**: dragging far past either edge clamps the transform at
+    exactly the mathematically-predicted boundary (`width × (1 − scale)` / `height × (1 − scale)`)
+    on both axes — confirms `translateExtent`/`extent` are wired correctly, not just "seems fine."
+  - Legend `<details>` toggle opens/closes correctly.
+  - No horizontal scroll at 375px width.
+  - Fresh-install state (entries cleared) shows the real grey map plus one guidance line pointing
+    at Places, not a placeholder block.
+  - App left in a clean state afterward: test entries cleared, `countryDenominator`/`statMode`
+    settings reset to defaults.
+
+### Notes for the next session
+
+- **Dexie reactivity requires writes through Dexie.** `useLiveQuery` does not observe writes made
+  via the raw `indexedDB` API on a separate connection — confirmed this the hard way mid-session
+  (a raw-IndexedDB test insert silently didn't recolour the map until reload). For manual
+  console-based testing, get the real instance first: `const {db} = await import('/src/db/schema.ts')`,
+  then `db.entries.add(...)`.
+- **`window.matchMedia` override + double-`requestAnimationFrame` hung the preview tool** during
+  reduced-motion testing this session (30s timeout on both `preview_eval` and `preview_screenshot`,
+  recovered after a plain `1+1` eval and a page reload). Likely `requestAnimationFrame` not firing
+  on a backgrounded/non-focused automation tab, not an app bug — the reduced-motion branch itself
+  is a plain `matchMedia(...).matches` check with no other side effects. Worth a quick recheck with
+  a different technique (e.g. CDP-level media emulation instead of monkey-patching `matchMedia`) if
+  it matters later, but not blocking.
+- Once Phase 4 lands `recomputeAncestors`, re-verify the map/stats end-to-end with entries added
+  only at the city/subdivision level — right now (by design, see Deviation 1) those don't colour
+  their parent country.
+- No formal frame-timing capture was done for the "60fps while panning" criterion (no performance-
+  trace tool available in this environment); wheel-zoom and drag both felt instantaneous with 237
+  paths, and the perf-sensitive parts (memoised `d` strings, DOM-direct transform updates) are in
+  place by construction. Worth a real profile pass if the map ever feels janky on an actual phone.
