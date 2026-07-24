@@ -44,6 +44,11 @@
   --radius-md: 12px;
   --radius-lg: 20px;
 
+  /* Elevation — dark theme, so shadows are near-black and low-opacity rather
+     than the usual grey; kept subtle, only for surfaces that lift off the map. */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 -4px 16px rgba(0, 0, 0, 0.45);
+
   /* Layout */
   --nav-height: 64px;
   --tap-target-min: 44px;

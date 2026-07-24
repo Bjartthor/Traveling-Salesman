@@ -82,6 +82,19 @@ export function WorldMap({ countryStatus, subdivisionStatus, selectedCode, onSel
 
   const spherePath = useMemo(() => pathGen?.(SPHERE) ?? '', [pathGen])
 
+  // Static instrument-panel backdrop: on a portrait phone the projected globe
+  // (wide aspect ratio) only fills a band of the tall container, leaving a lot
+  // of empty space above/below. Fixed hairlines (outside the pan/zoom group,
+  // so they read as a screen grid rather than geography) fill that space
+  // deliberately instead of leaving it a featureless void.
+  const GRID_STEP = 48
+  const gridLines = useMemo(() => {
+    if (size.height === 0) return []
+    const lines: number[] = []
+    for (let y = GRID_STEP; y < size.height; y += GRID_STEP) lines.push(y)
+    return lines
+  }, [size.height])
+
   const countryPaths = useMemo(
     () =>
       pathGen
@@ -176,6 +189,11 @@ export function WorldMap({ countryStatus, subdivisionStatus, selectedCode, onSel
         role="img"
         aria-label="World map coloured by visit status"
       >
+        <g className="world-map__grid" aria-hidden="true">
+          {gridLines.map((y) => (
+            <line key={y} x1={0} x2={size.width} y1={y} y2={y} />
+          ))}
+        </g>
         <g ref={gRef}>
           {spherePath && <path className="world-map__ocean" d={spherePath} />}
           {countryPaths.map((p) => (

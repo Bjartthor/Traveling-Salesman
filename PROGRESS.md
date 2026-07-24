@@ -340,3 +340,145 @@ editable country detail screen.
   trace tool available in this environment); wheel-zoom and drag both felt instantaneous with 237
   paths, and the perf-sensitive parts (memoised `d` strings, DOM-direct transform updates) are in
   place by construction. Worth a real profile pass if the map ever feels janky on an actual phone.
+
+## Phase 3b — Visual polish (done)
+
+A design-only pass over everything Phase 3 built: the map, coverage headline, coverage strip,
+legend and country sheet. There is no numbered phase file for "3b" — per `START-HERE.md` it's a
+self-directed critique-and-polish session, not a checklist. Confirmed scope and direction with the
+user before touching CSS: a general critical pass (not a list of pre-existing complaints), leaning
+into "instrument/chart texture" (hairlines, elevation, mono data treatment) rather than staying flat.
+
+### What was built
+
+- **The map's dead-space problem, diagnosed and fixed**
+  [`WorldMap.css`](atlas/src/components/map/WorldMap.css)/[`.tsx`](atlas/src/components/map/WorldMap.tsx):
+  on a portrait phone, `.world-map__ocean` was filled with `--abyss` — identical to the page
+  background — so the projected globe (wide aspect ratio, fitted into a tall container) had no
+  visible boundary, and roughly 60% of the screen above/below the landmasses read as a featureless
+  black void. Fixed two ways: (1) the ocean/sphere path now fills `--shelf`, giving the globe a
+  visible boundary; (2) added a static instrument-panel backdrop — fixed horizontal hairlines every
+  48px, drawn *outside* the pan/zoom group (`gRef`) so they read as a screen grid rather than
+  geography, sitting behind the ocean fill (visible only in the void, hidden under the globe).
+  Confirmed by construction that pan/zoom and the Germany admin-1 threshold are unaffected (the grid
+  is a sibling, not a child, of the zoomed group).
+- **Coverage headline cycle-position dots**
+  [`CoverageHeadline.tsx`](atlas/src/components/map/CoverageHeadline.tsx)/[`.css`](atlas/src/components/map/CoverageHeadline.css):
+  three small dots beneath the mono label, the active one filled — a carousel-style affordance that
+  the number is tappable and cyclical, using only `--haze`/`--contour`/`--chalk` (no status colours).
+- **Bottom nav active-tab indicator**
+  [`BottomNav.css`](atlas/src/components/nav/BottomNav.css): a 2px `--chalk` bar fades in above the
+  active tab (`scaleX` transform, respects reduced motion) — previously the only cue was an icon/
+  label colour change.
+- **Coverage strip framing** [`CoverageStrip.css`](atlas/src/components/map/CoverageStrip.css): a
+  top hairline (`border-top`) separates the strip from the map above it, and the track itself now
+  has rounded ends (`--radius-sm`) instead of a hard-edged rectangle.
+- **Country sheet elevation** [`CountrySheet.tsx`](atlas/src/components/map/CountrySheet.tsx)/[`.css`](atlas/src/components/map/CountrySheet.css):
+  added a drag-handle bar (bottom-sheet convention, decorative only — the sheet isn't actually
+  draggable), a `box-shadow` (new `--shadow-md` token) so it visibly lifts off the map instead of
+  looking flush-pasted, and a hairline divider between the status row and the stats grid for a
+  data-readout feel.
+- **Elevation tokens** [`tokens.css`](atlas/src/styles/tokens.css): added `--shadow-sm`/`--shadow-md`
+  — near-black, low-opacity (dark theme, so the usual grey shadow recipe reads muddy) — following the
+  same "add the missing token rather than hardcode a value" precedent Phase 1 set for spacing/radius.
+  Only `--shadow-md` is used so far (the country sheet); `--shadow-sm` is provisional, added for
+  whatever the next elevated surface turns out to be.
+
+### Deviations from the plan, and why
+
+1. **No phase file exists for "3b"** — `00-PLAN.md` §10 only lists phases 1–7; `START-HERE.md`'s
+   session table is the only place "3b — Visual polish" appears, with no task list or acceptance
+   criteria. Asked the user up front (via two targeted questions) what should drive the pass and how
+   far to push the aesthetic, rather than guessing scope. Answers: general critical pass, lean into
+   instrument/chart texture. Everything above follows from that brief, not from a written spec.
+2. **`CoverageHeadline`'s dot order duplicates `coverage.ts`'s internal `METRIC_CYCLE`** (`['countries',
+   'area', 'population']`) as a local `MODE_ORDER` constant rather than exporting the private array.
+   `METRIC_CYCLE` is intentionally unexported (only `nextStatMode` is the public surface); adding an
+   export purely to feed a decorative dot readout felt like the wrong direction to widen that
+   module's API. Three-element order is stable and already relied on implicitly via `METRIC_LABELS`'
+   key order.
+3. **Preview tool flakiness, again** — `preview_screenshot` intermittently returned stale/desynced
+   frames this session (e.g. showing `0.0%` and an unpopulated map immediately after a resize, when
+   `preview_snapshot` and Dexie both confirmed the real page state was `2.8%` with 12 test entries).
+   Distinct from the reduced-motion/`matchMedia` hang noted in Phase 3 — no monkey-patching was
+   involved here, just resize-then-screenshot. Recovered every time by re-issuing the screenshot call
+   (sometimes twice) or falling back to `preview_snapshot`/`preview_eval` to confirm ground truth
+   first. Treat any single screenshot right after a resize/reload with suspicion; cross-check against
+   snapshot if something looks wrong.
+
+### Left undone (correctly, per scope)
+
+This was a polish pass, not a feature phase — there's no acceptance checklist to leave unfinished.
+`CountrySheet` remains the deliberate Phase 3 read-only stopgap (Phase 4 replaces it). Places, Trips,
+Settings and the empty-state screens on those tabs were untouched — this session was scoped to what
+Phase 3 built (map + stats), not the rest of the app.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, and `npx vitest run` (16/16) all clean.
+- Browser (Vite dev, dark colour scheme), both at **390×844** and **360×800**:
+  - Fresh-install state (no entries): the map now shows a clearly-bounded grey globe against a
+    gridded backdrop instead of a black void, guidance hint bubble unchanged, cycle dots show the
+    first dot active.
+  - Populated state (12 test entries added directly via Dexie across 6 continents/4 statuses):
+    ocean fill and gridlines correctly sit *behind* the coloured countries (no visual interference
+    with status colours); headline cycling (tap) advances the dots in lockstep with the displayed
+    metric; coverage strip shows rounded ends and a top separating rule; legend expands with the
+    same four swatches, no layout regression.
+  - Country sheet (opened on Germany): drag handle, drop shadow and status/stats divider all render;
+    close button still works; regions-visited stat still reads correctly (0/16 — Phase 4 territory).
+  - Zoom regression check: simulated a ctrl-wheel zoom sequence on the SVG — countries render
+    correctly zoomed, grid lines correctly stay hidden under the now-larger ocean fill, no visual
+    artifacts from the new static grid layer sitting alongside the pan/zoom group.
+  - No horizontal scroll at either width.
+  - Test entries cleared and `statMode` reset to `countries` afterward — app left in a clean
+    fresh-install state.
+
+### Bug fix: bottom nav pushed off-screen when content exceeds one viewport
+
+Reported by the user after the polish pass above: expanding the Legend pushed the bottom tab bar
+(Map/Places/Trips/You) below the fold instead of the map area shrinking to make room.
+
+**Root cause**, confirmed by measuring the box model live in-browser (`clientHeight`/`scrollHeight`
+of `html`/`body`/`#root`/`.app-shell`/`.app-content`): the entire shell chain
+(`body`, `#root`, `.app-shell` — [`base.css`](atlas/src/styles/base.css),
+[`App.css`](atlas/src/App.css)) was sized with `min-height: 100vh` rather than a hard `height`. A
+flex chain built entirely of `min-height` never gives its descendants a *definite* height to
+allocate — so when the Legend's expanded content made the natural (intrinsic) height of the page
+exceed one viewport, every ancestor just grew to fit it instead of `.app-content`'s existing
+`overflow-y: auto` kicking in, and the whole page (including the nav bar, `flex-shrink: 0` at the
+bottom of `.app-shell`) scrolled down with it. Measured concretely: with the legend open at
+360×800, `html.scrollHeight` was 841px against an 800px viewport — the nav bar's bottom edge sat at
+841, i.e. 41px below the fold.
+
+**Fix**: gave the chain one definite height instead of a cascade of minimums —
+`#root { height: 100dvh }` (was `min-height: 100vh`; `dvh` over `vh` so mobile browser chrome
+show/hide doesn't reintroduce the gap), and `.app-shell { min-height: 0 }` (was `min-height: 100vh`,
+which fought the new definite parent height and also skipped the classic flexbox
+`min-height: auto` fix — the same pattern `.app-content` already used one level down). With a real
+height to distribute, `.app-content`'s `flex: 1` now actually clamps to (viewport − nav height), and
+`.map-screen__map-wrap`'s `flex: 1` shrinks to fit whatever the Legend needs, exactly as the
+flex-based layout always intended.
+
+Re-verified after the fix at both 360×800 and 390×844: `html.scrollHeight` now equals
+`clientHeight` exactly (no page-level overflow) with the legend open, nav bar fully visible in both
+cases, and the map area visibly shrinks to accommodate the legend instead of the page growing.
+`tsc -b` / `lint` / `vitest` (16/16) all still clean. This was a Phase 1 scaffold issue (the
+`min-height: 100vh` cascade dates to the original shell), not something Phase 3b's additions caused
+— it simply hadn't been exercised with the legend open on a content stack tall enough to overflow
+before now.
+
+### Notes for the next session
+
+- The ocean-fill/gridline fix only addresses the *portrait, unzoomed* dead-space case, which is the
+  overwhelmingly common one (that's the default view). It doesn't change the underlying
+  aspect-ratio-mismatch cause — if a future session wants the globe itself to visually fill more of a
+  narrow viewport, that requires either fitting to height (with horizontal pan needed to reach
+  Russia/Chile's extremities from the initial view) or a different projection, which is a bigger
+  behavioural change than this polish session's scope.
+- `--shadow-sm` is unused — decide what it's for (a card component, the legend, something in Phase 4)
+  or drop it if nothing ends up needing it.
+- Now that the shell has a real height ceiling, any future screen whose content can legitimately
+  exceed one viewport (e.g. a long country sheet, a long trip list) will scroll correctly within
+  `.app-content` rather than pushing the nav bar away — worth keeping in mind as Phase 4/5 add more
+  content-heavy screens.

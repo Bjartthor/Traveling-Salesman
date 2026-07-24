@@ -14,8 +14,17 @@
   background: var(--shelf);
   border-top: 1px solid var(--contour);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  padding: var(--space-5);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3) var(--space-5) var(--space-5);
   padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+}
+
+.country-sheet__handle {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--contour);
+  margin: 0 auto var(--space-4);
 }
 
 .country-sheet__header {
@@ -77,6 +86,8 @@
   grid-template-columns: 1fr 1fr;
   gap: var(--space-4);
   margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--contour);
 }
 
 .country-sheet__stat dt {

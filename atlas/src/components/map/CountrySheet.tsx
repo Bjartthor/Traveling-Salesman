@@ -57,6 +57,7 @@ export function CountrySheet({ country, entry, subdivisionStatus, cityStatus, on
         aria-label={country.name}
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="country-sheet__handle" aria-hidden="true" />
         <header className="country-sheet__header">
           <div>
             <p className="country-sheet__code mono">{country.code}</p>
