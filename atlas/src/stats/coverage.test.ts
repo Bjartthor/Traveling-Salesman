@@ -36,6 +36,7 @@ function mkEntry(overrides: Partial<Entry> & { kind: Entry['kind']; refId: strin
   return {
     id: `${overrides.kind}-${overrides.refId}`,
     explicit: true,
+    explicitStatus: overrides.status,
     firstVisited: null,
     lastVisited: null,
     notes: '',

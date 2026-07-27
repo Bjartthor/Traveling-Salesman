@@ -61,8 +61,17 @@ export interface SyncedRecord {
 export interface Entry extends SyncedRecord {
   kind: EntryKind
   refId: string // countries.code | subdivisions.id | String(cities.geonameId)
+  // The *effective* status — what the map paints. For a derived entry that is
+  // the highest status among its children; for an explicit one it is the higher
+  // of the user's own choice and its children (00-PLAN.md §5.3).
   status: Status
-  explicit: boolean
+  explicit: boolean // the user set this place's status directly
+  // The user's own choice, kept alongside `status` so a country explicitly set
+  // to `visited` can show as `lived` while a lived city sits inside it and drop
+  // back to `visited` when that city is downgraded — one field cannot hold both.
+  // Invariant, maintained by @/domain/cascade: `explicit === (explicitStatus !== null)`.
+  // Not indexed, so adding it needed no Dexie version bump. (Addition to plan §4.)
+  explicitStatus: Status | null
   firstVisited: string | null
   lastVisited: string | null
   notes: string

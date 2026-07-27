@@ -6,6 +6,9 @@ import { VitePWA } from 'vite-plugin-pwa'
 // https://vite.dev/config/
 export default defineConfig({
   base: './',
+  // Default stays 5173 — plan §9 registers http://localhost:5173 as an OAuth
+  // origin — but honour PORT so a second dev server can run alongside.
+  server: { port: Number(process.env.PORT) || 5173 },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

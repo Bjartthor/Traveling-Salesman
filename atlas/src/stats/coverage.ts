@@ -10,13 +10,12 @@
 // visited if it has its own explicit entry.
 
 import type { City, Country, CountryDenominator, Entry, EntryKind, StatMode, Status, Subdivision } from '@/db/types'
+// The ladder itself belongs to the domain, not to stats — re-exported here so
+// this module's existing callers keep their import site.
+import { STATUS_ORDER, statusRank } from '@/domain/cascade'
 
-const STATUS_RANK: Record<Status, number> = { wishlist: 0, transit: 1, visited: 2, lived: 3 }
-export const STATUSES: readonly Status[] = ['wishlist', 'transit', 'visited', 'lived']
-
-export function statusRank(status: Status): number {
-  return STATUS_RANK[status]
-}
+export const STATUSES = STATUS_ORDER
+export { statusRank }
 
 /** Only visited and lived count toward coverage; transit and wishlist never do. */
 export function countsAsCoverage(status: Status): boolean {

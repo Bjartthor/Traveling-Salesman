@@ -43,6 +43,20 @@ function makeRepo<T extends SyncedRecord>(table: EntityTable<T, 'id'>) {
       })
     },
 
+    /**
+     * Bring a soft-deleted row back, optionally with new field values. Deletes
+     * are soft, and `entries` has a unique [kind+refId] index — so re-adding a
+     * place the user removed has to revive that row rather than insert a second
+     * one, which would fail with a ConstraintError. See @/domain/cascade.
+     */
+    async restore(id: string, patch: Patch<T>): Promise<void> {
+      const changes = { ...patch, deletedAt: null, updatedAt: Date.now() }
+      await db.transaction('rw', table, db.syncState, async () => {
+        await table.update(id as IDType<T, 'id'>, changes as never)
+        await bumpRevision()
+      })
+    },
+
     async softDelete(id: string): Promise<void> {
       const changes = { deletedAt: Date.now(), updatedAt: Date.now() }
       await db.transaction('rw', table, db.syncState, async () => {

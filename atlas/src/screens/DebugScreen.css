@@ -111,9 +111,16 @@
 .debug__result {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
+  width: 100%;
+  min-height: var(--tap-target-min);
   padding: var(--space-3) 0;
+  border: 0;
   border-bottom: 1px solid var(--contour);
+  background: none;
+  text-align: left;
+  cursor: pointer;
 }
 
 .debug__result-name {
@@ -127,4 +134,93 @@
   font-size: var(--text-xs);
   letter-spacing: 0.04em;
   color: var(--haze);
+}
+
+/* --- cascade harness (Phase 4a, temporary) --- */
+
+.debug__picker {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.debug__swatch {
+  flex: 1;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  background: var(--shelf);
+  color: var(--haze);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.debug__swatch--on {
+  border-color: var(--swatch);
+  color: var(--chalk);
+  background: color-mix(in srgb, var(--swatch) 22%, var(--shelf));
+}
+
+.debug__inline {
+  display: flex;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+
+.debug__btn {
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  background: var(--shelf);
+  color: var(--chalk);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.debug__btn--icon {
+  margin-left: auto;
+  min-width: var(--tap-target-min);
+  padding: 0;
+  font-size: var(--text-base);
+}
+
+.debug__entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  padding: var(--space-3) 0 var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--contour);
+}
+
+.debug__entry--dead {
+  opacity: 0.4;
+}
+
+.debug__bar {
+  position: absolute;
+  left: 0;
+  top: var(--space-3);
+  bottom: var(--space-3);
+  width: 3px;
+  border-radius: 2px;
+}
+
+.debug__entry .debug__btn--icon {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.debug__error {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--lived);
 }

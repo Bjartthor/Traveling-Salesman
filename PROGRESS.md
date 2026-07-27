@@ -482,3 +482,180 @@ before now.
   exceed one viewport (e.g. a long country sheet, a long trip list) will scroll correctly within
   `.app-content` rather than pushing the nav bar away — worth keeping in mind as Phase 4/5 add more
   content-heavy screens.
+
+## Phase 4a — Cascade engine and tests (done)
+
+Task 1 of `04-places.md` only — per `START-HERE.md`, phase 4 is split and 4a is "Cascade engine +
+tests". The status cascade of plan §5, built test-first as pure functions, plus the Dexie adapter
+that applies it, plus a temporary browser harness to exercise it against the real dataset. **No
+Places UI** — that is 4b.
+
+Three scope questions were asked and answered before any code was written (see Deviations 1–3);
+all three changed the design rather than just the presentation.
+
+### What was built
+
+- **The engine** [`src/domain/cascade.ts`](atlas/src/domain/cascade.ts) — pure, no Dexie, no React.
+  The whole thing reduces to one idea: **the explicit entries are the only truth**, and
+
+  ```
+  desired(place) = max( explicitStatus(place), max desired(child) )
+  ```
+
+  with a place having a row exactly when that is non-null. So `setStatus`, `removeEntry` and
+  `rebuildAllDerived` are all *the same operation* — recompute `desired`, diff it against the rows
+  that exist — differing only in how they perturb the explicit set first and how much of the tree
+  they diff (target + ancestors for the first two, per plan §5's `recomputeAncestors`; everything
+  for the third, per §7.3). That collapse is deliberate: it is what makes "the piece most likely to
+  go subtly wrong" have one code path to get right instead of three. Also exports `parentOf` /
+  `ancestorsOf` / `effectiveStatus` / `entryKey` / `findEntry` and the status ladder itself
+  (`STATUS_ORDER`, `statusRank`, `maxStatus`).
+- **The tests** [`src/domain/cascade.test.ts`](atlas/src/domain/cascade.test.ts) — 34 tests written
+  **before** the implementation, covering all nine cases the brief enumerates plus the ordering
+  ladder, parentage resolution, soft-delete/restore, idempotence, and the fallback rule below. One
+  of them (`rebuildAllDerived` "never rewrites what the user set explicitly") caught a real design
+  bug during the walkthrough — see Edge case 4.
+- **The adapter** [`src/domain/cascadeRepo.ts`](atlas/src/domain/cascadeRepo.ts) —
+  `loadCascadeState`, `setPlaceStatus`, `removePlaceEntry`, `rebuildDerivedEntries`. Each reads the
+  snapshot and applies the resulting mutations through `repo.ts` inside **one** `db.transaction`
+  (the repo's own transactions join the outer one rather than nesting), so a city and the country it
+  implies are never half-written. **Nothing else in the app should write to `entries`** — going
+  around this module means going around the cascade.
+- **`repo.ts` gained `restore(id, patch)`** — see Edge case 3.
+- **`Entry.explicitStatus`** added to [`db/types.ts`](atlas/src/db/types.ts) (Deviation 1).
+- **Browser harness** — the temporary [`DebugScreen`](atlas/src/screens/DebugScreen.tsx) grew a
+  cascade section: a status picker, tap-a-search-result-to-add, a country-code setter, the full
+  entry list (explicit vs derived, with each row's `explicitStatus`), remove buttons, "rebuild
+  derived", and a **drift indicator** that flags any row whose stored `status` disagrees with
+  `effectiveStatus`. Deleted in 4b along with the rest of the screen.
+
+### Deviations from the plan, and why
+
+1. **`Entry.explicitStatus` added — one field beyond plan §4 (asked, confirmed).** Plan §5.3 defines
+   a parent's effective status as `max(its own explicit status, highest among its children)`, but §4
+   gives the row a single `status` field, which cannot hold both the user's choice and the computed
+   result. Confirmed reading: `status` keeps holding the **effective** value (so the Phase-3 map and
+   stats keep working as a plain field read) and `explicitStatus` remembers what the user actually
+   chose. The user's stated requirement, now a test and verified in-browser: *Germany visited →
+   add lived Berlin → Germany shows lived → downgrade Berlin → Germany drops **back to visited***,
+   not stuck on lived. The rejected alternative (conflate into `status`) could raise an explicit
+   parent but never let it fall back. The field is **not indexed**, so it needed no Dexie version
+   bump. Invariant `explicit === (explicitStatus !== null)` is maintained only by `cascade.ts`.
+2. **`removeEntry` demotes a parent that still has children (asked, confirmed)** rather than
+   deleting it or wiping the subtree. Deleting would orphan the children and break §5.1's guarantee
+   that a city's ancestors exist. A UI that means "erase everything here" walks the descendants
+   itself — 4b's call.
+3. **The harness lives on `DebugScreen` (asked, confirmed)** so 4a could be verified against the
+   real 170k-city dataset rather than only against fixtures.
+4. **A subdivision's country is derived from its id, not from a lookup table.** `subdivisions.id` is
+   `${countryCode}.${geonamesAdmin1}` by construction (plan §4, built that way in `build-geo.mjs`) —
+   the same convention `countrySubdivisionsVisited` in `coverage.ts` already relies on. So
+   `CascadeState.places` only needs a **city** index, which is one less thing for the adapter to get
+   wrong. Malformed ids throw.
+5. **The status ladder moved to the domain.** It was defined three times (`coverage.ts`,
+   `statusColor.ts`, and now the cascade). `coverage.ts` now imports `statusRank`/`STATUS_ORDER`
+   from `cascade.ts` and re-exports them, so its public surface is unchanged;
+   `statusColor.ts`'s copy is left alone as a *display* ordering concern.
+6. **Derived parents get no dates.** The plan doesn't say whether `firstVisited`/`lastVisited` should
+   aggregate upward. They don't — `setStatus` writes dates only on the entry the user set. Nothing
+   needs the denormalised version: `visitDateRange` in `coverage.ts` already computes ranges across
+   all entries, and 4b's country detail screen has the children to hand.
+7. **`UnknownCityError` fails loud** when a city entry's `cities` row is missing, rather than
+   skipping the entry. Skipping would let `rebuildAllDerived` delete a country the user really has
+   visited — silent data loss. Follows the fail-loud precedent Phase 2 set in the geo build.
+8. **`vite.config.ts` now honours `PORT`** (`server.port`), with `autoPort: true` in
+   `.claude/launch.json`. Purely so a second dev server can run while another session holds 5173;
+   the default is still 5173, which plan §9 registers as an OAuth origin.
+
+### Cascade edge cases the plan did not anticipate
+
+The phase brief asks for these explicitly.
+
+1. **§5.3 needs two values per row but §4 provides one field.** The headline finding — Deviation 1.
+   Everything else on this list is smaller.
+2. **§5.5 only describes removing a *child*.** Removing a *parent* that still has children is
+   undefined by the plan. Resolved as demote-to-derived (Deviation 2).
+3. **Soft delete and the unique `[kind+refId]` index interact.** Plan §4 says never hard-delete;
+   the index means a soft-deleted row still owns its slot. So re-adding a place the user removed
+   must **restore that row** — a naive `create` throws a `ConstraintError`. Hence `repo.restore()`
+   and the engine's separate `restore` mutation. This would have been a live bug the first time
+   anyone re-added a place they'd deleted.
+4. **A place with no row still has to conduct status upward.** Mark Germany explicitly, then add a
+   city in Bavaria: Bavaria has no entry at the moment the country's status is recomputed, so
+   linking each entry only to its *immediate* parent silently loses the connection and Germany never
+   sees the city. The engine links each node to its **whole ancestor chain**. This is exactly the
+   "subtly wrong" failure §5 warns about — it produced a plausible-looking wrong answer, not a
+   crash, and only the test caught it.
+5. **A country's children are not just its subdivisions.** 383 bundled cities have
+   `subdivisionId: null` and hang directly off their country, so "does this derived parent still
+   have a child?" has to consider both.
+6. **Setting a parent explicitly *lower* than a child is a no-visible-op.** Germany derived-lived
+   from Berlin; user sets Germany = visited; §5.3 + §5.4 together mean Germany still displays
+   *lived*. Correct, but it will read as "the app ignored me" — 4b's status sheet should say
+   *"showing lived because you lived in Berlin"*. `explicit`, `explicitStatus` and `effectiveStatus`
+   give it everything it needs to.
+7. **A reference-data reseed can strand city entries.** `ensureReferenceData` does
+   `db.cities.clear()` on a `geoDataVersion` bump ([`loader.ts:112`](atlas/src/geo/loader.ts:112)),
+   which would take any `source: 'online'` city with it and leave the user's entry pointing at
+   nothing. Currently surfaces as `UnknownCityError`. **4b must preserve non-bundled cities across
+   the reseed** — see below.
+
+### Left undone (correctly — this is 4b)
+
+Everything in `04-places.md` §2–§6: the city search UI, the Photon online fallback, manual places,
+the status sheet, the Places tab, the country detail screen, and quick/bulk add. The Phase-3
+`CountrySheet` is still the read-only stopgap. Two things for 4b to pick up first:
+
+- **`CitySource` needs `'manual'`.** `04-places.md` §2 says to store manual places with
+  `source: 'manual'`, but plan §4 and `db/types.ts` only allow `'bundled' | 'online'`. Left
+  unchanged rather than silently widening a type outside this session's scope.
+- **The reseed hazard above** (Edge case 7) — `ensureReferenceData` should keep non-bundled cities.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (**50/50** — 34 cascade + the 16 existing coverage
+  tests) and `npm run build` all clean.
+- **The tests were checked for teeth by mutation testing**, not just run: inverting `maxStatus`
+  kills 8, linking only immediate parents kills 6, trusting a derived row's stored status instead of
+  recomputing kills 11. All three restored afterwards.
+- Browser (Vite dev, 375×812 and 390×844, dark), against the **real seeded dataset** (250 countries,
+  3,865 subdivisions, 170,486 cities):
+  - "garmisch" → tapping the result created **Bavaria** and **Germany** as derived entries.
+  - "san francisco" (top-ranked hit) → created **California** and the **United States**.
+  - "tórshavn" → created the **Faroe Islands** as its own country plus Streymoy; **no DK row**.
+  - Germany explicitly *lived* + Munich *visited* → Germany **stays lived**; removing Munich drops
+    derived Bavaria and leaves explicit Germany alone.
+  - Germany explicitly *visited* + Berlin *lived* → Germany displays **lived** with
+    `explicitStatus` still *visited*; downgrading Berlin returns Germany to **visited**; removing
+    Berlin entirely leaves Germany *visited*. (The rule the user asked for, end to end.)
+  - A *wishlist* city produced a **wishlist** country (Japan), never a visited one.
+  - Kyoto *visited* → Japan derived; removing Kyoto removed all three rows from the live set, and
+    3 soft-deleted rows remain in the table (nothing hard-deleted).
+  - **Map recolours with no reload**: adding a *city* took Japan from `--contour` `rgb(38,52,60)` to
+    `--visited` `rgb(79,192,141)`, and to `--lived` `rgb(232,163,61)` for a lived city — this closes
+    the gap Phase 3 flagged in its Deviation 1, where city/subdivision entries didn't colour their
+    country. Removing it returned Japan to `--contour`.
+  - Coverage strip (not animated) read `0.4%` on the `--lived` segment, matching `metricCoverage`
+    computed from the same data exactly.
+  - Harness at 390×844: no horizontal overflow, 44×44 remove targets, status colour bars correct,
+    drift indicator reads "no drift".
+  - App left clean afterwards — `entries` cleared, `revision` reset to 0.
+
+### Notes for the next session
+
+- **`cascadeRepo.ts` is the only sanctioned writer to `entries`.** `db.entries.add/put` anywhere
+  else bypasses the cascade and will produce exactly the drift the harness's indicator exists to
+  catch.
+- `rebuildDerivedEntries()` is the repair path and is safe to run any time — it returns the number
+  of mutations it applied, so `0` is a clean bill of health.
+- **Preview-tool artifacts seen again this session**, consistent with Phase 3/3b's notes, none of
+  them app bugs. (a) Navigating by `location.hash` *without* a reload leaves the map blank — the
+  `ResizeObserver` never delivers in the backgrounded automation tab, so the projection never gets a
+  size; a full reload renders all 237 paths. (b) The tweened headline freezes for the same reason
+  (`requestAnimationFrame` stalls), while the non-animated coverage strip stays correct — cross-check
+  against the strip or compute from Dexie rather than trusting the headline digits. (c)
+  `preview_screenshot` timed out repeatedly; `preview_snapshot`/`preview_eval` were reliable
+  throughout. (d) Clicking a search result immediately after `preview_fill` can land on a stale node
+  and silently do nothing — re-issue the click once the list has settled.
+- The first `searchCities()` call after a reload costs ~1.2 s (cold 170k-row index build) and blocks;
+  warm queries are ~27 ms. 4b's search UI should account for that first hit.
