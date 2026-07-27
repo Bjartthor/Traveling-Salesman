@@ -7,7 +7,7 @@ import { WorldMap } from '@/components/map/WorldMap'
 import { CoverageHeadline } from '@/components/map/CoverageHeadline'
 import { CoverageStrip } from '@/components/map/CoverageStrip'
 import { Legend } from '@/components/map/Legend'
-import { CountrySheet } from '@/components/map/CountrySheet'
+import { useCountryDetailStore } from '@/domain/countryDetailStore'
 import './MapScreen.css'
 
 export function MapScreen() {
@@ -15,11 +15,14 @@ export function MapScreen() {
   const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
   const settings = useLiveQuery(() => db.settings.get(1))
 
+  // Which country's admin-1 breakdown WorldMap shows once zoomed in past its
+  // threshold — a map-exploration affordance, independent of whether the
+  // full country detail overlay (opened below) happens to be showing for it.
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
+  const openCountryDetail = useCountryDetailStore((s) => s.open)
 
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
   const subdivisionStatus = useMemo(() => buildStatusIndex(entries ?? [], 'subdivision'), [entries])
-  const cityStatus = useMemo(() => buildStatusIndex(entries ?? [], 'city'), [entries])
 
   const metric = useMemo(
     () =>
@@ -29,20 +32,16 @@ export function MapScreen() {
     [countries, settings, countryStatus],
   )
 
-  const selectedCountry = useMemo(
-    () => (selectedCode ? countries?.find((c) => c.code === selectedCode) : undefined),
-    [countries, selectedCode],
-  )
-  const selectedEntry = useMemo(
-    () => entries?.find((e) => e.kind === 'country' && e.refId === selectedCode),
-    [entries, selectedCode],
-  )
-
   // Fully grey map + one line of guidance is the fresh-install state — an
   // invitation, not an empty-state apology (03-map-and-stats.md §5).
   const hasAnyEntries = (entries?.length ?? 0) > 0
 
   if (!countries || !settings || !metric) return null
+
+  function selectCountry(code: string) {
+    setSelectedCode(code)
+    openCountryDetail(code)
+  }
 
   return (
     <div className="map-screen">
@@ -56,21 +55,12 @@ export function MapScreen() {
           countryStatus={countryStatus}
           subdivisionStatus={subdivisionStatus}
           selectedCode={selectedCode}
-          onSelectCountry={setSelectedCode}
+          onSelectCountry={selectCountry}
         />
         {!hasAnyEntries && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}
       </div>
       <CoverageStrip metric={metric} mode={settings.statMode} />
       <Legend />
-      {selectedCountry && (
-        <CountrySheet
-          country={selectedCountry}
-          entry={selectedEntry}
-          subdivisionStatus={subdivisionStatus}
-          cityStatus={cityStatus}
-          onClose={() => setSelectedCode(null)}
-        />
-      )}
     </div>
   )
 }

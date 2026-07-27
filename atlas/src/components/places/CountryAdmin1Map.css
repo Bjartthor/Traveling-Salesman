@@ -1,0 +1,32 @@
+.country-admin1-map {
+  width: 100%;
+  height: 240px;
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.country-admin1-map svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.country-admin1-map__region {
+  stroke: var(--shelf);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+  transition: fill var(--duration-fast) var(--easing-standard);
+}
+
+.country-admin1-map__region:hover {
+  stroke: var(--haze);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .country-admin1-map__region {
+    transition: none;
+  }
+}

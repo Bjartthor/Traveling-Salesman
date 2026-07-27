@@ -2,7 +2,7 @@
 
 export type Status = 'wishlist' | 'transit' | 'visited' | 'lived'
 export type EntryKind = 'country' | 'subdivision' | 'city'
-export type CitySource = 'bundled' | 'online'
+export type CitySource = 'bundled' | 'online' | 'manual'
 export type UploadState = 'pending' | 'uploaded' | 'error'
 export type StatMode = 'countries' | 'area' | 'population'
 export type CountryDenominator = 'all' | 'unMember'
@@ -37,13 +37,17 @@ export interface Subdivision {
 }
 
 export interface City {
+  // Positive = a real GeoNames id (bundled). Negative = synthesised locally for
+  // an 'online' (Photon) or 'manual' city — see @/geo/cityWrites. The two
+  // ranges can never collide, which is what makes a reference-data reseed safe
+  // to preserve non-bundled rows across (@/geo/loader ensureReferenceData).
   geonameId: number // primary key
   name: string
   asciiName: string
   countryCode: string
   subdivisionId: string | null // null for cities in countries with no admin-1 data (§02 acceptance)
-  lat: number
-  lon: number
+  lat: number | null // null when a manual place was added with no coordinates
+  lon: number | null
   population: number
   source: CitySource
   searchTokens: string[]

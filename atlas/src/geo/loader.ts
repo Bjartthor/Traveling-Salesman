@@ -109,6 +109,18 @@ export async function ensureReferenceData(
   const iPop = colIndex('population')
   const total = rows.length
 
+  // A version bump reseeds the *bundled* rows, but must not take the user's
+  // 'online' (Photon) or 'manual' cities with it — any entry pointing at one
+  // would otherwise throw UnknownCityError the moment the cascade next reads
+  // it (@/domain/cascadeRepo). Carry them across the clear(), re-checking
+  // their subdivisionId against the fresh subdivisions in case an admin1 code
+  // was renamed or dropped upstream; their geonameId is always negative
+  // (@/geo/cityWrites), so it can never collide with a fresh bundled row.
+  const preserved = (await db.cities.filter((c) => c.source !== 'bundled').toArray()).map((c) => ({
+    ...c,
+    subdivisionId: c.subdivisionId && subIds.has(c.subdivisionId) ? c.subdivisionId : null,
+  }))
+
   await db.cities.clear()
   const CHUNK = 10000
   onProgress?.({ phase: 'cities', loaded: 0, total })
@@ -145,6 +157,7 @@ export async function ensureReferenceData(
     await db.cities.bulkAdd(cityRows)
     onProgress?.({ phase: 'cities', loaded: Math.min(i + CHUNK, total), total })
   }
+  if (preserved.length > 0) await db.cities.bulkAdd(preserved)
 
   // --- 3. mark seeded (device-local; leaves user tables untouched) ---
   await db.settings.update(1, { geoDataVersion: GEO_DATA_VERSION })

@@ -1,0 +1,112 @@
+.places-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.places-list__continent {
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.places-list__continent-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-4);
+  background: var(--shelf);
+  color: var(--chalk);
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+.places-list__countries {
+  display: flex;
+  flex-direction: column;
+}
+
+.places-list__country + .places-list__country {
+  border-top: 1px solid var(--contour);
+}
+
+.places-list__row {
+  display: flex;
+  align-items: stretch;
+}
+
+.places-list__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  flex-shrink: 0;
+  color: var(--haze);
+}
+
+.places-list__row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  text-align: left;
+}
+
+.places-list__row-main:hover {
+  background: var(--shelf);
+}
+
+.places-list__row-main--indent1 {
+  padding-left: var(--tap-target-min);
+}
+
+.places-list__row-main--indent2 {
+  padding-left: calc(var(--tap-target-min) * 2);
+}
+
+.places-list__bar {
+  width: 4px;
+  align-self: stretch;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.places-list__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--chalk);
+  font-size: var(--text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.places-list__count {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.places-list__date {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.places-list__children {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--space-2);
+}
+
+.places-list__subdivision {
+  display: flex;
+  flex-direction: column;
+}

@@ -1,0 +1,169 @@
+/* z-index 40: topmost overlay in the app — can stack over a full-screen
+   overlay (country detail, bulk add) as well as over a plain tab. */
+.place-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--abyss) 60%, transparent);
+  display: flex;
+  align-items: flex-end;
+  z-index: 40;
+}
+
+.place-sheet {
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--shelf);
+  border-top: 1px solid var(--contour);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.place-sheet__handle {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--contour);
+  margin: 0 auto;
+  flex-shrink: 0;
+}
+
+.place-sheet__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.place-sheet__eyebrow {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.place-sheet__name {
+  font-size: var(--text-xl);
+  color: var(--chalk);
+  margin-top: var(--space-1);
+}
+
+.place-sheet__breadcrumb {
+  font-size: var(--text-sm);
+  color: var(--haze);
+  margin-top: var(--space-1);
+}
+
+.place-sheet__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  font-size: var(--text-lg);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.place-sheet__close:hover {
+  color: var(--chalk);
+}
+
+.place-sheet__current {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.place-sheet__current-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.place-sheet__current-label {
+  font-size: var(--text-sm);
+  color: var(--haze);
+}
+
+.place-sheet__date {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.place-sheet__date-input {
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  color: var(--chalk);
+}
+
+.place-sheet__options {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.place-sheet__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: var(--tap-target-min);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-left: 4px solid var(--option-color);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) var(--easing-standard);
+}
+
+.place-sheet__option[aria-pressed='true'] {
+  border-color: var(--option-color);
+}
+
+.place-sheet__option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.place-sheet__option-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--chalk);
+}
+
+.place-sheet__option-desc {
+  font-size: var(--text-sm);
+  color: var(--haze);
+}
+
+.place-sheet__remove {
+  min-height: var(--tap-target-min);
+  padding: var(--space-2);
+  color: var(--haze);
+  font-size: var(--text-sm);
+  text-align: center;
+  border-radius: var(--radius-sm);
+}
+
+.place-sheet__remove:hover {
+  color: var(--chalk);
+}
+
+.place-sheet__error {
+  font-size: var(--text-sm);
+  color: var(--lived);
+}

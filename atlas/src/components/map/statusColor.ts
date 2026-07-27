@@ -20,6 +20,16 @@ export const STATUS_LABEL: Record<Status, string> = {
   lived: 'Lived',
 }
 
+// One-liners for the status sheet (04-places.md task 3) — close paraphrases of
+// 00-PLAN.md §5's own definitions, so "transit" and "visited" read as clearly
+// different choices rather than two shades of "went there."
+export const STATUS_DESCRIPTION: Record<Status, string> = {
+  wishlist: 'Want to go',
+  transit: "Passed through — a layover, a drive-through, didn't really visit",
+  visited: 'Actually spent time here',
+  lived: 'Lived here',
+}
+
 export const UNVISITED_COLOR_VAR = 'var(--contour)'
 
 export function colorForStatus(status: Status | undefined): string {

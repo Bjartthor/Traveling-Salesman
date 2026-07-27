@@ -38,8 +38,8 @@ export interface CityResult {
   countryName: string
   subdivisionId: string | null
   subdivisionName: string | null
-  lat: number
-  lon: number
+  lat: number | null
+  lon: number | null
   population: number
 }
 
@@ -51,8 +51,8 @@ interface IndexRow {
   cc: string
   sub: string | null
   pop: number
-  lat: number
-  lon: number
+  lat: number | null
+  lon: number | null
 }
 
 // Separator between the normalized name and asciiName halves of `hay`. A raw

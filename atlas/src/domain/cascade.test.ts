@@ -16,6 +16,7 @@ import type { Entry, EntryKind, Status } from '@/db/types'
 import {
   ancestorsOf,
   effectiveStatus,
+  explainStatus,
   maxStatus,
   rebuildAllDerived,
   removeEntry,
@@ -403,6 +404,53 @@ describe('effectiveStatus', () => {
     ])
 
     expect(effectiveStatus(state, 'country', 'DE')).toBe('transit')
+  })
+})
+
+// --- explainStatus -------------------------------------------------------------
+
+describe('explainStatus', () => {
+  it('returns null for a place with no status at all', () => {
+    expect(explainStatus(mkState([]), 'country', 'DE')).toBeNull()
+  })
+
+  it('returns null when the place’s own explicit choice already accounts for its status', () => {
+    const state = mkState([mkEntry({ kind: 'country', refId: 'DE', status: 'visited' })])
+
+    expect(explainStatus(state, 'country', 'DE')).toBeNull()
+  })
+
+  it('names the city, not the derived subdivision in between, for a fully derived country', () => {
+    let state = mkState([])
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '4', status: 'lived' }))
+
+    expect(explainStatus(state, 'country', 'DE')).toEqual({ status: 'lived', because: { kind: 'city', refId: '4' } })
+    expect(explainStatus(state, 'subdivision', 'DE.16')).toEqual({ status: 'lived', because: { kind: 'city', refId: '4' } })
+  })
+
+  it('names the grandchild city when an explicit country is overridden from below (§5.4)', () => {
+    let state = mkState([mkEntry({ kind: 'country', refId: 'DE', status: 'visited' })])
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '4', status: 'lived' }))
+
+    expect(explainStatus(state, 'country', 'DE')).toEqual({ status: 'lived', because: { kind: 'city', refId: '4' } })
+  })
+
+  it('returns null once the explicit status is downgraded back to match (no more explaining needed)', () => {
+    let state = mkState([mkEntry({ kind: 'country', refId: 'DE', status: 'visited' })])
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '4', status: 'lived' }))
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '4', status: 'visited' }))
+
+    expect(explainStatus(state, 'country', 'DE')).toBeNull()
+  })
+
+  it('picks one valid explicit cause when two siblings tie at the same rank', () => {
+    let state = mkState([])
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '1', status: 'lived' }))
+    state = applyToFixture(state, setStatus(state, { kind: 'city', refId: '4', status: 'lived' }))
+
+    const cause = explainStatus(state, 'country', 'DE')
+    expect(cause?.status).toBe('lived')
+    expect(['1', '4']).toContain(cause?.because.refId)
   })
 })
 

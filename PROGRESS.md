@@ -659,3 +659,290 @@ the status sheet, the Places tab, the country detail screen, and quick/bulk add.
   and silently do nothing — re-issue the click once the list has settled.
 - The first `searchCities()` call after a reload costs ~1.2 s (cold 170k-row index build) and blocks;
   warm queries are ~27 ms. 4b's search UI should account for that first hit.
+
+## Phase 4b — Places UI (done)
+
+Everything `04-places.md` §2–§6 left for this half: city search with the Photon online fallback,
+manual entry, the global place-status sheet, the Places tab's grouped list, the country detail
+screen (replacing the Phase 3 `CountrySheet` stopgap), and quick/bulk add. One scope question was
+asked and confirmed before writing UI code (see Deviation 1); everything else below is a documented
+default, stated up front rather than asked, per the session's own steer.
+
+### What was built
+
+- **The status sheet** [`PlaceStatusSheet.tsx`](atlas/src/components/places/PlaceStatusSheet.tsx) —
+  one global instance mounted in [`App.tsx`](atlas/src/App.tsx), opened from anywhere via
+  [`placeSheetStore.ts`](atlas/src/domain/placeSheetStore.ts) (Zustand, `openPlace: PlaceRef | null`).
+  Four status buttons commit immediately (no separate save step — picking a status *is* the action);
+  an optional date field sits above them and is only sent to the cascade if the user actually touches
+  it (`SetStatusRequest`'s "omitted means leave it" contract, honoured exactly); a "Remove from
+  places" action appears once a row exists. Shows *why* a status is what it is via the new
+  `explainStatus` (below) — "Currently Lived — because Berlin is lived" — not just for countries, for
+  any place with descendants.
+- **`cascade.ts` gained `explainStatus`** (plus `StatusCause`) — the one addition to the domain layer
+  this session. Walks down through purely-derived intermediates to the *nearest place whose own
+  explicit choice* accounts for a status, so a country showing lived because of a city three levels
+  of "no entry yet" away names the city, not the also-derived subdivision in between. Six new tests
+  in [`cascade.test.ts`](atlas/src/domain/cascade.test.ts) (40/40 total, up from 34).
+  [`placeInfo.ts`](atlas/src/domain/placeInfo.ts) is the Dexie-facing half: `resolvePlaceInfo` turns a
+  bare `PlaceRef` into a name/flag/breadcrumb for display.
+- **City search** [`PlaceSearch.tsx`](atlas/src/components/places/PlaceSearch.tsx) — local
+  `searchCities()` results on every keystroke; once thin (<3) and online, a 500 ms-debounced
+  [`photon.ts`](atlas/src/geo/photon.ts) query joins under a divider, never blocking the local list.
+  Picking a local result opens the status sheet directly; picking an online one first resolves it
+  through [`cityWrites.ts`](atlas/src/geo/cityWrites.ts) (`source: 'online'`) so it's durable before
+  the sheet opens. Online results already visible locally are filtered out of the online list.
+  [`ManualPlaceForm.tsx`](atlas/src/components/places/ManualPlaceForm.tsx) is the "add a place
+  manually" fallback — name, a searchable country picker, an optional subdivision `<select>` scoped to
+  that country, optional lat/lon — writing with `source: 'manual'`.
+- **`geo/cityWrites.ts`** — `addOnlineCity`/`addManualCity`, the only two writers to the `cities`
+  table outside `loader.ts`'s bulk reference seed. Both allocate a **negative** synthetic
+  `geonameId` (real GeoNames ids are always positive, so the two ranges can never collide — see
+  Deviation 6) inside a transaction, then invalidate the search index.
+- **Places tab** — [`placesList.ts`](atlas/src/domain/placesList.ts) is the pure grouping engine
+  (continent → country → subdivision → city, filter, sort — no Dexie, no React, same contract as
+  `coverage.ts`), with 13 tests on a hand-checked fixture in
+  [`placesList.test.ts`](atlas/src/domain/placesList.test.ts).
+  [`PlacesList.tsx`](atlas/src/components/places/PlacesList.tsx) renders it: continents as native
+  `<details open>`, countries with their own expand/collapse chevron *and* an independent tap target
+  that opens the country detail screen, subdivisions and cities always one tap from the status sheet.
+  [`PlacesScreen.tsx`](atlas/src/screens/PlacesScreen.tsx) wires search, the All/Visited/Lived/
+  Wishlist/Transit filter row, the sort `<select>`, and quick add together; the empty state is the
+  real search field plus one hint line, not the shared `EmptyState` placeholder — the same call
+  Phase 3 made for the map, for the same reason.
+- **Country detail** [`CountryDetail.tsx`](atlas/src/components/places/CountryDetail.tsx) — a
+  full-screen overlay (Deviation 1), opened via
+  [`countryDetailStore.ts`](atlas/src/domain/countryDetailStore.ts) from either the map or the
+  Places list. Flag/code/name, an effective-status row (tappable → the status sheet, with the
+  `explainStatus` wording when derived), a new lightweight
+  [`CountryAdmin1Map.tsx`](atlas/src/components/places/CountryAdmin1Map.tsx) (fit-to-container, no
+  pan/zoom, tap a region → the status sheet for that subdivision), a stats grid (regions visited,
+  area, population, capital), a tappable cities list with dates, and an empty photos slot for Phase 6.
+  Replaces `CountrySheet` entirely — [`MapScreen.tsx`](atlas/src/screens/MapScreen.tsx)'s
+  `onSelectCountry` now opens this store instead of a local sheet, while keeping its own `selectedCode`
+  purely for WorldMap's existing "admin-1 overlay once zoomed in" affordance, which is a separate
+  concern from whether the detail screen happens to be open.
+- **Quick add** [`BulkAddScreen.tsx`](atlas/src/components/places/BulkAddScreen.tsx) — paste, one
+  status for the whole batch (Deviation 9), a review step built on
+  [`bulkResolve.ts`](atlas/src/domain/bulkResolve.ts)'s pure `classifyLine` (matched / ambiguous /
+  notFound, 11 tests in [`bulkResolve.test.ts`](atlas/src/domain/bulkResolve.test.ts)), an
+  include/skip toggle and a candidate picker per line, committed sequentially through
+  `setPlaceStatus` with per-line error collection rather than an all-or-nothing abort.
+- **A shared full-screen overlay shell**
+  [`FullScreenOverlay.tsx`](atlas/src/components/layout/FullScreenOverlay.tsx)/`.css` — header,
+  close button, Escape-to-close, scrollable body — used by `ManualPlaceForm`, `CountryDetail` and
+  `BulkAddScreen` so the three don't each reinvent the same chrome. Two new z-index layers,
+  documented inline: **30** for these full-screen overlays, **40** for the place-status sheet (which
+  can stack on top of any of them — confirmed in-browser: opening a subdivision from inside
+  `CountryDetail` layers the sheet correctly and closing it returns to the still-open detail screen).
+- **`CountryFlag.tsx`** + [`geo/flags.ts`](atlas/src/geo/flags.ts) — ISO code → regional-indicator
+  emoji, always paired with the mono code (Deviation 8) so nothing is lost where the emoji font
+  doesn't render flags.
+- Deleted `DebugScreen`/`.css`, its `/debug` route and its link on the You screen (Phase 4a's own
+  "delete this in 4b" note), and the Phase 3 `CountrySheet`/`.css`.
+
+### Deviations from the plan/brief, and why
+
+1. **Country detail is a full-screen overlay, not a routed screen (asked, confirmed).** Task 5 calls
+   it a "screen," which could mean either in an app where the 4 tabs are also "screens." Overlay won:
+   same pattern as the (now-replaced) `CountrySheet`, no change to `HashRouter`'s route table, and no
+   need to design how the browser/Android back button should interact with a sheet stacked on top.
+   The status sheet was never in question — task 3's own language ("reached by tapping any place
+   anywhere in the app") only makes sense as a global overlay.
+2. **`explainStatus` lives in `cascade.ts`, not a new domain module.** It's cascade-status reasoning
+   (reads `explicit`/`explicitStatus`/`status`, walks the same `children` graph `effectiveStatus`
+   already builds) — extending the module that owns those concepts beat re-deriving a shallower,
+   less-correct version in the UI layer. An early draft that just compared flat lists of a country's
+   subdivisions/cities would have named "Berlin state" instead of "Berlin" whenever the responsible
+   place was two levels down; the real version recurses through purely-derived intermediates
+   specifically to avoid that.
+3. **`CitySource` widened to `'bundled' | 'online' | 'manual'`, `City.lat`/`lon` widened to
+   `number | null`.** The first was flagged as 4b's job by 4a. The second follows from it: a manually
+   entered place with no known coordinates needs *no value*, not a fabricated `0,0` (Gulf of Guinea).
+   Neither needed a Dexie version bump (neither field is indexed) — same precedent as
+   `explicitStatus` in 4a.
+4. **The reference-data reseed hazard 4a flagged is fixed.** `ensureReferenceData` in
+   [`loader.ts`](atlas/src/geo/loader.ts) now reads out every non-`'bundled'` city before
+   `db.cities.clear()`, re-validates each one's `subdivisionId` against the *fresh* subdivisions (in
+   case an admin1 code was renamed upstream, nulling it out rather than leaving a dangling
+   reference), and re-inserts them after the bundled rows land. **Verified under a real full reseed,
+   not just reasoned about**: forced `geoDataVersion` back to 0 with two non-bundled cities on
+   record, re-ran `ensureReferenceData()` end to end (170,486 bundled rows reloaded from the network
+   in 10k chunks — well over a minute, same order of magnitude as Phase 2's documented ~50 s
+   first-run seed plus the extra preserve/restore step), and confirmed both survived byte-for-byte
+   and `loadCascadeState()` — which throws `UnknownCityError` on any dangling city reference — still
+   resolved cleanly afterward.
+5. **A country's "regions visited" stat, and the country/subdivision status bars, always show the
+   *true* stored status — filtering never fakes one.** Directly follows from how `placesList.ts`
+   decides what's visible (Deviation 7), not a separate choice.
+6. **Online and manual cities get a synthetic *negative* `geonameId`**, allocated downward from -1.
+   Real GeoNames ids are always positive, so the two ranges can never collide — which is what makes
+   Deviation 4's reseed-preservation safe without any per-row existence check. Not in the plan; filled
+   an obvious gap (Photon has no GeoNames id, a manual place has no id at all).
+7. **`placesList.ts`'s filter semantics, spelled out since the brief doesn't**: a row shows if its
+   own status matches the active filter, *or* it's a country/subdivision header structurally needed
+   to contain a descendant that matches — but every visible row still shows its own real status, and
+   a group's count is the number of *matching* rows inside it. Filtering to "Wishlist" under a
+   `lived`-status Germany still shows Germany's header (green "lived" bar and all) because a wishlist
+   city sits inside it, with the count reading how many wishlist places that is.
+8. **Country identity is always the mono ISO code, with the flag emoji as a bonus, never emoji-only.**
+   Regional-indicator flag emoji don't render as flags on every platform (notably some Linux/Chromium
+   builds without a colour-emoji font show two-letter boxes instead) — the mono code is the
+   guaranteed-correct fallback and also fits the project's established cartographic-mono aesthetic.
+9. **Quick add applies one status to the whole pasted batch**, chosen once before matching, rather
+   than a per-line syntax. Task 6 doesn't mention per-line status at all; backfilling history is
+   normally done a status at a time in practice ("everywhere on this trip" = one paste, one status),
+   and a line-parsing micro-syntax the brief never asked for would be scope creep.
+10. **Quick add resolves against the local index only — no Photon fallback.** Task 6 says "the search
+    index" (definite article, singular), matching the one already defined for task 2. A line that
+    misses locally is shown as "no match found" for the user to add afterward through the normal
+    search, which does have online fallback.
+11. **Photon's `layer` filter uses the actual valid enum (`city`, `locality`, …), and is backstopped
+    by a client-side `osm_key === 'place'` check.** Found empirically, not anticipated: Photon's
+    `layer` param rejects values like `town`/`village`/`hamlet` outright (its real enum is `house,
+    street, locality, district, city, county, state, country, other`) — village/hamlet results are
+    bucketed under `city`/`locality` regardless. Even with the corrected `layer=city&layer=locality`,
+    a search for "Tokyo" surfaced a convention centre and a department store as `landuse` polygons
+    named after the place they sit in; filtering to `osm_key === 'place'` (OSM's own tag for an
+    actual settlement) removes that class of noise without excluding genuine hamlets (re-verified
+    against the "Vik"/"Garmisch"/"Adligenswil" cases below).
+12. **Photon subdivision resolution is point-in-polygon against the bundled admin-1 topology, not
+    name-matching.** Found empirically: Photon returns the *localized* region name ("Bayern"), while
+    `subdivisions.json` (built from GeoNames) has the English one ("Bavaria") — checked directly
+    against Germany's real subdivision rows. Text-matching would miss constantly; geometry doesn't
+    care what language the name is in. Implemented with `d3-geo`'s `geoContains` against whatever
+    `loadCountryTopology` already has cached for the map, so no new data is fetched.
+13. **§6's "send a descriptive User-Agent" is not implemented — it isn't implementable.** Browser
+    `fetch()` is on the platform's forbidden-header list; no client-side workaround exists (this is
+    deliberate: it's a phishing/impersonation guard, not an oversight). The request goes out as a
+    plain CORS GET with the browser's own real UA. Flagged to the user before writing any Photon code
+    rather than silently dropping the requirement.
+
+### Edge cases found this session (the brief asks to note these)
+
+1. **A logged place whose continent is GeoNames' "Seven seas (open ocean)" pseudo-bucket was
+   invisible in the Places tab — a real bug, caught by manual testing, not the unit tests.**
+   `coverage.ts`'s `CONTINENTS` deliberately excludes that bucket (it's not one of the seven you can
+   "touch"), and `placesList.ts` was iterating that same curated list to assemble its output —
+   so a country GeoNames buckets there (found live: South Georgia, added as a manual place) had a
+   perfectly good active entry that never appeared anywhere in the list, though it still coloured
+   correctly on the map (which doesn't group by continent). Fixed by appending any continent with
+   real content that isn't one of the seven, sorted, after them — never dropping it. New test in
+   `placesList.test.ts` pins this down. Worth remembering: `coverage.ts`'s `CONTINENTS` is a
+   *counting* concern (touched-out-of-7), not an exhaustive list of valid continent values — any
+   future code that iterates it as if it were the latter will have this same bug.
+2. **Point-in-polygon subdivision resolution can miss for a village sitting right on a simplified
+   coastline** — confirmed live with Vík í Mýrdal (Iceland): its real coordinates fall just outside
+   the mapshaper-simplified Suðurland polygon (an inland point at the same longitude resolves fine;
+   the issue is specifically the coastline generalisation, verified by testing points at increasing
+   latitude toward the coast). Not a bug — this is exactly the "coastline rounding" case
+   `resolveSubdivisionByPoint`'s own doc comment already anticipates, and the fallback (city still
+   added, linked to the country only) works as designed. Recorded here as a confirmed real instance,
+   not a hypothetical.
+3. **An online-added city with `population: 0` can rank far down a crowded query.** Photon doesn't
+   report population, so an added city always scores at the bottom among same-substring matches in
+   `searchCities`'s population-weighted ranking. Harmless for the realistic case (a search term
+   distinctive enough that little else matches — nothing else does, and the acceptance test's own
+   `search → add → find again` loop confirms it), but a bare, very common fragment (tested with "vik"
+   after adding "Vik, Iceland" — 118 total matches worldwide) can push a freshly-added place past the
+   default 20-result window even though it's genuinely present (confirmed at rank 111 by widening the
+   query limit). Not fixed — inventing a population estimate or special-casing online-city relevance
+   is a real design question of its own, not a 4b-scope bug fix.
+4. **Restoring a soft-deleted place via `setPlaceStatus` after re-adding it keeps working exactly as
+   4a designed** (`repo.restore`) — re-exercised end to end this session (add → remove → re-add the
+   same city through search) with no new findings; noted only because it's easy to assume UI-level
+   flows might hit a path the harness never did.
+
+### Left undone (correctly, per scope)
+
+No trips, no photos — `CountryDetail`'s photos section is a placeholder label only, and nothing
+references a trip anywhere (the status sheet has no "which trip" row, since Phase 5 doesn't exist
+yet). `TripsScreen` and `SettingsScreen` are untouched. Nothing here attempts a Lighthouse/perf trace,
+consistent with prior phases — no such tool was available in this environment either.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (**80/80** — 16 coverage + 40 cascade + 13 placesList
+  + 11 bulkResolve) and `npm run build` (under Node 20 — see Phase 1's note, this sandbox's
+  non-interactive shells still default to apt Node 18) all clean.
+- Browser (Vite dev, 390×844 and 360×800, dark), against the real seeded dataset:
+  - **Every acceptance criterion in `04-places.md`, exercised through the real UI (not the deleted
+    harness) against the full 170,486-city dataset**:
+    - "Garmisch-Partenkirchen" → search → set to **Visited** creates derived **Bavaria** and
+      **Germany**, both also visited, confirmed by reading the live entry rows back out of Dexie by
+      name.
+    - "San Francisco" (top-ranked hit) set to **Lived** → creates **California**/**United States**
+      as lived; then "Chicago" set to **Visited** → **United States stays Lived**, California stays
+      Lived, Illinois shows Visited — the exact rule the user asked for in Phase 4a, now proven
+      through the real search-and-sheet UI rather than the debug harness.
+    - "Tórshavn" → creates the **Faroe Islands** (flag 🇫🇴, code FO) as its own country — never a `DK`
+      row — with subdivision Streymoy.
+    - Removing Tórshavn (its only city) via the status sheet's "Remove" action soft-deletes **all
+      three** rows (city, Streymoy, Faroe Islands) — confirmed `deletedAt` set on each, zero active
+      rows remain for `FO`, nothing hard-deleted.
+    - "Vík í Mýrdal" found **zero** local results and **one** online result (Photon); added it,
+      confirmed the stored row has `source: 'online'`; reloaded with `window.fetch` monkey-patched to
+      always reject (simulating offline) and confirmed the place is still in the Places list and
+      still locally searchable (see Edge case 3 for the one caveat on generic-query ranking).
+    - Map recolours with **no reload** confirmed repeatedly: Japan/Tokyo turned visited-green
+      immediately after the sheet closed; the world map showed all ten-plus logged countries
+      correctly coloured (US amber/lived, Greenland/Iceland/Argentina/etc. green/visited) without
+      any navigation.
+    - Quick add: 10 lines pasted (`Reykjavik, Nuuk, Ushuaia, Springfield, Zurich, Marrakesh, Suva,
+      Wellington, Bogota, Nowhereaskdjaskldj`) → 8 auto-matched cleanly (including correctly
+      accent-restoring "Zurich"→"Zürich", "Bogota"→"Bogotá"), **two** ambiguous (Springfield *and*
+      Suva, exceeding the "one ambiguous name" requirement), one correctly reported as no match.
+      Picked a **non-default** candidate for Springfield (Illinois over the top-ranked Missouri) to
+      prove the override path works, unchecked "Include" on Bogota to prove skip works, committed →
+      "Added 8 places", and confirmed Illinois (not Missouri) is the subdivision actually recorded.
+  - **Manual add**: "Grytviken" / South Georgia and the South Sandwich Islands, coordinates left
+    blank → row created with `source: 'manual'`, `lat: null`, `lon: null`, negative synthetic id;
+    opened the status sheet automatically on success.
+  - **Country detail**: opened from a map tap (Japan) and from a Places-list row tap (Morocco) —
+    both routes work. Admin-1 mini-map rendered all 47 Japanese prefectures once a genuine
+    `ResizeObserver` delivery occurred (see notes below); tapping a region opened the status sheet
+    for that subdivision, stacked correctly over the still-open detail screen, and closing the sheet
+    left the detail screen exactly as it was. Stats (regions visited, area, population, capital) read
+    correct real values in both cases.
+  - No horizontal overflow at 360px for the search results list, the status sheet (including its
+    four ~70–90px-tall option buttons), or the country detail screen — checked by comparing
+    `scrollWidth`/`clientWidth` directly, not just eyeballing a screenshot.
+  - App left in a clean state afterward: `entries` cleared, `syncState.revision` reset to 0,
+    `settings` untouched (all still at their defaults — nothing in this session's testing needed to
+    change `statMode`/`countryDenominator`). The extra non-bundled `cities` rows (Vik, Grytviken) were
+    left in place deliberately — they're the same kind of residue a real user's online/manual adds
+    would leave, not test pollution to scrub.
+
+### Notes for the next session
+
+- **`cascadeRepo.ts` remains the only sanctioned writer to `entries`; `geo/cityWrites.ts` is now the
+  only sanctioned writer to `cities` outside `loader.ts`'s bulk reference seed.** Going around either
+  risks exactly the class of silent, non-crashing bug this phase's own verification caught once
+  already (Edge case 1 above).
+- **Two z-index layers are now established and documented inline**: `30` for full-screen overlays
+  (`FullScreenOverlay`, so `CountryDetail`/`BulkAddScreen`/`ManualPlaceForm` all share it), `40` for
+  the place-status sheet, deliberately above everything else since it can stack on top of a
+  full-screen overlay. Phase 5's trip screens and Phase 6's photo viewer should probably slot into
+  this same scheme rather than inventing new numbers.
+- **The status sheet's date field is a single date, not a range** — it writes the same value to both
+  `firstVisited` and `lastVisited`. This was a deliberate 4b simplification (the brief says "optional
+  date," singular); Phase 5's trips, which naturally have a start/end date, are the more likely home
+  for real date-range capture. Worth deciding explicitly when Phase 5 starts whether trips backfill
+  `firstVisited`/`lastVisited` on their member entries, or leave that alone.
+- **Preview-tool artifacts, same family as Phase 3/3b/4a's, seen again — none of them app bugs, all
+  confirmed by cross-checking `preview_eval`/`preview_snapshot` ground truth against the flaky tool**:
+  (a) `preview_screenshot` timed out repeatedly, including well after the page had genuinely finished
+  rendering (confirmed via direct DOM queries in the same moment) — always recovered on a retry. (b)
+  A `ResizeObserver`-dependent component that mounts *without* a full page navigation (i.e. any
+  overlay opened by a click, not just `WorldMap` after a hash-navigation) does not reliably receive
+  its first callback in this automation environment — confirmed directly this session for the new
+  `CountryAdmin1Map`: `getBoundingClientRect()` reported a correct non-zero size while the component's
+  own `size` state stayed at its zero default, and a genuine `preview_resize` viewport change (not a
+  synthetic DOM event) was what finally triggered the real callback. Real phone usage won't hit this
+  — the tab is always focused when a user is tapping into it. (c) Long-running Dexie work (the
+  multi-minute forced reseed above) keeps running in the browser tab even after a `preview_eval`
+  call waiting on it times out at 30 s — poll with a fresh short `preview_eval` afterward rather
+  than assuming the operation was interrupted.
+- `resolveSubdivisionByPoint` (in `photon.ts`) piggybacks on whatever `loadCountryTopology` already
+  has cached for the map — the first online-add for a given country will pay that fetch cost
+  up front rather than it being pre-warmed.

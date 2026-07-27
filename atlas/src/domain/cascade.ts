@@ -363,6 +363,54 @@ export function effectiveStatus(state: CascadeState, kind: EntryKind, refId: str
   return desired(entryKey(kind, refId))
 }
 
+export interface StatusCause {
+  status: Status
+  because: PlaceRef
+}
+
+/**
+ * Why does a place show a status that isn't (fully) its own choice? Walks down
+ * through purely-derived intermediates — rows that exist only to carry a link,
+ * with no explicit choice of their own — to the nearest place whose own
+ * explicit choice actually accounts for the target's status. This is how the
+ * status sheet can say "showing lived because you lived in Berlin" for a
+ * country explicitly set to visited but sitting under a lived city, rather
+ * than naming the (also derived, also just "lived") subdivision in between.
+ *
+ * Returns null when the place's own explicit choice already accounts for its
+ * status, or when it has no status at all.
+ */
+export function explainStatus(state: CascadeState, kind: EntryKind, refId: string): StatusCause | null {
+  const virtual = virtualise(state)
+  const key = entryKey(kind, refId)
+  const { children, desired } = makeResolver(state, virtual)
+
+  const effective = desired(key)
+  if (effective === null) return null
+
+  const own = virtual.get(key)?.explicitStatus ?? null
+  if (own !== null && statusRank(own) >= statusRank(effective)) return null
+
+  const cause = findExplicitCause(children, virtual, key, statusRank(effective))
+  return cause ? { status: effective, because: { kind: cause.kind, refId: cause.refId } } : null
+}
+
+/** First node at any depth below `key` whose *own* explicit choice matches `targetRank`. */
+function findExplicitCause(
+  children: ReadonlyMap<string, Set<string>>,
+  virtual: ReadonlyMap<string, VirtualNode>,
+  key: string,
+  targetRank: number,
+): VirtualNode | null {
+  for (const childKey of children.get(key) ?? []) {
+    const node = virtual.get(childKey)
+    if (node?.explicitStatus && statusRank(node.explicitStatus) === targetRank) return node
+    const deeper = findExplicitCause(children, virtual, childKey, targetRank)
+    if (deeper) return deeper
+  }
+  return null
+}
+
 /**
  * Recompute every derived row from scratch — used after a sync merge (plan §7.3),
  * where derived rows are never merged, and as the repair path for any state that

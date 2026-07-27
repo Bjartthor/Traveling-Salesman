@@ -1,0 +1,103 @@
+.place-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.place-search__input {
+  min-height: var(--tap-target-min);
+  padding: var(--space-3) var(--space-4);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  color: var(--chalk);
+  font-size: var(--text-base);
+}
+
+.place-search__results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.place-search__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.place-search__list li + li {
+  border-top: 1px solid var(--contour);
+}
+
+.place-search__result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--shelf);
+  text-align: left;
+}
+
+.place-search__result:hover {
+  background: var(--contour);
+}
+
+.place-search__result:disabled {
+  opacity: 0.6;
+}
+
+.place-search__result-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.place-search__result-name {
+  color: var(--chalk);
+  font-size: var(--text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-search__result-meta {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-search__divider {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--haze);
+  padding-top: var(--space-1);
+}
+
+.place-search__status {
+  font-size: var(--text-sm);
+  color: var(--haze);
+  padding: var(--space-2) 0;
+}
+
+.place-search__error {
+  font-size: var(--text-sm);
+  color: var(--lived);
+}
+
+.place-search__manual-trigger {
+  align-self: flex-start;
+  min-height: var(--tap-target-min);
+  padding: var(--space-1) 0;
+  color: var(--visited);
+  font-size: var(--text-sm);
+}

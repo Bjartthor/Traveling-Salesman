@@ -1,0 +1,50 @@
+/* z-index 30: above the tab content, below the place-status sheet (40) so
+   the sheet can still stack on top of any of these. */
+.full-screen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--abyss);
+}
+
+.full-screen-overlay__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  padding-top: max(var(--space-4), env(safe-area-inset-top));
+  border-bottom: 1px solid var(--contour);
+}
+
+.full-screen-overlay__title {
+  font-size: var(--text-lg);
+  color: var(--chalk);
+}
+
+.full-screen-overlay__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  font-size: var(--text-lg);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.full-screen-overlay__close:hover {
+  color: var(--chalk);
+}
+
+.full-screen-overlay__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+}
