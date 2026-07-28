@@ -1,0 +1,59 @@
+/* z-index 40: same layer as the place-status sheet — this can be triggered
+   from inside a full-screen overlay (TripDetail's reopen action). */
+.trip-conflict-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: color-mix(in srgb, var(--abyss) 60%, transparent);
+}
+
+.trip-conflict {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.trip-conflict__title {
+  font-size: var(--text-lg);
+  color: var(--chalk);
+}
+
+.trip-conflict__body {
+  font-size: var(--text-sm);
+  color: var(--haze);
+}
+
+.trip-conflict__option {
+  min-height: var(--tap-target-min);
+  padding: var(--space-3);
+  text-align: left;
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  color: var(--chalk);
+}
+
+.trip-conflict__option:hover {
+  border-color: var(--haze);
+}
+
+.trip-conflict__cancel {
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  text-align: center;
+}
+
+.trip-conflict__cancel:hover {
+  color: var(--chalk);
+}

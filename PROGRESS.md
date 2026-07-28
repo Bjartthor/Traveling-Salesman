@@ -946,3 +946,220 @@ consistent with prior phases — no such tool was available in this environment 
 - `resolveSubdivisionByPoint` (in `photon.ts`) piggybacks on whatever `loadCountryTopology` already
   has cached for the map — the first online-add for a given country will pay that fetch cost
   up front rather than it being pre-warmed.
+
+## Phase 5 — Trips (done)
+
+Trip lifecycle, auto-capture while a trip is active, the persistent banner, the Trips tab (Active +
+Past-as-stamps), the full trip detail screen with a route map, and trip statistics on the You tab.
+Two scope questions were asked and answered before writing code (see Deviations 1–2); everything
+else below is a documented default, decided and noted rather than asked, following the session's own
+steer and the precedent set by earlier phases.
+
+### What was built
+
+- **Trip lifecycle** [`domain/tripRepo.ts`](atlas/src/domain/tripRepo.ts) — `getActiveTrip`,
+  `createTrip` (endDate present at creation = a retroactive, already-closed trip; endDate absent =
+  starting now, `isActive: true`), `closeTrip`/`reopenTrip` (reopen clears `endDate`, "resumes
+  capture"), `softDeleteTrip` (trip only, never its places), `attachEntryToTrip`/
+  `detachEntryFromTrip` (idempotent, revives a soft-deleted membership row rather than duplicating
+  it), `tripIdsForEntry`, `entryIdsForTrip`. `resolveConflict` is the one shared "only one trip
+  active" resolution (`close` stamps today's date if none is set; `leaveOpen` just clears
+  `isActive`), used identically by `createTrip` and `reopenTrip`.
+- **Auto-attach, wired into the existing single writer** — [`cascadeRepo.ts`](atlas/src/domain/cascadeRepo.ts)'s
+  `setPlaceStatus` now also looks up the entry it just wrote (by `[kind+refId]`, the *target* only,
+  never the ancestors the cascade creates alongside it) and calls
+  `tripRepo.autoAttachToActiveTrip`, inside the same transaction (widened to include `db.trips`/
+  `db.tripEntries`). One rule handles "attach at the city level" and "plus any country added
+  directly" (05-trips.md task 1) at once: whatever kind of place the user *directly* set attaches;
+  whatever it implies upward does not. Re-touching an already-attached place (a second visit) is a
+  harmless no-op, which is exactly "existing entries touched...are also attached."
+- **Trip statistics, pure** — [`domain/tripStats.ts`](atlas/src/domain/tripStats.ts):
+  `tripDurationDays` (inclusive day count, `endDate ?? today` — the one function the active-trip
+  banner's day count and every duration stat share), `computeTripStats` (total/longest/most
+  countries/average, active trip included per Deviation 2), `newCountriesByTrip` ("countries first
+  visited on each trip" — earliest trip by `startDate`, ties broken by `createdAt`, disqualified by
+  an earlier non-trip `firstVisited` record). 10 tests in
+  [`tripStats.test.ts`](atlas/src/domain/tripStats.test.ts).
+- **Trip place grouping, pure** — [`domain/tripPlaces.ts`](atlas/src/domain/tripPlaces.ts):
+  `groupTripPlaces` (country → subdivision → city from a trip's attached entries alone, mirroring
+  `placesList.ts`'s bucket shape but with trip-membership as the only criterion — no filter/sort),
+  `tripCountryCodes`, `tripCityRows`. 9 tests in
+  [`tripPlaces.test.ts`](atlas/src/domain/tripPlaces.test.ts).
+  [`domain/tripPlacesRepo.ts`](atlas/src/domain/tripPlacesRepo.ts) is the Dexie-facing glue —
+  `loadTripPlaces`/`loadTripCountryCodes`/`loadTripCountryCodesBatch` (reference tables fetched once,
+  shared across trips) and `loadCountryFirstVisited` (earliest `firstVisited` per country across
+  *all* active entries, trip-attached or not) — shared by the Trips tab's stamps, trip detail, and
+  the You-tab statistics so the joins aren't re-derived a third and fourth time.
+- **The stamp** [`components/trips/TripStamp.tsx`](atlas/src/components/trips/TripStamp.tsx)/`.css` —
+  rounded rect, double hairline border in `--haze`, name in Archivo Expanded (uppercase + wide
+  letter-spacing for the "small caps feel"), IBM Plex Mono date range, a country-code grid
+  (`repeat(auto-fill, minmax(44px,1fr))`, legible at 1 code and at 15), rotation seeded from the trip
+  id via [`domain/stampSeed.ts`](atlas/src/domain/stampSeed.ts) (`stampRotationDeg`, −2..+2°;
+  `stampInkSeed` for the texture — 4 tests in
+  [`stampSeed.test.ts`](atlas/src/domain/stampSeed.test.ts)), entrance animation dropped under
+  `prefers-reduced-motion` (rotation itself is a static `transform`, unaffected), cover-photo slot
+  wired (`coverPhotoUrl` prop, desaturated/dimmed background) but always `null` — Phase 6. The "edge
+  texture suggesting uneven ink" is an SVG `feTurbulence`/`feDisplacementMap` filter applied only to
+  two thin absolutely-positioned border layers, never to the text content, so nothing legible blurs.
+- **Trip form + conflict dialog** — [`TripForm.tsx`](atlas/src/components/trips/TripForm.tsx)/`.css`
+  (one component, three variants via `showEndDate`/`requireEndDate`: "start now" has no end-date
+  field at all; "log a past trip" requires one; "edit" makes it optional and never touches
+  `isActive`) and [`TripConflictDialog.tsx`](atlas/src/components/trips/TripConflictDialog.tsx)/`.css`
+  (close-old vs. leave-old-open vs. cancel), resolved *before* the form ever opens (Deviation 3) so
+  the form itself never pauses mid-submit for a second dialog.
+- **Trips tab** [`screens/TripsScreen.tsx`](atlas/src/screens/TripsScreen.tsx)/`.css` — Active section
+  (a card if one is running, else a hint + "Start a trip"/"Log a past trip" entry points) then Past
+  stamps in reverse chronological order, overlapping via negative `margin-top` (paint order alone
+  gives the "stacked passport page" look — no z-index bookkeeping needed).
+- **Active-trip banner** [`ActiveTripBanner.tsx`](atlas/src/components/trips/ActiveTripBanner.tsx)/`.css` —
+  one mono line in `--visited`, pinned between `.app-content` and `BottomNav` in `App.tsx` (so it
+  survives every route), name/day-count/place-count (via `tripDurationDays` and a live
+  `tripEntries` count), tap opens the trip detail overlay directly, dismiss ✕.
+  [`domain/activeTripBannerStore.ts`](atlas/src/domain/activeTripBannerStore.ts) tracks dismissal by
+  *trip id* (not a bare boolean) in a plain in-memory Zustand store — nothing persisted, so a reload
+  or app restart shows it again for free, and starting a different trip mid-session does too.
+- **Trip detail** [`components/trips/TripDetail.tsx`](atlas/src/components/trips/TripDetail.tsx)/`.css`
+  — full-screen overlay (Deviation 4), opened via
+  [`domain/tripDetailStore.ts`](atlas/src/domain/tripDetailStore.ts) from the banner, the active card,
+  or a stamp: the route map, duration/countries/new-to-you stats, close-or-reopen + edit actions,
+  countries → subdivisions → cities (tapping any row opens the same global place-status sheet
+  everywhere else uses), a notes textarea (saves on blur, no separate save step — same "tapping is
+  the action" philosophy as the status sheet), the empty cover-photo section, and delete with a
+  confirmation dialog that says outright it won't touch the places.
+- **Route map** [`components/trips/TripRouteMap.tsx`](atlas/src/components/trips/TripRouteMap.tsx)/`.css`
+  — fit-to-container, no pan/zoom (same precedent as `CountryAdmin1Map`, at world scope): the
+  projection is `fitExtent`ed to just the trip's country features (falling back to the whole sphere
+  when the trip has none yet), trip countries keep their real status colour, everything else is
+  muted `--contour` at low opacity, and cities with known coordinates get a small dot marker.
+  Read-only — editing always goes through the status sheet, never a map tap.
+- **PlaceStatusSheet gained a Trips section**
+  [`PlaceStatusSheet.tsx`](atlas/src/components/places/PlaceStatusSheet.tsx)/`.css` — a toggle button
+  per non-deleted trip (shown once the place has an entry), attaching/detaching via
+  `tripRepo.attachEntryToTrip`/`detachEntryFromTrip`. This one mechanism is both "move a place between
+  trips" (task 1) and how a retroactive trip gets "populated by hand" — no second attach path.
+- **You-tab trip statistics** [`screens/SettingsScreen.tsx`](atlas/src/screens/SettingsScreen.tsx)/`.css`
+  (new) — total trips, longest trip (+ name), most countries in one trip (+ name), average trip
+  length, and a per-trip list of newly-first-visited countries. Everything else on the tab (theme,
+  sync, attribution) is left as the original placeholder note — later phases' work, not touched.
+
+### Deviations from the plan/brief, and why
+
+1. **One attach mechanism, not two (asked, confirmed).** Task 1's "add places to it manually" for a
+   retroactive trip and "move a place between trips" are both served by the new Trips toggle in the
+   place-status sheet — no separate "add a place" search flow on the trip detail screen. Confirmed
+   over adding a second attach path; keeps scope tight and there is exactly one place in the codebase
+   that writes a `tripEntries` row on the user's explicit say-so.
+2. **The active trip counts in every You-tab stat, using today as a stand-in end date (asked,
+   confirmed).** Rejected alternative: exclude the running trip from "longest"/"average" until it
+   closes. Chosen so an in-progress trip is reflected immediately rather than looking like it doesn't
+   exist statistically yet.
+3. **The "only one trip active" conflict is resolved *before* `TripForm` opens, not inside its
+   submit handler.** An earlier design tried threading the conflict dialog through the form's
+   `onSubmit` (pausing mid-submit, waiting on a second dialog, then resuming) — correct but awkward.
+   Splitting "Start a trip" into two steps (check for a conflict → resolve it if any → *then* show a
+   plain name/date form) is simpler and reads better: the conflict is about the *old* trip, the form
+   is about the *new* one, and they don't need to interleave.
+4. **Trip detail is a full-screen overlay, not a routed screen** — same call Phase 4b made for
+   `CountryDetail`, for the same reasons (no `HashRouter` route-table change, no back-button design
+   question for a sheet stacked on top of a tab).
+5. **`isActive` conflict resolution's "close the old one" defaults the end date to today**, with no
+   date picker in the conflict dialog itself — one tap, consistent with the app's "tapping is the
+   action" pattern elsewhere (the status sheet's buttons, `closeTrip`'s own one-tap action). A more
+   precise back-dated closure is always available afterward via that trip's own Edit form.
+6. **Notes save on blur**, no separate save button — same immediacy precedent as the status sheet.
+7. **The stamp's rotation and ink-texture seed both derive from a plain string hash of the trip id**
+   ([`stampSeed.ts`](atlas/src/domain/stampSeed.ts)), not a cryptographic one — determinism is the
+   only requirement (plan §8: "a given trip always looks the same"), and a fast, pure `Math.imul`
+   hash is simplest.
+
+### Edge cases found this session (the brief asks to note these)
+
+1. **`trips`'s `isActive` index (declared back in Phase 1's schema, `'id, isActive, updatedAt'`) is
+   silently non-functional for querying.** IndexedDB keys can't be booleans — a boolean-valued
+   property is simply never entered into an index built on it, no error, just an index that never
+   matches anything through `where('isActive')`. Not a Phase 5 bug (the schema line predates this
+   phase), but this phase is the first to actually need "the active trip," so it's the first to hit
+   it. Routed around by reading the (always small) `trips` table directly and filtering in memory
+   (`getActiveTrip` in `tripRepo.ts`) rather than trusting the index. No migration needed — Dexie
+   doesn't validate index feasibility at schema-declare time, and nothing else was relying on that
+   index actually working.
+2. **A live-query place count takes a beat to reflect a just-committed transaction.** Manually
+   tested a status-sheet commit and read the banner's place count in the same instant — it briefly
+   still showed the pre-write value before the `useLiveQuery` subscription's next tick updated it.
+   Confirmed via a direct Dexie read that the underlying `tripEntries` row was already correct;
+   this is async re-render timing, not a bug in the write path.
+3. **Two distinct city rows can exist for what looks like the same place** — re-encountered Phase
+   4b's bundled-vs-online duality while testing "a city can belong to two trips": searching
+   "Reykjavik" once the full 170k-row bundled dataset had finished loading surfaced both the
+   Phase-2 bundled row (accented "Reykjavík", with its subdivision) and the earlier Phase-4b
+   online-added row (unaccented "Reykjavik", the one that actually had an entry). Picking the wrong
+   one opens the status sheet for an unrelated, entry-less row. Not a Phase 5 bug — a pre-existing
+   identity question Phase 4b's own notes already flagged (Edge case 3 there), just the first time
+   trip-membership testing happened to walk into it.
+
+### Left undone (correctly, per scope)
+
+Photos — the stamp's `coverPhotoUrl` prop and the trip detail screen's "Cover photo" section are
+wired but always empty/`null`, exactly as instructed. Nothing on the You tab beyond trip statistics
+(headline-stat switch, theme, Google Drive sync, attribution) — later phases' work, left as the
+original placeholder note rather than half-built ahead of its own phase.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (**103/103** — 16 coverage + 40 cascade +
+  13 placesList + 11 bulkResolve (all pre-existing) + 9 tripPlaces + 10 tripStats + 4 stampSeed
+  (new this phase)) and `npm run build` all clean.
+- Browser (Vite dev, 390×844, dark), **every acceptance criterion in `05-trips.md` exercised through
+  the real UI**, against the real seeded dataset:
+  - Started "Test Road Trip" → added Reykjavík (online-resolved), Paris, Tokyo through the normal
+    search-and-status-sheet flow while it was active → banner counted 1, 2, 3 places in step, each
+    confirmed against `tripEntries` rows directly. Closed it → stamp shows exactly those 3 cities'
+    derived countries (FR/IS/JP at that point).
+  - Set a place's status (Cairo/Egypt) with **no** active trip → committed with zero console errors
+    and zero `tripEntries` rows for it.
+  - Reopened the closed trip → `isActive` true, `endDate` cleared, banner reappeared; added a 4th
+    city (Berlin) → banner went to 4 places, confirming "resumes capture."
+  - Starting a second trip while one was active correctly showed the conflict dialog; tested **both**
+    resolutions for real (not just reasoned about) — "close" set the old trip's `endDate` to today
+    and deactivated it, "leave open" deactivated it with `endDate` still `null`, in both cases the
+    new trip became the sole active one.
+  - Attached the same Reykjavík entry to a second trip via the status sheet's new Trips toggle →
+    confirmed two live `tripEntries` rows, one per trip, same `entryId`.
+  - Created "Old Backpacking Trip" with 2019 dates via "Log a past trip" (`isActive: false`
+    immediately, no conflict prompt shown) → attached Paris to it by hand via the same Trips toggle →
+    it appeared as a proper stamp with FR.
+  - Deleted "Test Road Trip" (4 places) → confirmed `deletedAt` set on the trip, **zero** change in
+    the active `entries` count (11 before, 11 after), the trip vanished from the Trips tab, and the
+    world map still showed all four countries visited/lived exactly as before — "leaves every place
+    intact and the map unchanged," not just asserted but diffed.
+  - Built a 15-country trip ("Grand Tour") and re-checked the 1-country stamp ("Old Backpacking
+    Trip") side by side — both render legibly (the 15-code grid wraps to 3 rows of up to 6, the
+    1-code stamp doesn't stretch to fill the row).
+  - Dismissed the active-trip banner, then did a real `window.location.reload()` (not just a
+    re-render) → banner reappeared showing the same still-active trip, confirming the dismissal is
+    session-only.
+  - Trip statistics on the You tab hand-checked against the fixture data present at the time (3 live
+    trips after the deletion above): total 3, longest 20 days/"Old Backpacking Trip", most countries
+    1 tied between two trips, average `(20+1+1)/3 = 7.3` days, and the first-visited list correctly
+    omitted the deleted trip's countries entirely.
+  - No horizontal overflow observed on the Trips screen, the stamps, the trip detail overlay (route
+    map, stats grid, places tree, notes textarea), or the conflict dialog at 390×844.
+  - App left in a clean state afterward: `entries`/`trips`/`tripEntries` all cleared, `syncState`
+    revision reset to 0. The stray online-added city row from testing (negative-id "Reykjavik") was
+    left in place deliberately — same precedent Phase 4b set: it's ordinary residue a real user's
+    online add would leave, not test pollution to scrub.
+
+### Notes for the next session
+
+- **`cascadeRepo.setPlaceStatus` is now also the trip-capture point** — it calls
+  `tripRepo.autoAttachToActiveTrip` internally, so anything that writes an entry outside it (there
+  shouldn't be anything) would silently skip trip capture too, the same class of risk Phase 4a/4b
+  already flagged for the cascade itself.
+- **`domain/tripPlacesRepo.ts` is the shared resolver for "this trip's places," reused three ways**
+  (Trips-tab stamps, trip detail, You-tab statistics). Extend it rather than re-deriving the
+  entries→cities→groups join a fourth time.
+- **Don't add a `where('isActive')` Dexie query expecting it to work** — see Edge case 1. Read
+  `trips` directly and filter in memory; the table is small enough that this is not a performance
+  concern.
+- Phase 6's photo work has two exact slots ready: `TripStamp`'s `coverPhotoUrl` prop and
+  `TripDetail`'s empty "Cover photo" section — both already styled for it, just need a real URL.

@@ -17,6 +17,7 @@ import {
   type Mutation,
   type SetStatusRequest,
 } from '@/domain/cascade'
+import { autoAttachToActiveTrip } from '@/domain/tripRepo'
 
 /**
  * A city entry points at a `cities` row that is not there. Loud on purpose: the
@@ -97,11 +98,17 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
   }
 }
 
-/** Set a place's status, creating and recomputing whatever it implies above it. */
+/**
+ * Set a place's status, creating and recomputing whatever it implies above
+ * it. If a trip is currently active, also attaches the *target* entry (never
+ * the ancestors this implies) to it — see @/domain/tripRepo.autoAttachToActiveTrip.
+ */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
-  await db.transaction('rw', db.entries, db.cities, db.syncState, async () => {
+  await db.transaction('rw', db.entries, db.cities, db.syncState, db.trips, db.tripEntries, async () => {
     const state = await loadCascadeState(request.kind === 'city' ? [request.refId] : [])
     await applyMutations(setStatus(state, request))
+    const target = await db.entries.where('[kind+refId]').equals([request.kind, request.refId]).first()
+    if (target) await autoAttachToActiveTrip(target.id)
   })
 }
 

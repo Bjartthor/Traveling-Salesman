@@ -7,9 +7,10 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import type { Entry, Status } from '@/db/types'
+import type { Entry, Status, Trip } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
+import { attachEntryToTrip, detachEntryFromTrip, listTrips, tripIdsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
 import { flagEmoji } from '@/geo/flags'
@@ -60,6 +61,25 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     const becauseInfo = await resolvePlaceInfo(cause.because.kind, cause.because.refId)
     return { entry, explanation: { status: cause.status, becauseName: becauseInfo?.name ?? 'a place inside it' } }
   }, [place.kind, place.refId])
+
+  const trips = useLiveQuery(() => listTrips())
+  const sortedTrips = trips ? [...trips].sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? '')) : []
+  const entryId = data?.entry?.id
+  const attachedTripIds = useLiveQuery(
+    () => (entryId ? tripIdsForEntry(entryId) : Promise.resolve(new Set<string>())),
+    [entryId],
+  )
+
+  async function toggleTrip(trip: Trip, attached: boolean) {
+    if (!entryId) return
+    setError(null)
+    try {
+      if (attached) await detachEntryFromTrip(trip.id, entryId)
+      else await attachEntryToTrip(trip.id, entryId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const [date, setDate] = useState('')
   const [dateTouched, setDateTouched] = useState(false)
@@ -171,6 +191,28 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
             )
           })}
         </div>
+
+        {data?.entry && sortedTrips.length > 0 && (
+          <div className="place-sheet__trips">
+            <p className="place-sheet__trips-label">Trips</p>
+            <div className="place-sheet__trips-list">
+              {sortedTrips.map((trip) => {
+                const attached = attachedTripIds?.has(trip.id) ?? false
+                return (
+                  <button
+                    key={trip.id}
+                    type="button"
+                    className={`place-sheet__trip-toggle${attached ? ' place-sheet__trip-toggle--on' : ''}`}
+                    aria-pressed={attached}
+                    onClick={() => void toggleTrip(trip, attached)}
+                  >
+                    {trip.name}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {data?.entry && (
           <button type="button" className="place-sheet__remove" onClick={() => void remove()} disabled={pending}>

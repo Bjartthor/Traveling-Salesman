@@ -1,0 +1,35 @@
+.trip-route-map {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--abyss);
+  border-radius: var(--radius-md);
+}
+
+.trip-route-map svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.trip-route-map__ocean {
+  fill: var(--shelf);
+}
+
+.trip-route-map__country {
+  stroke: var(--abyss);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.trip-route-map__country--muted {
+  fill: var(--contour);
+  opacity: 0.35;
+}
+
+.trip-route-map__city {
+  fill: var(--chalk);
+  stroke: var(--abyss);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}

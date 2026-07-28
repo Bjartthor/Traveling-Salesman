@@ -7,6 +7,8 @@ import { TripsScreen } from '@/screens/TripsScreen'
 import { SettingsScreen } from '@/screens/SettingsScreen'
 import { PlaceStatusSheet } from '@/components/places/PlaceStatusSheet'
 import { CountryDetail } from '@/components/places/CountryDetail'
+import { ActiveTripBanner } from '@/components/trips/ActiveTripBanner'
+import { TripDetail } from '@/components/trips/TripDetail'
 import './App.css'
 
 function App() {
@@ -22,9 +24,11 @@ function App() {
               <Route path="/settings" element={<SettingsScreen />} />
             </Routes>
           </main>
+          <ActiveTripBanner />
           <BottomNav />
         </div>
         <CountryDetail />
+        <TripDetail />
         <PlaceStatusSheet />
       </GeoGate>
     </HashRouter>

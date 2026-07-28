@@ -1,0 +1,99 @@
+.trip-stamp {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: var(--space-5) var(--space-4);
+  background: var(--shelf);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  transform: rotate(var(--stamp-rotation, 0deg));
+  opacity: 1;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .trip-stamp {
+    animation: trip-stamp-in var(--duration-base) var(--easing-standard);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trip-stamp {
+    animation: none;
+  }
+}
+
+@keyframes trip-stamp-in {
+  from {
+    opacity: 0;
+    transform: rotate(var(--stamp-rotation, 0deg)) scale(1.12);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(var(--stamp-rotation, 0deg)) scale(1);
+  }
+}
+
+.trip-stamp__cover {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: grayscale(1) brightness(0.5);
+  opacity: 0.5;
+}
+
+.trip-stamp__border {
+  position: absolute;
+  border: 1px solid var(--haze);
+  border-radius: var(--radius-lg);
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+.trip-stamp__border--outer {
+  inset: 6px;
+}
+
+.trip-stamp__border--inner {
+  inset: 11px;
+}
+
+.trip-stamp__content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.trip-stamp__name {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--chalk);
+}
+
+.trip-stamp__dates {
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  color: var(--haze);
+}
+
+.trip-stamp__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: var(--space-2);
+}
+
+.trip-stamp__code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--chalk);
+}

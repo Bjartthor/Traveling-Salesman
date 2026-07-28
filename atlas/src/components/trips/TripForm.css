@@ -1,0 +1,55 @@
+.trip-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.trip-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.trip-form__field input {
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  color: var(--chalk);
+  font-size: var(--text-base);
+}
+
+.trip-form__dates {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.trip-form__hint {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.trip-form__error {
+  font-size: var(--text-sm);
+  color: var(--lived);
+}
+
+.trip-form__submit {
+  min-height: var(--tap-target-min);
+  padding: var(--space-3);
+  background: var(--visited);
+  color: var(--abyss);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: var(--text-sm);
+}
+
+.trip-form__submit:disabled {
+  opacity: 0.6;
+}
