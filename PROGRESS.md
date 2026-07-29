@@ -1559,3 +1559,31 @@ EXIF import running with no trip created), are only reachable today via the coun
 - Worth a real-device pass for the two things this environment couldn't fully exercise: an actual OS
   photo-picker interaction, and true multi-touch (real fingers, not synthetic `PointerEvent`s) — see
   the honesty note under Verified.
+
+### Addendum — iOS safe-area handling for the two new fixed full-screen surfaces (same session, user-directed)
+
+A follow-up after a question about iOS support in general: every other fixed full-screen surface in the
+app (`FullScreenOverlay`, `BottomNav`, `PlaceStatusSheet`) already pads for the notch/Dynamic Island and
+home-indicator via `max(<space>, env(safe-area-inset-*))`, established back in earlier phases — but
+this phase's two *new*, custom `position: fixed` surfaces that don't route through `FullScreenOverlay`
+(`PhotoViewer` and `PlacePicker`) had skipped it, found on inspection rather than in the browser (this
+environment has no notched-device emulation to actually see the gap; `env(safe-area-inset-*)` is `0` on
+a plain desktop/generic-mobile viewport, so nothing here was ever visibly broken to *this* testing —
+only on a real notched iPhone).
+
+- [`PhotoViewer.css`](atlas/src/components/photos/PhotoViewer.css): `.photo-viewer__header`'s top
+  padding, `.photo-viewer__footer`'s bottom padding (the caption field), the `⋯` menu's `top` offset
+  (kept in sync with the header so it still sits flush beneath it), and `.photo-viewer__confirm`'s
+  (the delete-confirmation bottom sheet) bottom padding all now use the same `max(...)` pattern.
+- [`PlacePicker.css`](atlas/src/components/photos/PlacePicker.css): same treatment, top and bottom,
+  on its single outer padding declaration.
+
+**Verified**: `npx tsc -b`, `npm run lint`, `npx vitest run` (121/121), `npm run build` all clean.
+Inspected the computed styles directly in-browser rather than trusting the CSS by eye: with
+`env(safe-area-inset-*)` resolving to `0` here, `.photo-viewer__header`'s `padding-top` is `12px`
+(unchanged from before the fix), `.photo-viewer__footer`'s `padding-bottom` is `16px` (unchanged), and
+the `⋯` menu's `top` is `56px` (`44px` tap target + `12px` gap + `0px` inset) — confirms the `max()`
+fallback resolves correctly and nothing regressed visually in an unnotched context, which is the only
+kind this environment can render; the actual safe-area behavior on a real notched device follows from
+the same `env()`/`max()` pattern already proven correct elsewhere in the app, not from anything newly
+verified here.
