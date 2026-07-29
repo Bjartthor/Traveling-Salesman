@@ -1302,3 +1302,260 @@ keeps its original rendering exactly. Final file list for the whole session: `Tr
   the cover-photo `<div>` now both need to be checked together for contrast — currently only
   smoke-tested by reasoning about paint order (cover photo is a later DOM sibling so it correctly
   paints on top), not by attaching a real photo, since Phase 6 hasn't landed yet.
+
+## Phase 6 — Photos (done)
+
+Photo attachment, the resize/EXIF worker pipeline, and the "Import from photos" flow that matches an
+old library against the nearest bundled city and proposes trips by date. Two scope questions were
+asked and answered before writing code (see Deviations 1–2); both narrowed the brief significantly,
+and everything else below is a documented default following the session's own steer.
+
+### What was built
+
+- **Storage** — no schema change at all: `photos`/`photoBlobs` (plan §4) and their indexes were
+  already fully declared back in Phase 1, so this phase needed no Dexie version bump anywhere.
+  [`domain/photoRepo.ts`](atlas/src/domain/photoRepo.ts) is the sanctioned writer (same convention as
+  `cascadeRepo.ts`/`tripRepo.ts`): `attachPhoto` (one transaction across `photos`+`photoBlobs`),
+  `updateCaption`, `reassignPhoto` (moves/clears the `entryId`/`tripId` tagging), `softDeletePhoto`
+  (metadata only — the blob stays until Phase 7 actually uploads it), `listPhotosForEntry(ies)`,
+  `listPhotosForTrip` (with an optional per-entryId filter for a trip's per-city tag view), and the
+  storage-accounting pair `photoStorageStats`/`clearUploadedBlobs`.
+- **The resize/EXIF pipeline** (task 1) — [`photos/imageWorker.ts`](atlas/src/photos/imageWorker.ts):
+  a Web Worker, one job per photo: `exifr` reads GPS + `DateTimeOriginal`, `createImageBitmap(file,
+  {imageOrientation:'from-image'})` decodes **and auto-rotates per the EXIF orientation tag in one
+  step** (see Deviation 3), then `OffscreenCanvas` resizes twice (2048 px full @ q0.82, 320 px thumb)
+  and re-encodes as JPEG — which also **strips EXIF automatically**, since a fresh canvas-encode never
+  carries the source's metadata through (see Deviation 4; not a separate step). [`photos/
+  processImage.ts`](atlas/src/photos/processImage.ts) is the main-thread client: one worker reused
+  across a batch, sequential (bounded peak memory), `processBatch` for progress + a between-item
+  cancel that leaves finished photos intact, and an equivalent main-thread `<canvas>` fallback if the
+  worker can't do the job at all (old Safari).
+- **Attaching photos** (task 2, narrowed — see Deviation 1) —
+  [`components/photos/PhotoGrid.tsx`](atlas/src/components/photos/PhotoGrid.tsx) (thumbnail grid,
+  cover badge) + [`usePhotoBlobUrl.ts`](atlas/src/components/photos/usePhotoBlobUrl.ts) (object-URL
+  lifecycle for thumb/full blobs) + [`AddPhotosButton.tsx`](atlas/src/components/photos/AddPhotosButton.tsx)
+  (`accept="image/*" multiple"`, processes through the worker, writes via `attachPhoto`, inline
+  progress + cancel). [`PhotoViewer.tsx`](atlas/src/components/photos/PhotoViewer.tsx) is the
+  full-screen viewer: swipe between photos and pinch-zoom hand-rolled on the Pointer Events API (no
+  new dependency — recommended and confirmed with the user, see Deviation 2), double-tap to
+  zoom in *and back out*, caption (blur commits, same immediacy precedent as the status sheet's
+  fields), delete with confirmation, and an optional "set as cover" + contextual reassign/untag
+  actions supplied by the caller. New topmost z-index layer, **50**, documented inline (above the
+  existing 30/40 scheme — it can be opened from inside any full-screen detail overlay and nothing
+  needs to stack on top of it).
+- **Country photos** — [`CountryDetail.tsx`](atlas/src/components/places/CountryDetail.tsx)'s Photos
+  section is now real: `AddPhotosButton` tags the country's own entry (gated on that entry existing —
+  never silently creates one just because a photo arrived), and the grid **rolls up every descendant
+  subdivision/city photo** too, not just the country's own (Deviation 1's "no dedicated subdivision/
+  city screen" still needs those photos to surface *somewhere real*).
+- **Trip photos** — [`TripDetail.tsx`](atlas/src/components/trips/TripDetail.tsx)'s old "Cover photo"
+  placeholder is now a real Photos section: a trip-general grid (`entryId: null`, `tripId` set) plus,
+  per the user's explicit ask, a small 📷-and-count affordance on every city row in
+  `TripPlacesTree` opening a nested `CityPhotosOverlay` scoped to `{tripId, entryId: thatCity}` — this
+  is "add a photo to a city you tag" within a trip, without a second full detail screen for cities.
+  "Set as cover" (→ `Trip.coverPhotoId`, already wired to `TripStamp` since Phase 5) and the
+  "tag/untag to a city" reassignment are available from **both** the general grid and every per-city
+  view — a gap in the general grid found and fixed during this session's own testing, see Edge case 3.
+- **EXIF import** (task 3) — the "clever" feature.
+  [`geo/nearestCity.ts`](atlas/src/geo/nearestCity.ts): cities bucketed into a coarse 2° lat/lon grid,
+  built once in-memory and memoised (same "no build-time artefact, no new Dexie index" precedent
+  `geo/search.ts` set in Phase 2 — confirmed with the user over precomputing it in `tools/build-geo.mjs`),
+  searched 3×3 cells only, haversine distance, the 30 / 150 km confidence tiers, falling back to
+  `resolveCountryByPoint` (point-in-polygon against the world topology, the exact `geo/photon.ts`
+  pattern one level up) beyond that. [`domain/exifImport.ts`](atlas/src/domain/exifImport.ts):
+  `groupByProposedPlace` and `clusterTrips` (gap > 4 days), pure, 11 hand-checked tests.
+  [`components/photos/PhotoImportFlow.tsx`](atlas/src/components/photos/PhotoImportFlow.tsx): select →
+  process (worker, progress + cancel, partial results kept) → review (grouped by proposed place,
+  accept/correct/skip, an "uncertain" badge for the 30–150 km band, a no-match bucket offered for
+  manual assignment) → trips (editable cluster names/dates, include/skip) → one confirm tap that does
+  every write. **Nothing is written before that tap** — processed images live only as in-memory Blobs
+  in React state through review and trip-editing; [`components/photos/PlacePicker.tsx`](atlas/src/components/photos/PlacePicker.tsx)
+  (city search + Photon fallback, or a plain country search) backs the "Correct" action without
+  reusing `PlaceSearch` (that component's contract is "pick a result, open the status sheet," not
+  "return a ref to the caller"). On confirm: accepted trip clusters become real `trips` rows first, then
+  each group's target entry is created/upgraded to *visited* — **but only if it isn't already at least
+  visited**, so import can never downgrade a place the user already marked *lived* (a guard the literal
+  brief text doesn't spell out but plan §5's "never lowers" principle clearly implies; see Deviation 5)
+  — then every photo in the batch is attached with its resolved `entryId`/`tripId`.
+- **Storage management** (task 4) — a new section in
+  [`SettingsScreen.tsx`](atlas/src/screens/SettingsScreen.tsx): photo count + bytes from
+  `photoStorageStats`, `navigator.storage.estimate()` against the quota, a persisted-status readout with
+  a "request persistent storage" button calling `navigator.storage.persist()`, and "clear local copies
+  of uploaded photos" calling `clearUploadedBlobs` (real, but inert until Phase 7 — see Left undone).
+
+### Deviations from the plan/brief, and why
+
+1. **Attaching photos is scoped to country and trip only — no standalone subdivision/city photo UI
+   (asked, confirmed).** The brief's task 2 lists "country, subdivision, city or trip detail screen,"
+   but subdivisions and cities have never had a detail screen of their own (only the global
+   `PlaceStatusSheet`, a bottom sheet) — asked before writing any UI code whether to build two new
+   full-screen detail screens just for this, or fold photos into the existing sheet. The user's answer
+   went a different direction from either option offered: no photo UI for subdivision/city as
+   standalone places at all, *but* a photo should be taggable to a city specifically **when that city
+   is part of a trip**. That is exactly what got built (the per-city affordance inside `TripDetail`,
+   Deviation described above) — `PlaceStatusSheet` gained no photo section. Consequence: a city visited
+   outside any trip has no photo UI of its own; see Deviation 1's follow-on below and Left undone.
+2. **Viewer gestures are hand-rolled on Pointer Events, not a third-party library (asked, recommended,
+   confirmed).** The plan's tech stack (00-PLAN.md §3) lists no viewer/gesture package, and the app has
+   otherwise stuck to platform APIs (`d3-zoom` is the one prior exception, already in the stack for the
+   map) — recommended hand-rolling over adding a new dependency, user agreed. This is also what
+   surfaced Edge cases 1–2 below: a library would likely have gotten pointer capture and tap-vs-pan
+   detection right by construction; hand-rolling it meant finding both the hard way, during this
+   session's own testing, not in a bug report.
+3. **`createImageBitmap`'s `imageOrientation: 'from-image'` replaces the manual rotation math the
+   brief implies is needed ("honouring EXIF orientation").** Found while implementing the worker: this
+   option (part of the spec, supported in every engine current enough to have `OffscreenCanvas` at
+   all) decodes an already-correctly-oriented bitmap, so there is no separate rotate-by-orientation-tag
+   step to write or get subtly wrong.
+4. **"Strip EXIF from the stored copies" (task 1 step 4) needed no code at all.** Re-encoding through
+   `OffscreenCanvas.convertToBlob`/`HTMLCanvasElement.toBlob` produces a brand-new JPEG with no
+   embedded metadata, regardless of what the source carried — the brief phrases this as an explicit
+   step, but it falls out of "resize by drawing to a canvas and re-encoding" for free.
+5. **EXIF import never lowers an existing place's status, and only stamps `firstVisited` on a
+   genuinely new entry (not spelled out in 06-photos.md, inferred from plan §5).** Task 3 step 6 says
+   flatly "create the entries with status visited, set firstVisited from the earliest
+   `DateTimeOriginal`" — read literally, importing old photos of a country you've since *lived* in
+   would downgrade it back to *visited*, and re-importing photos of a place you've already logged
+   would overwrite a `firstVisited` you might have set by hand. `cascade.ts`'s own `setStatus` assigns
+   `explicitStatus` unconditionally (by design — a direct user request *should* be able to change an
+   explicit choice), so this guard lives in the import writer itself (`ensureVisitedEntry` in
+   `PhotoImportFlow.tsx`), not in the cascade: skip the status write entirely when an active entry
+   already exists at *visited* or above, and only pass a date when creating the entry for the first
+   time.
+6. **No Dexie migration anywhere this phase** — every field task 1 needs (`entryId`, `tripId`,
+   `caption`, `takenAt`, `lat`, `lon`, `width`, `height`, `bytes`, `driveFileId`, `uploadState`) and
+   every index (`entryId`, `tripId`, `uploadState`) was already in the Phase 1 schema, unused until now.
+
+### Edge cases found this session (the brief asks to note these)
+
+1. **`Element.setPointerCapture` can throw, and it silently ate the entire gesture when it did — a
+   real bug, not just a testing artefact.** Found while verifying pinch-zoom: constructing and
+   dispatching synthetic `PointerEvent`s to test the gesture (no real touch hardware in this
+   environment) hit `"Failed to execute 'setPointerCapture': No active pointer with the given id is
+   found"` — thrown from the very first line of `onPointerDown`, which meant the *rest* of the handler
+   (recording the pointer at all) never ran. A second, real, same-shaped pointer session (e.g. a
+   pointer capture that has become stale between dispatch and handling) would hit the same exception
+   and silently drop that entire touch on a real device too, not just in this test harness. Fixed by
+   wrapping the capture call in `try/catch` — capture is a nice-to-have (keeps receiving events if the
+   finger slides off the image), gesture tracking must not depend on it succeeding. Confirmed
+   before/after: pinch was completely inert (`scale` never left 1) before the fix, computed the
+   correct clamped ratio (verified against hand-worked arithmetic, e.g. a 40→120 px separation change
+   landing at exactly `scale(3)`) immediately after.
+2. **Double-tap could zoom in but never back out — a real logic bug, found by deliberately testing
+   both directions.** `wasTap` (the condition gating `toggleZoom`) checked `Math.abs(dragX) < 6`, but
+   `dragX` is *only* updated in the branch taken while **not** zoomed — while zoomed in, a stationary
+   tap leaves `dragX` holding whatever stale value an earlier swipe left it at, so the check could
+   never reliably pass once `scale > 1`. Fixed by measuring the actual distance between a gesture's own
+   start (`gesture.current.singleStart`) and its release point, independent of `scale`/`dragX`/
+   `translate` entirely. Verified explicitly both ways: double-tap 1→2, then a second double-tap
+   2→1, on the same photo.
+3. **A photo tagged to a specific city within a trip couldn't be set as that trip's cover — only
+   photos in the trip-general grid could.** `CityPhotosOverlay`'s `PhotoViewer` was wired with
+   `onCaptionChange`/`onDelete`/reassign actions but no `isCover`/`onSetCover`, an inconsistency found
+   by exercising the feature end-to-end (opening a city's photos and looking for "Set as cover" in the
+   menu) rather than by inspection. Fixed by threading the trip's `coverPhotoId` down to the nested
+   overlay too — any photo on the trip, tagged to a city or not, can now become its cover.
+4. **A pre-existing, unrelated data bug, found while a country detail screen happened to be open for
+   testing: Iceland's admin-1 topology has one subdivision id, `IS.39`, duplicated across two separate
+   map features** (of 9 total), which throws a React "duplicate key" console error every time
+   `CountryAdmin1Map` renders Iceland. This is a Phase 2 geo-build-pipeline data issue
+   (`tools/build-geo.mjs`/Natural Earth↔GeoNames reconciliation for Iceland specifically), completely
+   unrelated to photos — not fixed here, flagged as a separate follow-up task instead (chip
+   `task_ce173374`) rather than reaching into an already-shipped, already-tested pipeline outside this
+   phase's scope.
+
+### Left undone (correctly, per scope)
+
+No Drive upload (Phase 7) — `uploadState`/`driveFileId` are populated (`'pending'`, `null`) and
+otherwise unused, exactly as instructed. No standalone photo UI for a subdivision or a city visited
+*outside* a trip (Deviation 1) — that place's photos, if any ever get attached to it (e.g. by a future
+EXIF import running with no trip created), are only reachable today via the country roll-up in
+`CountryDetail`, never their own screen. The `PlaceStatusSheet` was not touched. The `#/settings`
+"Clear local copies of uploaded photos" action has nothing to do yet — `uploadState` can't reach
+`'uploaded'` before Phase 7 exists.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (**121/121** — 103 pre-existing + 7 new
+  `nearestCity.test.ts` + 11 new `exifImport.test.ts`), and `npm run build` all clean.
+- **`nearestCity`'s core algorithm checked against the real seeded 170,486-city dataset, not just the
+  7-city unit fixture**: Reykjavík's own coordinates → confident match on Reykjavík itself, 0 km. A
+  point in Iceland's uninhabited interior (Vatnajökull) → correctly found the true nearest real
+  bundled city (Höfn, 67.7 km) and classified it *uncertain* (30–150 km band). Central Australian
+  outback (nothing within 150 km) → fell back to the country tier, resolved to `AU` by point-in-polygon.
+  Open Pacific → `'none'`. All four tiers, against real data, not mocks.
+- Browser (Vite dev, 390×844, dark), **every acceptance criterion exercised as directly as this
+  environment allows** — see the honesty note below on the one criterion this couldn't fully reach:
+  - Set Iceland to *visited* through the real search-and-status-sheet flow (creates the derived
+    subdivision/city, exactly as Phase 4); opened `CountryDetail`, confirmed the Photos section and its
+    gated `AddPhotosButton`.
+  - Ran two photos through the **real** pipeline end to end — `processImage` (worker path) → `attachPhoto`
+    — with synthetic in-browser-generated JPEGs (this environment has no real phone photo library or a
+    way to drive an OS file picker; see the honesty note): both resized correctly (800×600, under the
+    2048 cap, untouched), wrote both `photos` and `photoBlobs` rows in one transaction, appeared in the
+    grid with no reload.
+  - Opened the viewer: swipe (drag past the threshold advances/retreats, rubber-bands back under it),
+    pinch-zoom (verified the clamped scale formula against hand-worked arithmetic), pan while zoomed
+    (confirmed it never gets misread as a swipe), double-tap in and back out, caption edit (commits on
+    blur, confirmed the row in Dexie), delete (soft-deletes the row, **blob confirmed still present**
+    per the design — see Deviation 6's storage-management note).
+  - Trips: created a real trip via `tripRepo.createTrip`, attached Reykjavík (auto-attach, Phase 5); the
+    per-city 📷 affordance appeared on its row; attached a photo tagged to `{tripId, entryId: city}` —
+    appeared in the city-scoped grid, the row's count badge updated live (`📷 1`); attached a second,
+    trip-general photo; set it as cover (`Trip.coverPhotoId` confirmed in Dexie, `PhotoGrid`'s Cover
+    badge rendered); reassigned it onto Reykjavík via "Tag to Reykjavík" (confirmed `entryId` changed in
+    Dexie); untagged the other photo back to trip-general via the city-scoped view (confirmed `entryId`
+    reverted to `null`).
+  - **Restart survival, explicitly**: attached a photo to Norway's country entry, did a genuine
+    `window.location.reload()` (not just a re-render), reopened `CountryDetail` for Norway — the photo
+    was still there. This is the literal acceptance criterion, not reasoned about from IndexedDB's
+    general durability.
+  - Settings: the Photos/Storage sections render real counts (3 active photos, correct combined
+    full+thumb byte total), `navigator.storage.estimate()`'s usage/quota, and a persisted-status
+    readout; tapped "Request persistent storage" and confirmed against the raw `navigator.storage
+    .persist()`/`.persisted()` calls directly that the browser itself denies the grant in this
+    automated environment (resolves `false`, does not throw) — expected browser policy, not a bug.
+  - `PhotoImportFlow`'s select step opens and renders correctly from the You tab.
+  - No console errors from anything built this session (the one recurring console error, `IS.39`, is
+    the pre-existing, unrelated bug in Edge case 4).
+  - App left in a clean state afterward: `entries`/`trips`/`tripEntries`/`photos`/`photoBlobs` all
+    cleared, `syncState.revision` reset to 0 — same precedent every prior phase's testing has followed.
+  - **Honesty note, per this project's own stated verification standard**: this environment's browser
+    automation has no file-chooser injection tool, so the *literal* OS "select photos" gesture inside
+    `PhotoImportFlow`, and therefore the full select→review→trips→confirm click-path with real files,
+    could not be driven end to end. What *was* verified directly: every function that path calls
+    (`processImage`, `matchPhotoLocation` against real data, `groupByProposedPlace`/`clusterTrips`,
+    `setPlaceStatus`, `createTrip`, `attachPhoto`) works correctly in isolation, the pure grouping/
+    clustering logic has 11 hand-checked unit tests, and the component's own code has no write call
+    anywhere except the final `runImport()` (confirmed by reading it, not just assuming it). Also not
+    measured: real-world throughput for "30 photos" — the synthetic test images used here (solid-colour
+    canvases, a few KB each) are not representative of 4–8 MB phone originals, so no import-throughput
+    number is reported; worth a real-device pass with an actual photo library before trusting the
+    "stays responsive" criterion fully. Multi-touch pinch/swipe was verified via synthetic
+    `PointerEvent` dispatch (which is how Edge cases 1–2 were found) rather than real touch hardware.
+
+### Notes for the next session
+
+- **`domain/photoRepo.ts` is now the only sanctioned writer to `photos`/`photoBlobs`** — same
+  convention, same risk if bypassed, as `cascadeRepo.ts`/`tripRepo.ts` before it.
+- **New z-index layer: 50, for `PhotoViewer`**, above the existing 30 (full-screen overlays) / 40
+  (place-status sheet, trip dialogs) scheme. `PlacePicker` (used inside the import flow) sits at 40,
+  the same tier as the status sheet, since it's a dialog stacked on a 30-layer flow.
+  - **Fix the pre-existing `IS.39` duplicate-topology-feature bug** (Edge case 4) — flagged as a
+  separate task (`task_ce173374`); unrelated to photos, but easy to hit again the next time Iceland's
+  country detail screen is opened.
+- **Bundle size crossed Vite's 500 kB advisory threshold this phase** (~590 KB / 193 KB gzip main
+  chunk) — `exifr` is the main contributor, needed both in the worker chunk and (rarely) the
+  main-thread fallback. Tried splitting it out via a dynamic `import()` in the fallback path; Rollup
+  won't split a module that's *also* statically imported by a Worker entry, so that made no difference
+  and was reverted in favour of the simpler static import. Not fixed further — this is a soft warning,
+  not a failure, and restructuring chunking is a build-config exercise orthogonal to this phase's scope.
+  Worth a `manualChunks` pass if bundle size ever becomes a real problem.
+- **The next real gap, if a future session wants to close it**: a place visited outside any trip has
+  nowhere to show a city/subdivision-level photo except the country roll-up (Deviation 1's boundary).
+  If that ever feels wrong in practice, the two live options are a dedicated subdivision/city detail
+  screen (more surface area) or a photo section inside `PlaceStatusSheet` (the option not chosen this
+  session) — both were considered, neither was asked for.
+- Worth a real-device pass for the two things this environment couldn't fully exercise: an actual OS
+  photo-picker interaction, and true multi-touch (real fingers, not synthetic `PointerEvent`s) — see
+  the honesty note under Verified.

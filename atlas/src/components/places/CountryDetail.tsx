@@ -7,12 +7,14 @@
 // region on the admin-1 map opens it for that subdivision, tapping a city
 // opens it for that city. This screen only displays and routes taps.
 
+import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import type { City, Country, Entry, Status } from '@/db/types'
+import type { City, Country, Entry, Photo, Status } from '@/db/types'
 import { explainStatus } from '@/domain/cascade'
 import { loadCascadeState } from '@/domain/cascadeRepo'
 import { resolvePlaceInfo } from '@/domain/placeInfo'
+import { listPhotosForEntries, softDeletePhoto, updateCaption } from '@/domain/photoRepo'
 import { countrySubdivisionsVisited } from '@/stats/coverage'
 import { useCountryDetailStore } from '@/domain/countryDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
@@ -20,6 +22,9 @@ import { flagEmoji } from '@/geo/flags'
 import { colorForStatus, STATUS_LABEL } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
 import { CountryAdmin1Map } from '@/components/places/CountryAdmin1Map'
+import { PhotoGrid } from '@/components/photos/PhotoGrid'
+import { PhotoViewer } from '@/components/photos/PhotoViewer'
+import { AddPhotosButton } from '@/components/photos/AddPhotosButton'
 import './CountryDetail.css'
 
 const nf = new Intl.NumberFormat()
@@ -38,6 +43,7 @@ interface DetailData {
   subdivisionStatus: Map<string, Status>
   cities: { entry: Entry; city: City }[]
   explanation: { status: Status; becauseName: string } | null
+  photos: Photo[]
 }
 
 function CountryDetailContent({ code, onClose }: { code: string; onClose: () => void }) {
@@ -55,9 +61,8 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
     const entry = entryRow && entryRow.deletedAt === null ? entryRow : null
     const active = allEntries.filter((e) => e.deletedAt === null)
 
-    const subdivisionStatus = new Map(
-      active.filter((e) => e.kind === 'subdivision' && e.refId.startsWith(`${code}.`)).map((e) => [e.refId, e.status]),
-    )
+    const subdivisionEntries = active.filter((e) => e.kind === 'subdivision' && e.refId.startsWith(`${code}.`))
+    const subdivisionStatus = new Map(subdivisionEntries.map((e) => [e.refId, e.status]))
 
     const cityEntries = active.filter((e) => e.kind === 'city')
     const cityRows = await db.cities.bulkGet(cityEntries.map((e) => Number(e.refId)))
@@ -68,14 +73,25 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
     })
     cities.sort((a, b) => a.city.name.localeCompare(b.city.name))
 
+    // A country has no dedicated per-subdivision/per-city photo screen (see
+    // PROGRESS.md) — photos tagged anywhere in the country still need
+    // somewhere real to surface, so this rolls up every descendant's photos
+    // onto the one detail screen that does exist for this whole subtree.
+    const photoEntryIds = [entry?.id, ...subdivisionEntries.map((e) => e.id), ...cities.map((c) => c.entry.id)].filter(
+      (id): id is string => id !== undefined,
+    )
+    const photos = await listPhotosForEntries(photoEntryIds)
+
     const state = await loadCascadeState().catch(() => null)
     const cause = state ? explainStatus(state, 'country', code) : null
     const explanation = cause
       ? { status: cause.status, becauseName: (await resolvePlaceInfo(cause.because.kind, cause.because.refId))?.name ?? 'a place inside it' }
       : null
 
-    return { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation }
+    return { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation, photos }
   }, [code])
+
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null)
 
   if (data === null) {
     return (
@@ -92,7 +108,7 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
     )
   }
 
-  const { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation } = data
+  const { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation, photos } = data
   const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus)
 
   return (
@@ -177,9 +193,25 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
 
         <section className="country-detail__section">
           <h2 className="country-detail__section-title">Photos</h2>
-          <p className="country-detail__empty">Photo attachments are coming in a later build.</p>
+          {entry ? (
+            <AddPhotosButton entryId={entry.id} tripId={null} />
+          ) : (
+            <p className="country-detail__empty">Set a status above first, then you can attach photos here.</p>
+          )}
+          <PhotoGrid photos={photos} onSelect={setViewerIndex} />
         </section>
       </div>
+
+      {viewerIndex !== null && (
+        <PhotoViewer
+          photos={photos}
+          index={viewerIndex}
+          onClose={() => setViewerIndex(null)}
+          onIndexChange={setViewerIndex}
+          onCaptionChange={(photo, caption) => updateCaption(photo.id, caption)}
+          onDelete={(photo) => softDeletePhoto(photo.id)}
+        />
+      )}
     </FullScreenOverlay>
   )
 }

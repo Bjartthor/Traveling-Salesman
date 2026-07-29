@@ -1,0 +1,148 @@
+/* z-index 50: above every other layer in the app (full-screen overlays at 30,
+   the place-status sheet / trip dialogs at 40) — opened from within a detail
+   overlay and nothing needs to stack on top of it. */
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--abyss);
+}
+
+.photo-viewer__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+}
+
+.photo-viewer__close,
+.photo-viewer__menu-trigger {
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  color: var(--chalk);
+  font-size: var(--text-lg);
+}
+
+.photo-viewer__counter {
+  font-size: var(--text-xs);
+  color: var(--haze);
+  letter-spacing: 0.08em;
+}
+
+.photo-viewer__stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.photo-viewer__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  will-change: transform;
+}
+
+.photo-viewer__image--settled {
+  transition: transform var(--duration-base) var(--easing-standard);
+}
+
+.photo-viewer__footer {
+  flex-shrink: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.photo-viewer__caption {
+  width: 100%;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  color: var(--chalk);
+  font-size: var(--text-sm);
+}
+
+.photo-viewer__menu {
+  position: absolute;
+  top: calc(var(--tap-target-min) + var(--space-3));
+  right: var(--space-4);
+  z-index: 51;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.photo-viewer__menu-item {
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-3);
+  text-align: left;
+  color: var(--chalk);
+  font-size: var(--text-sm);
+}
+
+.photo-viewer__menu-item:hover {
+  background: var(--contour);
+}
+
+.photo-viewer__menu-item--danger {
+  color: var(--lived);
+}
+
+.photo-viewer__confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 52;
+  display: flex;
+  align-items: flex-end;
+  background: color-mix(in srgb, var(--abyss) 70%, transparent);
+}
+
+.photo-viewer__confirm {
+  width: 100%;
+  padding: var(--space-5) var(--space-4);
+  background: var(--shelf);
+  border-top: 1px solid var(--contour);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.photo-viewer__confirm-body {
+  color: var(--chalk);
+  font-size: var(--text-base);
+}
+
+.photo-viewer__confirm-delete,
+.photo-viewer__confirm-cancel {
+  min-height: var(--tap-target-min);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.photo-viewer__confirm-delete {
+  background: var(--lived);
+  color: var(--abyss);
+}
+
+.photo-viewer__confirm-cancel {
+  background: var(--contour);
+  color: var(--chalk);
+}

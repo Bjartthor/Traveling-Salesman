@@ -90,3 +90,26 @@
   font-size: var(--text-xs);
   text-align: right;
 }
+
+.settings-screen__action {
+  align-self: flex-start;
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-4);
+  background: var(--visited);
+  color: var(--abyss);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-screen__action--secondary {
+  background: var(--contour);
+  color: var(--chalk);
+}
+
+.settings-screen__error {
+  color: var(--lived);
+  font-size: var(--text-sm);
+}

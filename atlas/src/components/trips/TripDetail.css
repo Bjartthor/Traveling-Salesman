@@ -133,6 +133,29 @@
   color: var(--haze);
 }
 
+.trip-detail__row-main {
+  flex: 1;
+  min-height: var(--tap-target-min);
+  text-align: left;
+  color: inherit;
+  font-size: var(--text-base);
+}
+
+.trip-detail__row-photos {
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-2);
+  color: var(--haze);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.trip-detail__city-photos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .trip-detail__bar {
   width: 4px;
   align-self: stretch;

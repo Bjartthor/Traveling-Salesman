@@ -7,6 +7,7 @@
 import { db } from '@/db/schema'
 import type { City, Country, Subdivision } from '@/db/types'
 import { invalidateSearchIndex } from '@/geo/search'
+import { invalidateNearestCityIndex } from '@/geo/nearestCity'
 
 // Bump when the committed artefacts change shape/content so an app update
 // reseeds reference data without disturbing user data.
@@ -162,6 +163,7 @@ export async function ensureReferenceData(
   // --- 3. mark seeded (device-local; leaves user tables untouched) ---
   await db.settings.update(1, { geoDataVersion: GEO_DATA_VERSION })
   invalidateSearchIndex()
+  invalidateNearestCityIndex()
   console.info(`[geo] reference data seeded in ${Math.round(performance.now() - startedAt)} ms (${total} cities)`)
   onProgress?.({ phase: 'done', loaded: total, total })
 }

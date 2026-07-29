@@ -1,0 +1,93 @@
+/* z-index 40: same layer as the place-status sheet — this is a dialog that
+   can be triggered from within the (z-index 30) photo import flow. */
+.place-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--abyss);
+}
+
+.place-picker__tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.place-picker__tab {
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-3);
+  color: var(--haze);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.place-picker__tab--active {
+  color: var(--abyss);
+  background: var(--chalk);
+}
+
+.place-picker__cancel {
+  margin-left: auto;
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-3);
+  color: var(--haze);
+  font-size: var(--text-sm);
+}
+
+.place-picker__input {
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  color: var(--chalk);
+  font-size: var(--text-base);
+}
+
+.place-picker__results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.place-picker__result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  color: var(--chalk);
+  font-size: var(--text-base);
+  border-bottom: 1px solid var(--contour);
+}
+
+.place-picker__result:hover {
+  background: var(--shelf);
+}
+
+.place-picker__result-meta {
+  color: var(--haze);
+  font-size: var(--text-xs);
+}
+
+.place-picker__status {
+  padding: var(--space-3);
+  color: var(--haze);
+  font-size: var(--text-sm);
+}
+
+.place-picker__error {
+  color: var(--lived);
+  font-size: var(--text-xs);
+}
