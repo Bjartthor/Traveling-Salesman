@@ -3,12 +3,14 @@
 // stamps in reverse chronological order, stacked with slight overlap like a
 // passport page.
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import type { Trip } from '@/db/types'
+import type { Status, Trip } from '@/db/types'
+import { buildStatusIndex } from '@/stats/coverage'
 import { createTrip, getActiveTrip, type ActiveTripConflictResolution } from '@/domain/tripRepo'
-import { loadTripCountryCodes } from '@/domain/tripPlacesRepo'
+import { loadTripPlaces } from '@/domain/tripPlacesRepo'
+import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { TripForm, type TripFormValues } from '@/components/trips/TripForm'
@@ -29,6 +31,10 @@ export function TripsScreen() {
   const past = (trips ?? [])
     .filter((t) => !t.isActive)
     .sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? '') || b.createdAt - a.createdAt)
+
+  // Shared across every stamp's mini route map, computed once rather than per stamp.
+  const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
+  const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
 
   async function handleStartTapped() {
     const conflictTrip = await getActiveTrip()
@@ -81,7 +87,7 @@ export function TripsScreen() {
         {past.length > 0 ? (
           <div className="trips-screen__stamps">
             {past.map((trip) => (
-              <TripPastStamp key={trip.id} trip={trip} onOpen={() => openTrip(trip.id)} />
+              <TripPastStamp key={trip.id} trip={trip} countryStatus={countryStatus} onOpen={() => openTrip(trip.id)} />
             ))}
           </div>
         ) : (
@@ -128,15 +134,33 @@ export function TripsScreen() {
   )
 }
 
-function TripPastStamp({ trip, onOpen }: { trip: Trip; onOpen: () => void }) {
-  const countryCodes = useLiveQuery(() => loadTripCountryCodes(trip.id), [trip.id])
+function TripPastStamp({
+  trip,
+  countryStatus,
+  onOpen,
+}: {
+  trip: Trip
+  countryStatus: ReadonlyMap<string, Status>
+  onOpen: () => void
+}) {
+  const groups = useLiveQuery(() => loadTripPlaces(trip.id), [trip.id])
+  const countryCodes = useMemo(() => (groups ? tripCountryCodes(groups) : []), [groups])
+  const cities = useMemo(
+    () =>
+      groups
+        ? tripCityRows(groups).filter((r): r is typeof r & { lat: number; lon: number } => r.lat !== null && r.lon !== null)
+        : [],
+    [groups],
+  )
   return (
     <TripStamp
       tripId={trip.id}
       name={trip.name}
       startDate={trip.startDate}
       endDate={trip.endDate}
-      countryCodes={countryCodes ?? []}
+      countryCodes={countryCodes}
+      countryStatus={countryStatus}
+      cities={cities}
       onClick={onOpen}
     />
   )

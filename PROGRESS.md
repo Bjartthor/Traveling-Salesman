@@ -1163,3 +1163,142 @@ original placeholder note rather than half-built ahead of its own phase.
   concern.
 - Phase 6's photo work has two exact slots ready: `TripStamp`'s `coverPhotoUrl` prop and
   `TripDetail`'s empty "Cover photo" section — both already styled for it, just need a real URL.
+
+## Phase 5b — Stamp polish (done)
+
+A design-only pass over `TripStamp`, same self-directed critique-and-polish shape as 3b (no numbered
+phase file — the session brief named the job directly: "5b — Stamp polish"). Scoped to the stamp
+component alone; nothing else in Trips was touched.
+
+### What was built
+
+- **The border is now actually "partially inked."** Plan §8 says the edge should suggest "partially
+  inked edges, as if hand-stamped," but the Phase 5 border was a continuous 1px solid line pushed
+  through the existing `feTurbulence`/`feDisplacementMap` filter — wobbly, but 100% coverage, i.e.
+  uniformly inked. [`TripStamp.css`](atlas/src/components/trips/TripStamp.css) changes both rings
+  from `border-style: solid` to `dashed` (outer 1.5px/opacity 0.85, inner 1px/opacity 0.5) before the
+  same displacement filter runs — the filter now shifts each dash independently (it samples the noise
+  map at that dash's own position), so gaps land at irregular points around the rect instead of a
+  perfectly even dash-dash-dash rhythm. Same filter, same seed, no `.tsx` change needed.
+- **Country-code grid destyled from "chip" to "manifest row."** The old `.trip-stamp__code` was a
+  full bordered box in `--contour` — the token `tokens.css` documents as "borders, unvisited
+  landmass," i.e. the map's *nothing-here* colour, an odd connotation to borrow for a completed trip's
+  own country list, and its crisp rectangular edges sat oddly against the wobbly hand-stamped border
+  framing it. Now a bottom-hairline only, in `color-mix(in srgb, var(--haze) 45%, transparent)` —
+  `--haze` is the stamp's own border colour, so the grid now reads as part of the same ink rather than
+  a UI control. (`color-mix` was already an established pattern — `TripConflictDialog`, `GeoGate`,
+  `PlaceStatusSheet`, `TripDetail` all use it for translucent overlays.)
+- **Hover/active feedback added.** `.trip-stamp` is a `<button>`, and every other tappable
+  row/card/dialog-option in the app (`PlacesList`, `CountryAdmin1Map`, `TripConflictDialog`,
+  `PlaceSearch`, …) gets a `:hover` state — the stamp had none. Added a restrained
+  `filter: brightness()` lift/dip on hover/active (not a translate or scale, which would fight the
+  fixed per-trip rotation) with a `var(--duration-fast)` transition, automatically silenced under
+  `prefers-reduced-motion` by the existing global rule in `base.css` — no new media query needed.
+- **A faint background texture**, since plan §8 explicitly calls the stamp "the one place the design
+  is allowed to be showy" and the card was otherwise flat `--shelf`, identical to every ordinary
+  sheet/card in the app. One soft `radial-gradient` vignette (`color-mix(..., var(--haze) 10%, ...)`,
+  upper-right, `::before`, `pointer-events: none`) — paints below the cover-photo layer and the
+  content (pseudo-elements generate before an element's real children, so DOM/paint order already put
+  it at the back without a `z-index`). Deliberately restrained, not a pattern/watermark, matching the
+  plan's "everything else stays quiet" counterweight even where showy is allowed.
+
+### Deviations from the plan/brief, and why
+
+1. **No phase file for "5b"**, same situation 3b was in — the session brief named the scope directly
+   rather than pointing at a numbered file in `travelingSalesmanClaudeInputs/`. Read as: polish the
+   stamp component visually, verified at 390×844 and 360×800, nothing else in Trips in scope.
+2. **Corner "registration marks" considered, not built.** Real print/registration tick marks would
+   tie the stamp into the "instrument/chart texture" language 3b established elsewhere (hairlines,
+   mono data treatment) — but it's an invented embellishment with no anchor in plan §8's actual
+   wording, unlike the four changes above (each ties to a specific spec line or a specific
+   cross-component inconsistency). Left out to keep this pass to defensible fixes rather than
+   decoration for its own sake; worth a look if a future session wants to push further.
+3. **A pre-existing labelling wrinkle, noted but not touched**: `TripsScreen`'s Past section is
+   `!isActive`, not `endDate !== null` — a trip left open via the "leave old one open" conflict
+   resolution (`isActive: false`, `endDate: null`) lands in Past with its stamp reading
+   `"… – ONGOING"`. Existing Phase 5 lifecycle behaviour, not a stamp-*visual* defect, so left alone;
+   flagging here in case a future session wants `TripsScreen`'s split or the date-range fallback text
+   to account for it.
+
+### Addendum — flags in the code grid + a mini route map per stamp (same session, user-directed)
+
+Two follow-up requests after the polish pass above, both scoped to the stamp: put the flag next to
+each ISO code, and put a small version of the trip-detail route map on every stamp too ("the map it
+shows of which countries you went to on that trip").
+
+- **Flags**: each `.trip-stamp__code` cell now renders the existing
+  [`CountryFlag`](atlas/src/components/places/CountryFlag.tsx) component (flag emoji + mono code,
+  already the app's one pairing for this — Phase 4b's deviation 8 is exactly why the code is never
+  emoji-only) instead of a bare code string. `CountryFlag`'s own default text colour (`--haze`) is
+  overridden to `--chalk` only inside the stamp (`.trip-stamp__code .country-flag`), for contrast
+  against the dark card — every other call site keeps `CountryFlag`'s own default.
+- **Mini route map**: [`TripRouteMap`](atlas/src/components/trips/TripRouteMap.tsx) (built in Phase 5
+  for the trip detail screen) gained a `compact` prop — same component, same data shape, just a fixed
+  92px height instead of the detail screen's 4:3 block and smaller city dots (`r=2.5` vs `4`) — rather
+  than building a second map component. `TripStamp` renders it between the date range and the code
+  grid, wired with real data end to end:
+  - [`TripsScreen.tsx`](atlas/src/screens/TripsScreen.tsx) now computes `countryStatus` once for the
+    whole screen (`buildStatusIndex` over one live query of all entries — the exact pattern
+    `MapScreen.tsx` already uses) instead of each stamp resolving its own, and `TripPastStamp` switched
+    from the codes-only `loadTripCountryCodes` to the richer `loadTripPlaces`, which already contained
+    everything needed for both the code grid *and* the city dots (`tripCountryCodes`/`tripCityRows` on
+    the same `groups` result) — one query per stamp instead of what would otherwise have been two.
+  - **Performance call**: rendering N stamps means N `TripRouteMap` instances, each of which would
+    otherwise re-decode the same 237-feature world TopoJSON from scratch
+    ([`topo.ts`](atlas/src/components/map/topo.ts)'s `decodeLayer` was a plain pure function, no
+    caching). Added a `WeakMap<TopoJson, Map<string, MapFeature[]>>` cache keyed by the topo object
+    reference (safe because `loadWorldTopology()`/`loadCountryTopology()` already memoise their fetch,
+    so the same parsed object recurs across every caller) plus `objectKey:idProp`. Pure/deterministic
+    function, read-only at every call site (`WorldMap`, `CountryAdmin1Map`, `TripRouteMap`, `photon.ts`
+    all checked) — a behaviour-preserving cache, not a semantic change, and it benefits the existing
+    map screens too, not just the new thumbnails.
+  - A trip with zero attached places (a freshly logged past trip, or the pre-existing
+    `TripsScreen`/`TripDetail` empty-groups case) falls back to `TripRouteMap`'s existing
+    whole-sphere-muted rendering — verified live, no crash, no empty-grid layout break.
+
+**Verified** (browser, both 390×844 and 360×800, real data via the sanctioned writers): 1-country,
+6-country, 15-country, and a city-level 3-country trip (to exercise the city-dot markers, which
+country-level test entries don't produce) all render correctly — flags paired with every code, mini
+maps zoomed to fit each trip's own countries with the rest of the world muted behind them, city dots
+visible at compact scale. Empty-trip fallback confirmed live. No console errors. `tsc -b`/lint/vitest
+(103/103) all still clean after both changes. App left clean afterward (same reset as above).
+
+### Left undone (correctly, per scope)
+
+Everything about trip *lifecycle* (Phase 5's own domain: conflict resolution, auto-attach, statistics)
+is untouched, as is every other Trips screen (`TripForm`, `TripConflictDialog`, the active-trip banner,
+the You-tab statistics). `TripDetail`'s own full-size route map, stats and places tree are unchanged —
+only `TripRouteMap` itself gained the new opt-in `compact` prop, the existing (non-compact) call site
+keeps its original rendering exactly. Final file list for the whole session: `TripStamp.tsx`/`.css`,
+`TripsScreen.tsx`, `TripRouteMap.tsx`/`.css`, `topo.ts`.
+
+### Verified
+
+- `npx tsc -b`, `npm run lint`, `npx vitest run` (**103/103**, unchanged — this was a CSS-only pass,
+  no domain/test code touched) all clean.
+- Browser (Vite dev, dark colour scheme), **both 390×844 and 360×800**, against real trip data created
+  through the sanctioned writers (`tripRepo.createTrip`/`closeTrip` + `cascadeRepo.setPlaceStatus`,
+  not raw Dexie writes):
+  - 1-country stamp (Iceland), 6-country (Central Europe Loop), and 15-country (Grand Tour, wraps to
+    3 rows) all legible at both widths, grid `auto-fill` re-wrapping correctly at the narrower 360px
+    (6-code row wraps 5+1 instead of 6+0).
+  - A deliberately absurd long name ("The Really Very Extremely Long Family Reunion Road Trip Across
+    Three Continents") wraps to 4 lines with no clipping, no horizontal overflow, uppercase transform
+    intact.
+  - Zoomed inspection (temporary wide/short viewport, same technique 3b used) confirmed the dashed
+    border reads as genuinely broken/irregular ink at the rounded corners — no rendering artefacts
+    where the dash pattern meets the `border-radius` curve — and the vignette sits correctly behind
+    the border/content layers with no z-index needed.
+  - `el.scrollWidth === el.clientWidth` at both 390 and 360 (no horizontal overflow); vertical
+    overflow negligible (786 vs 780 at 390px) and scrolls correctly within `.app-content`.
+  - App left in a clean state afterward: `entries`/`trips`/`tripEntries` cleared, `syncState.revision`
+    reset to 0 (same precedent every prior phase's testing has followed).
+
+### Notes for the next session
+
+- `preview_screenshot` timed out repeatedly again this session, same known artefact documented since
+  Phase 3 — recovered every time via a throwaway `1+1` eval before retrying, never an app bug.
+- If Phase 6 wants to push the stamp further once real cover photos exist, the vignette `::before` and
+  the cover-photo `<div>` now both need to be checked together for contrast — currently only
+  smoke-tested by reasoning about paint order (cover photo is a later DOM sibling so it correctly
+  paints on top), not by attaching a real photo, since Phase 6 hasn't landed yet.

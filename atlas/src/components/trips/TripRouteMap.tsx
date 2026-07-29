@@ -31,9 +31,11 @@ interface TripRouteMapProps {
   countryCodes: readonly string[]
   countryStatus: ReadonlyMap<string, Status>
   cities: readonly TripCityPoint[]
+  /** Trips-tab stamp thumbnail: fixed short height instead of the detail screen's 4:3 block, smaller city dots. */
+  compact?: boolean
 }
 
-export function TripRouteMap({ countryCodes, countryStatus, cities }: TripRouteMapProps) {
+export function TripRouteMap({ countryCodes, countryStatus, cities, compact = false }: TripRouteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
@@ -97,7 +99,7 @@ export function TripRouteMap({ countryCodes, countryStatus, cities }: TripRouteM
   }, [projection, cities])
 
   return (
-    <div className="trip-route-map" ref={containerRef}>
+    <div className={`trip-route-map${compact ? ' trip-route-map--compact' : ''}`} ref={containerRef}>
       <svg
         viewBox={`0 0 ${size.width || 1} ${size.height || 1}`}
         role="img"
@@ -118,7 +120,7 @@ export function TripRouteMap({ countryCodes, countryStatus, cities }: TripRouteM
           )
         })}
         {cityPoints.map((p) => (
-          <circle key={p.name} className="trip-route-map__city" cx={p.x} cy={p.y} r={4}>
+          <circle key={p.name} className="trip-route-map__city" cx={p.x} cy={p.y} r={compact ? 2.5 : 4}>
             <title>{p.name}</title>
           </circle>
         ))}

@@ -6,6 +6,12 @@
   border-radius: var(--radius-md);
 }
 
+.trip-route-map--compact {
+  aspect-ratio: auto;
+  height: 92px;
+  border-radius: var(--radius-sm);
+}
+
 .trip-route-map svg {
   display: block;
   width: 100%;

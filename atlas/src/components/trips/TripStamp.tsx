@@ -9,8 +9,17 @@
 // hand-stamped without blurring anything legible.
 
 import type { CSSProperties } from 'react'
+import type { Status } from '@/db/types'
 import { stampInkSeed, stampRotationDeg } from '@/domain/stampSeed'
+import { CountryFlag } from '@/components/places/CountryFlag'
+import { TripRouteMap } from '@/components/trips/TripRouteMap'
 import './TripStamp.css'
+
+interface TripStampCity {
+  name: string
+  lat: number
+  lon: number
+}
 
 interface TripStampProps {
   tripId: string
@@ -18,11 +27,23 @@ interface TripStampProps {
   startDate: string | null
   endDate: string | null
   countryCodes: readonly string[]
+  countryStatus: ReadonlyMap<string, Status>
+  cities: readonly TripStampCity[]
   coverPhotoUrl?: string | null // wired for Phase 6; always null until photos exist
   onClick?: () => void
 }
 
-export function TripStamp({ tripId, name, startDate, endDate, countryCodes, coverPhotoUrl, onClick }: TripStampProps) {
+export function TripStamp({
+  tripId,
+  name,
+  startDate,
+  endDate,
+  countryCodes,
+  countryStatus,
+  cities,
+  coverPhotoUrl,
+  onClick,
+}: TripStampProps) {
   const rotation = stampRotationDeg(tripId)
   const inkSeed = stampInkSeed(tripId)
   const filterId = `stamp-ink-${tripId}`
@@ -50,10 +71,13 @@ export function TripStamp({ tripId, name, startDate, endDate, countryCodes, cove
       <div className="trip-stamp__content">
         <p className="trip-stamp__name">{name}</p>
         <p className="trip-stamp__dates mono">{dateRange}</p>
+        <div className="trip-stamp__map">
+          <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cities} compact />
+        </div>
         <div className="trip-stamp__grid">
           {countryCodes.map((code) => (
-            <span key={code} className="trip-stamp__code mono">
-              {code}
+            <span key={code} className="trip-stamp__code">
+              <CountryFlag code={code} />
             </span>
           ))}
         </div>

@@ -9,6 +9,23 @@
   transform: rotate(var(--stamp-rotation, 0deg));
   opacity: 1;
   overflow: hidden;
+  transition: filter var(--duration-fast) var(--easing-standard);
+}
+
+.trip-stamp::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 90% at 85% -20%, color-mix(in srgb, var(--haze) 10%, transparent), transparent 60%);
+  pointer-events: none;
+}
+
+.trip-stamp:hover {
+  filter: brightness(1.08);
+}
+
+.trip-stamp:active {
+  filter: brightness(0.94);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -45,18 +62,22 @@
 
 .trip-stamp__border {
   position: absolute;
-  border: 1px solid var(--haze);
+  border-style: dashed;
+  border-color: var(--haze);
   border-radius: var(--radius-lg);
   pointer-events: none;
-  opacity: 0.75;
 }
 
 .trip-stamp__border--outer {
   inset: 6px;
+  border-width: 1.5px;
+  opacity: 0.85;
 }
 
 .trip-stamp__border--inner {
   inset: 11px;
+  border-width: 1px;
+  opacity: 0.5;
 }
 
 .trip-stamp__content {
@@ -91,9 +112,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  border: 1px solid var(--contour);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
+  min-height: 34px;
+  border-bottom: 1px solid color-mix(in srgb, var(--haze) 45%, transparent);
+}
+
+.trip-stamp__code .country-flag {
   color: var(--chalk);
 }
