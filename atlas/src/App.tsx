@@ -9,9 +9,12 @@ import { PlaceStatusSheet } from '@/components/places/PlaceStatusSheet'
 import { CountryDetail } from '@/components/places/CountryDetail'
 import { ActiveTripBanner } from '@/components/trips/ActiveTripBanner'
 import { TripDetail } from '@/components/trips/TripDetail'
+import { SyncIndicator } from '@/components/sync/SyncIndicator'
+import { useSyncTriggers } from '@/sync/useSyncTriggers'
 import './App.css'
 
 function App() {
+  useSyncTriggers()
   return (
     <HashRouter>
       <GeoGate>
@@ -25,6 +28,7 @@ function App() {
             </Routes>
           </main>
           <ActiveTripBanner />
+          <SyncIndicator />
           <BottomNav />
         </div>
         <CountryDetail />

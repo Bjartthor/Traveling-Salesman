@@ -1587,3 +1587,205 @@ fallback resolves correctly and nothing regressed visually in an unnotched conte
 kind this environment can render; the actual safe-area behavior on a real notched device follows from
 the same `env()`/`max()` pattern already proven correct elsewhere in the app, not from anything newly
 verified here.
+
+## Phase 7a — Google Drive sync core: auth, Drive layer, merge, orchestration, photo sync (done)
+
+Tasks 1–5 of `07-sync-and-deploy.md` only. Per `START-HERE.md` the phase is split 7a/7b; the user
+confirmed this session as **sync core** and deferred manual backup (task 6) and deployment (task 7)
+to a fresh session. Three questions were asked and answered before any code (scope, deploy target,
+Cloud-Console state). Everything runs offline-first and mirrors to the user's own Drive
+`appDataFolder`; **no server anywhere**.
+
+### What was built (all under `atlas/src/sync/`)
+
+- **Auth** [`auth.ts`](atlas/src/sync/auth.ts) — Google Identity Services token flow. Loads
+  `accounts.google.com/gsi/client`, `initTokenClient` for scope `drive.appdata`, **access token in
+  module memory only** (never localStorage/IndexedDB). `getAccessToken()` returns the cached token
+  while valid, else requests `prompt: ''` (silent when the user has a live Google session + prior
+  grant, consent UI only when it can't be satisfied silently — the plan's exact rule). The four
+  failure modes each get a specific human sentence (`describeAuthError`): **declined**, **popup
+  blocked**, **offline**, **revoked** (plus `not_configured`). `signIn()` marks the device connected;
+  `signOut()` revokes, drops the token, clears the sync bookkeeping, and **leaves all local data
+  intact** (the UI confirmation says so). No client secret anywhere.
+- **Drive** [`drive.ts`](atlas/src/sync/drive.ts) — REST v3, everything in `appDataFolder`:
+  `findFile / downloadJson / uploadJson / uploadBlob / downloadBlob / deleteFile`. Retry on 429/5xx
+  with exponential backoff + jitter capped at 5 attempts; **401 → refresh token and retry once**;
+  other 4xx → terminal `DriveError`; retries exhausted → `DriveUnavailableError` (transient, the
+  orchestrator queues). Idempotent throughout — a 404 delete resolves, multipart bodies are
+  re-sendable Blobs.
+- **Merge** [`merge.ts`](atlas/src/sync/merge.ts) + **17 tests**
+  [`merge.test.ts`](atlas/src/sync/merge.test.ts) — pure, no I/O. LWW keyed on
+  `max(updatedAt, deletedAt)` (which implements the plan's separate "tombstone wins if its deletedAt
+  is later than the other side's updatedAt" rule in one comparison). Entries merge by **natural key**
+  (see Deviation 1); settings merge **field-by-field** three-way (Deviation 2). `canonicalize` /
+  `snapshotsEqual` give the orchestrator its "did anything actually change?" check and underwrite
+  idempotency.
+- **Snapshot bridge** [`snapshot.ts`](atlas/src/sync/snapshot.ts) — `buildLocalSnapshot` reads the
+  synced state (explicit + tombstoned entries only; derived excluded per plan §7.3);
+  `applyMergedSnapshot` writes a merged snapshot back **preserving each row's own updatedAt/deletedAt**
+  (a raw write, deliberately *not* through `repo.ts`, which would stamp `updatedAt = now` and destroy
+  LWW), in one transaction, then `rebuildDerivedEntries()`.
+- **Orchestration** [`sync.ts`](atlas/src/sync/sync.ts) — `syncNow()` with an in-memory lock (a
+  second call returns the first promise). Pull → skip if remote revision unchanged & no local changes
+  & no photo work → photo pass → merge → write-local-if-changed → **push only if content changed**
+  (keeps re-syncing an unchanged payload from bumping the revision forever) → bookkeeping →
+  `lastSyncAt`. Honest outcomes: `ok / not-connected / not-configured / offline / auth / error`;
+  never a success state for a run that didn't finish.
+- **Photo sync** [`photos.ts`](atlas/src/sync/photos.ts) — uploads `uploadState: 'pending'` blobs one
+  at a time as `photo-<id>.jpg`, storing the returned `driveFileId` (photo pass runs *before* the JSON
+  push so new ids ride along in the same document). Soft-deleted photos with a `driveFileId` get their
+  Drive file deleted, the id nulled, and the local blob reclaimed. **Lazy download** `ensurePhotoBlob`:
+  on first view of a photo whose local blob is missing, download the full from Drive, regenerate the
+  thumbnail via the existing `processImage` pipeline, cache both; concurrent views share one download.
+  A **cellular gate** (`photoUploadOnCellular`, default off = Wi-Fi only) blocks uploads only on a
+  *positively-detected* cellular radio.
+- **UI**: [`GoogleDriveSettings.tsx`](atlas/src/components/sync/GoogleDriveSettings.tsx) (connect /
+  disconnect with an inline confirm, last-synced time, "Sync now", pending-upload count, the two
+  device-local toggles, honest error/offline/notice lines) in the You screen;
+  [`SyncIndicator.tsx`](atlas/src/components/sync/SyncIndicator.tsx) — a slim app-wide status line
+  (spinner + pending count while syncing, offline note, error + Retry) that is **invisible when idle**;
+  the **About attribution** (Natural Earth / GeoNames CC BY 4.0 / Photon-OSM ODbL) added to Settings.
+- **Triggers** [`useSyncTriggers.ts`](atlas/src/sync/useSyncTriggers.ts) — app start, return to
+  foreground (`visibilitychange`), reconnect (`online`), and a 30 s debounce that only arms when there
+  are genuinely unpushed changes. Store [`syncStore.ts`](atlas/src/sync/syncStore.ts) (zustand) holds
+  only transient run state; durable facts come from Dexie via `useLiveQuery`.
+- **Schema/infra**: `Settings` gained `driveConnected` + `photoUploadOnCellular`; `SyncState` gained
+  `pushedRevision` + `lastSyncedSettings` (Deviation 3). `seed.ts` writes the new defaults and
+  **backfills** them onto existing singletons (no Dexie version bump — none are indexed). `repo.ts`'s
+  `bumpRevision` changed from a whole-row `put` to a field-scoped `update` (Deviation 4 — the old code
+  would have wiped the new fields on every write). `vite-env.d.ts` types `VITE_GOOGLE_CLIENT_ID`;
+  `.env.local` (git-ignored) holds the dev client ID, `.env.example` is committed documentation.
+
+### Deviations from the plan, and why
+
+1. **Entries merge by natural key `[kind+refId]`, not by `id` (flagged to the user before coding).**
+   Plan §7.2 says "key records by id", correct for trips/tripEntries/photos. But `entries` has a
+   **unique `&[kind+refId]` index** that forbids two rows sharing that key — even a tombstone plus an
+   active row. Two devices adding the same place offline mint two ids for one key; merging by id keeps
+   both and the local write then throws (or drops data). So entries collapse by natural key, the
+   surviving id is chosen by a total deterministic order (`stamp` desc, deletion-first, id desc) so
+   every device converges, and any `tripEntries`/`photos` that referenced a dropped duplicate id are
+   **re-pointed** to the survivor (`tripEntries` then de-duplicated on `[tripId,entryId]`). The dropped
+   id is hard-removed, not tombstoned — the *place* (the natural key) is preserved, only the redundant
+   duplicate row is discarded; other devices self-heal on their next merge. All pure and tested.
+2. **Only `statMode`, `countryDenominator`, `theme` sync; everything else on `Settings` is
+   device-local.** `deviceId`/`geoDataVersion` (already per-device), `autoSync` and
+   `photoUploadOnCellular` (this device's network policy), `driveConnected` and `lastSyncAt` (this
+   device's own state). "Field-by-field" is a **three-way merge** against a persisted baseline
+   (`syncState.lastSyncedSettings`): a field only one side changed is kept; both-changed → remote wins;
+   no baseline (a new device meeting an existing doc) → the shared Drive value wins. That last rule is
+   what makes it converge across a push/pull cycle instead of ping-ponging (tested).
+3. **Four device-local fields added beyond plan §4** (`Settings.driveConnected`,
+   `Settings.photoUploadOnCellular`, `SyncState.pushedRevision`, `SyncState.lastSyncedSettings`). None
+   indexed → no Dexie version bump; `seed.ts` backfills them onto existing rows at startup (before
+   render), so the rest of the code can assume they exist.
+4. **`bumpRevision` rewritten** from `db.syncState.put({...whole row})` to `db.syncState.update(1,
+   {revision})`. The old whole-row put reconstructed `SyncState` from a handful of fields and would
+   have silently wiped `pushedRevision`/`lastSyncedSettings` on every single user write. Caught before
+   it could bite.
+5. **Sync is a second sanctioned raw writer to the user tables** (alongside the cascade). `snapshot.ts`
+   and `photos.ts` write rows through `db.*` directly rather than `repo.ts`, because sync must preserve
+   the *incoming* `updatedAt` (LWW depends on it) and must not spuriously bump the local revision.
+   Documented at both call sites. `repo.ts` remains the only writer for ordinary user actions.
+6. **The Drive document's `revision` increments only when pushed content actually changed** (compared
+   via `canonicalize`). This is what makes "merging the same payload twice changes nothing" true at the
+   revision level, not just the row level — no perpetual re-push loop between two idle devices.
+7. **Service-worker update flow left as `registerType: 'autoUpdate'`.** The "Update available" button
+   is task 7 (deployment); switching to `'prompt'` belongs to the deploy session, not here.
+8. **Pull-to-refresh gesture not implemented.** The brief lists it among task 4's triggers; the manual
+   trigger this session ships is the **"Sync now"** button (and the indicator's **Retry**). The touch
+   gesture is deferred to the deploy/polish session — it can't be verified in this headless environment
+   and risks breaking existing scroll on the list screens. All four *automatic* triggers are wired.
+9. **Cellular detection only blocks a positively-detected cellular radio** (`navigator.connection.type
+   === 'cellular'`). When the platform can't classify the link (desktop, Safari), uploads proceed —
+   blocking everything we can't classify would break sync on the machines that most want it.
+
+### Edge cases found / reasoned through (the brief asks to note these)
+
+1. **The `[kind+refId]` unique index vs tombstones — the headline finding (Deviation 1).** A table
+   whose *natural* key is unique cannot be merged purely by surrogate `id` without either crashing on
+   write or silently losing a row. This is exactly the "subtle mistake that stays hidden for weeks"
+   §7 warns about, and the reason entries needed their own merge path.
+2. **Demotion of an explicit parent that still has children does not propagate as "became derived"
+   across devices — a known, documented, self-healing limitation.** When the user removes the explicit
+   status from e.g. Germany while a visited city keeps it alive, the cascade demotes the row in place
+   (explicit→derived) rather than tombstoning it; a union merge has no signal to carry "this stopped
+   being explicit", so another device that still holds an explicit Germany will re-teach it on the next
+   sync. **Effective status is identical on every device** (recomputed from the still-synced children),
+   so there is no visible or statistical divergence — only the internal explicit/derived flag on that
+   one parent, which self-heals the moment the user next sets or clears it. Fully propagating this would
+   need per-field tombstones or syncing derived rows (which reintroduces the cross-device `updatedAt`
+   churn §7.3 exists to avoid); disproportionate for a rare action in a one-user app. Every common
+   operation (add city → derived parents, set/clear a leaf, delete with no children → tombstone) syncs
+   exactly.
+3. **Merge-write must preserve `updatedAt`** — hence the deliberate `repo.ts` bypass (Deviation 5).
+4. **The derived rebuild after a merge bumps the local `revision`** (derived rows are written through
+   `repo`). Those are local-only, non-syncable changes, so the orchestrator sets `pushedRevision` to
+   the *final* revision after the write — otherwise every merge would leave a phantom "unpushed change"
+   and trigger a no-op re-push next time.
+5. **A sync interrupted between the JSON push and a photo upload still completes.** The photo pass runs
+   on every sync regardless of the JSON skip-optimisation, so a leftover `pending` photo is never
+   stranded by the "nothing changed" fast path.
+
+### Left undone (correctly — 7b / deployment)
+
+- **Manual backup** (task 6): `.zip` export/import via the share sheet, merge-or-replace, working with
+  no Google account. Planned lib: `fflate` (the existing `adm-zip` is Node-only, used only by the geo
+  build). Not started.
+- **Deployment** (task 7): GitHub Actions → Pages, Vite `base` set to `/<repo>/`, `VITE_GOOGLE_CLIENT_ID`
+  injected from a repo **variable**, the SW "Update available" button (`registerType: 'prompt'`), and
+  the README Android-install instructions. Not started — **there is no GitHub repo yet** (the user will
+  create it), so `base` is untouched and stays `'./'`.
+- **`docs/OPERATIONS.md`**: the sync-failure triage, client-ID rotation, and geo-regeneration sections
+  are written now; the deploy runbook (CI variable, Pages origin check) is marked TODO for 7b.
+- **Pull-to-refresh** gesture (Deviation 8).
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**138/138** — 121 prior + 17 new merge), and
+  `npm run build` all clean. Build output unchanged in shape (the >500 kB warning is the pre-existing
+  `exifr` one from Phase 6, not sync).
+- Browser (Vite dev, 375×812, dark) — everything a headless environment *can* reach was driven directly:
+  - You screen shows the **Google Drive** section: *Not connected → "Connect Google Drive"* when
+    disconnected; the full connected panel (status, *Last synced NEVER*, *Sync now*, both toggles,
+    *Disconnect*) after flipping `driveConnected` via Dexie; the **About attribution** renders the exact
+    Natural Earth / GeoNames CC BY 4.0 / Photon-OSM ODbL line.
+  - **Both device-local toggles persist** (clicked "upload on mobile data" → `true`, "sync
+    automatically" → `false`, confirmed in Dexie).
+  - **Honest-error contract holds.** With `driveConnected` true and no Google session in the sandbox,
+    the app-start sync attempted a token, GIS reported the popup blocked (no user gesture), and the app
+    surfaced `phase: 'error'` with *"Your browser blocked the Google sign-in popup…"* — in both the
+    Drive panel (as an alert) and the global indicator (with a **Retry** button). **No fake success.**
+    The store returns to `phase: 'idle'` and the indicator disappears once disconnected.
+  - **The client-ID wiring is confirmed from Google's own request.** The GSI popup URL the library
+    built carries `client_id=213622094791-…`, `scope=…/auth/drive.appdata`, `response_type=token` (token
+    flow, no secret), and `origin=http://localhost:5173` — exactly the intended configuration.
+  - No app console errors; `syncState` left pristine (`revision/remoteRevision/pushedRevision = 0`,
+    `lastSyncedSettings = null`), test flags reset — app left in a clean, disconnected state.
+- **Honesty note (this project's standard).** A *real* end-to-end Google sign-in, an actual Drive
+  upload/download, and true cross-device convergence **could not be exercised here** — there is no way
+  to complete interactive Google consent or open the OAuth popup in this headless automation context,
+  and no second device. What *is* proven: the merge (the risky pure core §7 flags) is exhaustively unit-
+  tested including the natural-key collision, re-pointing, tombstone ties, idempotency and settings
+  convergence; the auth/Drive wiring is verified structurally and via the exact GSI request parameters;
+  the UI, triggers, store, and error mapping are driven live. **The definitive test — sign in on a real
+  device, confirm the consent screen appears once, watch data and photos appear on a second device — is
+  the user's to run.** The acceptance criteria that require two real devices / a real Drive are left for
+  that pass.
+
+### Notes for the next session (7b — deploy)
+
+- **The user still needs to confirm the Cloud-Console state** (their answer was "did everything per
+  Claude's guidance", not a checklist): consent screen **published to Production** (else weekly
+  re-auth), Drive API enabled, `drive.appdata` scope added, client is **Web application** type, and
+  authorized origins. Only `http://localhost:5173` matters until the repo exists; **add
+  `https://<user>.github.io` (origin only, no path, no trailing slash) when it does.**
+- **Sync is the third raw writer to the user tables** — `auth.ts`/`snapshot.ts`/`photos.ts` bypass
+  `repo.ts` on purpose. Anything new that writes synced rows during a merge must preserve `updatedAt`.
+- **Deploy checklist**: set Vite `base` to `/<repo>/`; switch PWA `registerType` to `'prompt'` + wire
+  the update button; inject `VITE_GOOGLE_CLIENT_ID` from a GitHub repo **variable** (not a secret);
+  verify the deployed origin exactly matches the OAuth authorized origin.
+- **Backup (task 6)**: add `fflate`; export/import must work with no Google account.
+- The **demotion limitation** (edge case 2) is the one place cross-device state can differ; revisit
+  only if it ever matters in practice.
+- Dev/build still require **Node 20** (`nvm use 20`); the non-login shell defaults to apt Node 18.

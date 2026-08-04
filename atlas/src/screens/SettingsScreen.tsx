@@ -11,6 +11,7 @@ import { computeTripStats, newCountriesByTrip, type TripStats } from '@/domain/t
 import { clearUploadedBlobs, photoStorageStats } from '@/domain/photoRepo'
 import type { Trip } from '@/db/types'
 import { PhotoImportFlow } from '@/components/photos/PhotoImportFlow'
+import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
 import './SettingsScreen.css'
 
 interface TripStatsData {
@@ -97,10 +98,8 @@ export function SettingsScreen() {
   return (
     <div className="settings-screen">
       <h1 className="settings-screen__title">You</h1>
-      <p className="settings-screen__hint">
-        Your headline stat, theme, Google Drive sync and the map data attribution will live here once those pieces
-        are built.
-      </p>
+
+      <GoogleDriveSettings />
 
       <section className="settings-screen__section">
         <h2 className="settings-screen__section-title">Photos</h2>
@@ -203,6 +202,14 @@ export function SettingsScreen() {
           )}
         </section>
       )}
+
+      <section className="settings-screen__section">
+        <h2 className="settings-screen__section-title">About</h2>
+        <p className="settings-screen__attribution">
+          Boundaries from Natural Earth (public domain). Place data from GeoNames, licensed under CC BY 4.0. Search by
+          Photon / OpenStreetMap contributors, ODbL.
+        </p>
+      </section>
 
       {showImport && (
         <PhotoImportFlow

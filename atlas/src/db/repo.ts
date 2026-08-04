@@ -7,14 +7,12 @@ import { db } from '@/db/schema'
 import type { Entry, Photo, PhotoBlob, Settings, SyncedRecord, SyncState, Trip, TripEntry } from '@/db/types'
 
 async function bumpRevision(): Promise<void> {
+  // Touch only `revision` — a whole-row put here would wipe the sync bookkeeping
+  // fields (remoteRevision, pushedRevision, lastSyncedSettings, timestamps) that
+  // the sync layer owns. The singleton is guaranteed to exist (seedDatabase runs
+  // before render), so a field-scoped update is safe and minimal.
   const current = await db.syncState.get(1)
-  await db.syncState.put({
-    id: 1,
-    revision: (current?.revision ?? 0) + 1,
-    remoteRevision: current?.remoteRevision ?? 0,
-    lastPulledAt: current?.lastPulledAt ?? null,
-    lastPushedAt: current?.lastPushedAt ?? null,
-  })
+  await db.syncState.update(1, { revision: (current?.revision ?? 0) + 1 })
 }
 
 type Draft<T extends SyncedRecord> = Omit<T, 'id' | 'createdAt' | 'updatedAt' | 'deletedAt'>

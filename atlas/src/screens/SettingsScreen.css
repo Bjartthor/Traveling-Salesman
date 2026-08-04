@@ -113,3 +113,10 @@
   color: var(--lived);
   font-size: var(--text-sm);
 }
+
+.settings-screen__attribution {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  max-width: 36em;
+}

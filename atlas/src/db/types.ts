@@ -119,9 +119,11 @@ export interface PhotoBlob {
 
 export interface Settings {
   id: 1
+  // --- synced (see @/sync/types SyncableSettings) ---
   statMode: StatMode
   countryDenominator: CountryDenominator
   theme: Theme
+  // --- device-local, never overwritten from a remote ---
   autoSync: boolean
   lastSyncAt: number | null
   deviceId: string
@@ -129,12 +131,30 @@ export interface Settings {
   // this device's IndexedDB. NOT a user preference — Phase 7 sync must not
   // overwrite it from a remote (like deviceId, it is per-device). 0 = unseeded.
   geoDataVersion: number
+  // The user has connected Google Drive on THIS device. Persisted so app start
+  // can silently re-acquire a token (tokens themselves are memory-only) instead
+  // of popping consent every launch. Cleared on sign-out.
+  driveConnected: boolean
+  // Upload photo binaries over a cellular connection. Default false = Wi-Fi
+  // only, so a photo-library import over a foreign SIM can't happen by accident
+  // (07-sync-and-deploy.md task 5). Per-device network policy, not synced.
+  photoUploadOnCellular: boolean
 }
 
 export interface SyncState {
   id: 1
-  revision: number
-  remoteRevision: number
+  revision: number // local authored-change counter; bumped by every repo write
+  remoteRevision: number // the `revision` of the Drive doc we last pulled/pushed
   lastPulledAt: number | null
   lastPushedAt: number | null
+  // The `revision` value as of our last successful push. revision > pushedRevision
+  // ⇒ there are local authored changes Drive has not seen yet (07 task 4).
+  pushedRevision: number
+  // The synced-settings object as of the last sync — the baseline for the
+  // field-by-field three-way settings merge (@/sync/merge mergeSettings).
+  lastSyncedSettings: {
+    statMode: StatMode
+    countryDenominator: CountryDenominator
+    theme: Theme
+  } | null
 }
