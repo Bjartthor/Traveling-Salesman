@@ -12,6 +12,7 @@ import { clearUploadedBlobs, photoStorageStats } from '@/domain/photoRepo'
 import type { Trip } from '@/db/types'
 import { PhotoImportFlow } from '@/components/photos/PhotoImportFlow'
 import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
+import { BackupSettings } from '@/components/backup/BackupSettings'
 import './SettingsScreen.css'
 
 interface TripStatsData {
@@ -100,6 +101,8 @@ export function SettingsScreen() {
       <h1 className="settings-screen__title">You</h1>
 
       <GoogleDriveSettings />
+
+      <BackupSettings />
 
       <section className="settings-screen__section">
         <h2 className="settings-screen__section-title">Photos</h2>

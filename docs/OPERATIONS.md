@@ -1,7 +1,7 @@
 # Atlas — Operations
 
-Practical runbook for the parts of Atlas that need occasional hands-on care. Written at the end of
-Phase 7a (Google Drive sync). The **deployment** sections are stubbed for the deploy session (7b).
+Practical runbook for the parts of Atlas that need occasional hands-on care. Written across Phase 7a
+(Google Drive sync) and Phase 7b (manual backup, deployment).
 
 Everything here assumes **Node 20** for any build step (`nvm use 20`; a non-login shell defaults to
 the apt Node 18, which the PWA build tooling refuses).
@@ -39,6 +39,12 @@ calmly, in this order.
 **The shared file itself** lives in Drive's hidden `appDataFolder` as `atlas-data.json` (plus one
 `photo-<id>.jpg` per photo). It is invisible in the normal Drive UI by design; inspect it via the
 Drive API or the OAuth Playground (scope `drive.appdata`) if you need to see it directly.
+
+**When Drive itself is the problem** (account trouble, quota, or just wanting a copy you can hold
+independently of any of this), reach for **Settings → You → Backup** instead of debugging sync
+further — it exports a `.zip` (JSON plus every photo) via the share sheet with no Google account
+involved at all, and imports back with a choice of merge or replace. A sync system you cannot inspect
+is a sync system you cannot fully trust; the backup is the thing you can.
 
 ---
 
@@ -95,9 +101,63 @@ orphans user data.
 
 ---
 
-## 4. Deployment runbook — TODO (Phase 7b)
+## 4. Deployment
 
-To be written in the deploy session. It will cover: the GitHub Actions → Pages workflow, injecting
-`VITE_GOOGLE_CLIENT_ID` from the repo **variable**, setting Vite `base` to `/<repo>/`, verifying the
-deployed origin exactly matches the OAuth authorized origin, and the service-worker "Update available"
-flow. Keeping this file as the single operational reference once that lands.
+Every push to `main` builds and deploys automatically via
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) — checkout, Node 20, `npm ci`,
+lint, test, build, then `actions/upload-pages-artifact` + `actions/deploy-pages`. Pull requests run
+the same lint+test+build as a check but never deploy. A manual redeploy with no new commit is
+available from the repo's **Actions** tab → this workflow → **Run workflow** (with `main` selected).
+
+### One-time setup for a new repo
+
+The AI cannot do this part — it's clicking through GitHub's web UI, the same spirit as plan §9's
+Cloud Console setup.
+
+1. Create the GitHub repo — **public**, unless the account is on a paid plan with private-repo Pages
+   — and push this project's `main` branch to it.
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions.** Without this one click, the
+   workflow's `actions/deploy-pages` step fails outright — Pages won't accept a workflow-built
+   artifact until this is set, and it only needs setting once.
+3. **Settings → Secrets and variables → Actions → Variables tab** (not Secrets) → **New repository
+   variable** → name `VITE_GOOGLE_CLIENT_ID`, value the same client ID as `.env.local`. It must be a
+   **variable**: secrets aren't exposed to `pull_request` builds (including this repo's own PRs, for
+   forked-PR safety), so a secret here would silently build every PR with sync "not configured"
+   instead of failing loud. See §2 above for what this value is and how to rotate it.
+4. **Google Cloud Console → Credentials → the OAuth client → Authorized JavaScript origins** → add
+   `https://<owner>.github.io` — **origin only**: scheme + host, no path, no trailing slash, even
+   though the app itself is served at `https://<owner>.github.io/<repo>/`. An origin is
+   scheme+host+port; every GitHub Pages project site under one account shares that same origin
+   regardless of which repo/path serves it, so this one entry covers all of them.
+5. Push to `main` (or run the workflow manually). The **Actions** tab's `deploy` job summary links
+   straight to the live URL once it finishes.
+
+### Verifying the origin matches
+
+The single most common first-deploy failure is an origin mismatch — sign-in fails silently, or GIS
+logs an origin error in the console. After deploying:
+
+1. Open the deployed URL; the origin is everything in the address bar up to (not including) the
+   first `/` after the host.
+2. Compare it, character for character, against the Authorized JavaScript origin in Cloud Console
+   (step 4 above). Common mismatches: `http` vs `https`, a trailing slash left on the Console entry,
+   or a `www.` that isn't actually part of the GitHub Pages hostname.
+3. If they don't match, fix the **Console** entry, not the app — Vite's `base` already derives the
+   correct `/<repo>/` path automatically from `GITHUB_REPOSITORY` at build time
+   ([`vite.config.ts`](../atlas/vite.config.ts)), so a broken path in the deployed URL means the repo
+   was renamed since the last deploy, not a config bug; just redeploy.
+
+### The "Update available" banner
+
+`vite.config.ts` uses `registerType: 'prompt'`: Workbox still checks for a new service worker on
+every load exactly as before, but instead of activating it silently under an open tab, the app shows
+a small **"A new version of Atlas is ready"** strip with an **Update** button
+([`UpdateBanner.tsx`](../atlas/src/components/pwa/UpdateBanner.tsx)) — tapping it activates the new
+worker and reloads. If someone reports being stuck on an old version: the banner only appears once
+that device has loaded the page *after* the new worker finished installing in the background, so a
+tab left open since before the deploy won't show it yet — ask them to reload once manually.
+
+### Regenerating icons or the manifest
+
+Icons live in `atlas/public/icons/`; the manifest is generated by `vite-plugin-pwa` from the
+`manifest` block in `vite.config.ts`, not a static file — edit it there, not by hand in `dist/`.

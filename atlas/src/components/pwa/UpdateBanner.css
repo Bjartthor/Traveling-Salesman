@@ -1,0 +1,39 @@
+.update-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--contour);
+  background: var(--shelf);
+  min-height: 36px;
+}
+
+.update-banner__text {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-banner__action {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--visited);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--visited);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.update-banner__action:hover {
+  background: var(--visited);
+  color: var(--abyss);
+}

@@ -10,6 +10,7 @@ import { CountryDetail } from '@/components/places/CountryDetail'
 import { ActiveTripBanner } from '@/components/trips/ActiveTripBanner'
 import { TripDetail } from '@/components/trips/TripDetail'
 import { SyncIndicator } from '@/components/sync/SyncIndicator'
+import { UpdateBanner } from '@/components/pwa/UpdateBanner'
 import { useSyncTriggers } from '@/sync/useSyncTriggers'
 import './App.css'
 
@@ -29,6 +30,7 @@ function App() {
           </main>
           <ActiveTripBanner />
           <SyncIndicator />
+          <UpdateBanner />
           <BottomNav />
         </div>
         <CountryDetail />

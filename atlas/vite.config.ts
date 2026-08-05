@@ -3,9 +3,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// GitHub Actions sets GITHUB_REPOSITORY to "owner/repo" for every workflow run
+// (07-sync-and-deploy.md task 7: "set Vite base correctly for a project site").
+// Deriving it here means the repo name never needs to be hand-typed into
+// config — local dev and preview keep the relative './' base unchanged.
+const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
+
 // https://vite.dev/config/
 export default defineConfig({
-  base: './',
+  base: repoName ? `/${repoName}/` : './',
   // Default stays 5173 — plan §9 registers http://localhost:5173 as an OAuth
   // origin — but honour PORT so a second dev server can run alongside.
   server: { port: Number(process.env.PORT) || 5173 },
@@ -17,7 +23,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' + our own `virtual:pwa-register` import in main.tsx (rather
+      // than autoUpdate's silent activation): a waiting update surfaces as the
+      // "Update available" banner instead of swapping app code under the
+      // user's fingers mid-session (07-sync-and-deploy.md task 7).
+      registerType: 'prompt',
       includeAssets: ['icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-512-maskable.png'],
       manifest: {
         name: 'Atlas',

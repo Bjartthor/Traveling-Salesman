@@ -1,0 +1,40 @@
+.backup__file-label {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.backup__file-label input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.backup__file-label--disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.backup__pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+}
+
+.backup__confirm {
+  margin-top: var(--space-2);
+}
+
+.backup__confirm-actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.backup__confirm-actions .settings-screen__action {
+  flex: 1;
+}

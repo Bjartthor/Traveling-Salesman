@@ -1,0 +1,79 @@
+name: Deploy to GitHub Pages
+
+# Builds on every push to main and every pull request (so a PR's build is
+# verified before merge — 07-sync-and-deploy.md task 7). Only a push to main
+# (or a manual run against main) actually deploys.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; let an in-flight one finish rather than
+# racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: atlas/package-lock.json
+
+      - name: Install dependencies
+        working-directory: atlas
+        run: npm ci
+
+      - name: Lint
+        working-directory: atlas
+        run: npm run lint
+
+      - name: Test
+        working-directory: atlas
+        run: npm test
+
+      - name: Build
+        working-directory: atlas
+        # A repository VARIABLE, not a secret — it ships in the client bundle
+        # by design (no client secret exists in this OAuth flow) and secrets
+        # are not available to pull_request builds from forks; variables are.
+        # See docs/OPERATIONS.md §2.
+        env:
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+        run: npm run build
+
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/configure-pages@v5
+
+      - name: Upload build artifact
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: atlas/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

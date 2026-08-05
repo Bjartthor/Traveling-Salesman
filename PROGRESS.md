@@ -1789,3 +1789,167 @@ Cloud-Console state). Everything runs offline-first and mirrors to the user's ow
 - The **demotion limitation** (edge case 2) is the one place cross-device state can differ; revisit
   only if it ever matters in practice.
 - Dev/build still require **Node 20** (`nvm use 20`); the non-login shell defaults to apt Node 18.
+
+## Phase 7b — Manual backup and deployment (done)
+
+Tasks 6 and 7 of `07-sync-and-deploy.md`, both explicitly deferred by 7a's own hand-off notes above.
+Two scope questions were asked and confirmed before writing code: who runs the actual GitHub-side
+steps (repo creation, Pages source, the repo variable) given this sandbox has neither a `gh` CLI nor
+stored GitHub credentials — the user does, from a runbook, same spirit as plan §9's Cloud Console
+walkthrough — and whether this session covers both backup and deployment or deployment only, since
+`START-HERE.md`'s session table labels 7b just "Deploy" while PROGRESS.md's own 7a notes filed both
+under "7b / deployment." Confirmed: both.
+
+### What was built
+
+- **Manual backup** (`atlas/src/backup/`): [`types.ts`](atlas/src/backup/types.ts) (`BackupDoc`,
+  schema v1) and [`backup.ts`](atlas/src/backup/backup.ts) — `exportBackup()`/`readBackupFile()`/
+  `importBackupMerge()`/`importBackupReplace()`. Deliberately thin: export reuses `buildLocalSnapshot()`
+  (the exact same explicit-entries-plus-tombstones view Drive sync pushes), merge reuses
+  `mergeSnapshots()`/`applyMergedSnapshot()` (the same LWW rule and Dexie write path Drive pull uses),
+  and replace is the one genuinely new operation — a full wipe-and-restore in one transaction. Photo
+  bytes ride as `photo-<id>.jpg` zip entries (same naming Drive uses, independently defined, not
+  shared code) written via [`fflate`](atlas/package.json)'s async `zip`/`unzip` (now a direct
+  dependency — it was already present transitively via `mapshaper`, the geo-build tool). Photo blob
+  restore mirrors `@/sync/photos` `ensurePhotoBlob`'s trick exactly: keep the zip's bytes as-is for
+  `full` (already resized/EXIF-stripped when first attached) and only re-run `processImage` to
+  regenerate the `thumb`, avoiding a second lossy JPEG re-encode.
+  [`share.ts`](atlas/src/backup/share.ts) — `shareOrDownloadZip()`, the Web Share API (file sharing)
+  with a plain `<a download>` fallback; a cancelled share sheet is treated as a non-error, not an
+  unexpected surprise download.
+- **Backup UI** [`BackupSettings.tsx`](atlas/src/components/backup/BackupSettings.tsx) — added to the
+  You screen directly below Google Drive (the existing `GoogleDriveSettings` "not configured" branch
+  already said "a backup is still available below," which is exactly where it now lives), following
+  its `busy`/local-error/notice conventions and the two-step confirm pattern for **Replace**
+  specifically (destructive; **Merge** commits immediately, same "the action is the save" logic the
+  status sheet uses). Works with **no Drive dependency at all** — doesn't call `isConfigured()` or
+  read any sync state.
+- **Service-worker update flow**: [`vite.config.ts`](atlas/vite.config.ts) switched
+  `registerType: 'autoUpdate'` → `'prompt'`. [`registerUpdatePrompt.ts`](atlas/src/pwa/registerUpdatePrompt.ts)
+  imports `virtual:pwa-register` itself and calls it once from
+  [`main.tsx`](atlas/src/main.tsx) — which also makes vite-plugin-pwa stop auto-injecting its own
+  bare `registerSW.js` script (`injectRegister: 'auto'`'s documented behaviour once you import the
+  virtual module yourself; confirmed in the build output, see Verified). A waiting update sets
+  [`updateStore.ts`](atlas/src/pwa/updateStore.ts) (zustand, mirrors `syncStore.ts`'s shape), which
+  [`UpdateBanner.tsx`](atlas/src/components/pwa/UpdateBanner.tsx) — mounted in `App.tsx`'s shell stack
+  next to `SyncIndicator`/`ActiveTripBanner` — turns into the "a new version is ready" strip with an
+  **Update** button, exactly the brief's "small button rather than reloading under the user's fingers."
+- **Deployment**: [`vite.config.ts`](atlas/vite.config.ts)'s `base` is now derived from
+  `process.env.GITHUB_REPOSITORY` (which every GitHub Actions run sets to `owner/repo`) instead of a
+  hand-typed `/<repo>/` — falls back to the existing `'./'` outside CI, so local dev/preview are
+  untouched and the repo can be renamed with no config edit.
+  [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — checkout, Node 20, `npm ci`, lint,
+  test, build (`VITE_GOOGLE_CLIENT_ID` from a repo **variable**), then the official
+  `actions/configure-pages` + `actions/upload-pages-artifact` + `actions/deploy-pages` two-job flow.
+  Runs lint+test+build on every `pull_request` too (as a check, never deploying), and on `workflow_dispatch`
+  for a manual redeploy with no new commit.
+- **Docs**: [`README.md`](README.md) gained a *Deploying* section (the one-time GitHub setup,
+  condensed) and Android home-screen install steps. [`docs/OPERATIONS.md`](docs/OPERATIONS.md) §4's
+  TODO stub is now the real deploy runbook — one-time setup, verifying the deployed origin against
+  Cloud Console, what the Update banner means operationally, where icons/manifest are edited — plus a
+  short pointer to Backup added to the end of §1, since "the sync is broken, now what" and "I want a
+  copy I can trust independent of sync" are the same underlying worry.
+
+### Deviations from the plan, and why
+
+1. **README's link to `travelingSalesmanClaudeInputs/00-PLAN.md` was dead and got removed, not
+   fixed-in-place.** That directory lives one level *above* the repo root (sibling to
+   `Traveling_Salesman/`, not inside it), so the relative link could never resolve once pushed to
+   GitHub. `START-HERE.md`'s own workflow pastes these files into fresh sessions rather than shipping
+   them with the app, so this reads like a Phase-1-era assumption of co-location that was never true,
+   not a deliberate structure to preserve. Didn't copy the design docs into the repo either — that's a
+   bigger call than this session's scope — just dropped the dead link and the "Project layout" bullet
+   built on it, replacing both with what the repo actually contains.
+2. **`base` is derived from `GITHUB_REPOSITORY` at build time rather than set to a literal `/<repo>/`.**
+   The task only says "set Vite `base` correctly for a project site"; deriving it removes a whole class
+   of "forgot to update config after renaming the repo" bug for free, and needed no answer to "what's
+   the repo actually called" to write correct code — verified both branches by building with and
+   without the env var set (see Verified).
+3. **Backup's settings merge always takes the backup's values** (`mergeSnapshots({ ..., settingsBase:
+   null })`) rather than a real three-way merge. A one-off file has no persisted baseline the way two
+   synced devices do (`syncState.lastSyncedSettings`), so this is `@/sync/merge`'s own "no baseline yet
+   → the shared value wins" branch, the same rule a brand-new device follows on its first Drive sync —
+   reused rather than inventing a bespoke rule for three low-stakes display preferences.
+4. **Did not create the GitHub repo, push, or touch any GitHub settings** — confirmed with the user
+   before writing anything. This sandbox has no `gh` CLI and no stored GitHub credentials, and repo
+   creation / pushing / flipping Pages settings are the kind of visible, hard-to-reverse-ish actions
+   worth confirming regardless. Wrote the exact steps into `docs/OPERATIONS.md` §4 instead — the same
+   "the AI cannot do this part" boundary plan §9 already drew for the Cloud Console. **The user still
+   needs to run these**; see Notes.
+5. **New branch `phase-7b-deploy`**, off `phase-7a-sync` (which already carries all of Phase 7a),
+   rather than committing directly onto `phase-7a-sync`. Matches the one-branch-per-phase pattern the
+   repo's history already shows. `main` is a confirmed trivial fast-forward behind it (`git log
+   phase-7a-sync..main` is empty) — merging both branches into `main` is folded into the GitHub runbook
+   in Notes rather than done here, since `main` only matters once a remote exists to push it to.
+
+### Left undone
+
+Nothing from `07-sync-and-deploy.md`'s task list — all seven tasks across 7a and 7b are built and
+verified to the extent this sandbox can reach. What remains is entirely the GitHub-side setup (no
+tooling here can do it) and the acceptance criteria that need a real phone, a second device, or a live
+Google account — see Notes.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**138/138**, unchanged from 7a — this phase's new
+  code is exercised end-to-end live below rather than by new unit tests; nothing here is a pure
+  function in the way `merge.ts`/`cascade.ts` are) all clean.
+- `npm run build` clean **both with and without `GITHUB_REPOSITORY` set**, confirming the dynamic
+  `base` actually lands in the output: unset → `base: './'` (unchanged prior behaviour); set to
+  `someuser/atlas` → `dist/index.html`'s script/CSS/manifest links, `manifest.webmanifest`'s
+  `start_url`/`scope`, and every icon path all correctly become `/atlas/...`.
+  `dist/registerSW.js` (the auto-injected fallback) is confirmed **no longer generated** — `main.tsx`'s
+  own `virtual:pwa-register` import suppresses it, exactly as vite-plugin-pwa's `injectRegister: 'auto'`
+  documents. `dist/sw.js`'s generated code confirmed `self.skipWaiting()` is called **only** inside the
+  `SKIP_WAITING` postMessage handler, never unconditionally at install — i.e. `registerType: 'prompt'`
+  produces a worker that genuinely waits, not `autoUpdate` behaviour wearing a different label.
+- Browser (Vite dev, 375×812, dark), driven live end-to-end, not just at the function level:
+  - **Backup round-trip through the real UI**: added 2 places + 1 trip, clicked **Export backup** —
+    fell back to a real browser download (no Web Share API in this headless context) with the correct
+    filename and a `2 places · 1 trip · 1 photo`-style notice; fed the downloaded file back through the
+    actual hidden file input (a `DataTransfer`-constructed `change` event, not a direct function call)
+    — the pending-import card showed the right summary and exported date; **Merge into this device**
+    updated the notice and cleared the card.
+  - **Merge is additive, replace is destructive — proven, not just read from the code**: added a place
+    absent from the backup, merge-imported the backup → union of both (3 places); replace-imported the
+    same backup → back down to exactly the backup's 2 places.
+  - **Photo blob round-trip, byte-checked**: attached a real photo (canvas-generated JPEG) to a place,
+    exported, deleted the local blob only (simulating a device that never had it), merge-imported the
+    same backup — the blob came back with a **byte-identical `full`** (770/770 bytes) and a freshly
+    regenerated `thumb`, confirming the "keep raw bytes, regenerate only the thumbnail" logic actually
+    behaves as documented.
+  - **All three format-validation errors**, hand-built with `fflate`: non-zip garbage bytes, a valid
+    zip missing `atlas-backup.json`, and a valid zip with `schema: 999` — each produced its exact
+    intended `BackupFormatError` message rather than a generic crash.
+  - **UpdateBanner**: renders nothing by default; once the store's `needsRefresh` is set, the
+    `role="status"` strip appears with the right copy and an **Update** button that calls the stored
+    callback. Dev mode has no real service worker to go stale (`devOptions` isn't enabled, same as every
+    earlier phase), so this exercised the component/store wiring directly rather than a full
+    install→waiting→activate cycle — that needs a real deployed build, see Notes.
+  - No console errors anywhere above. App returned to a fully clean state afterward — every test
+    entry/trip/photo/blob cleared, `syncState` and `settings` reset to defaults, confirmed via direct
+    Dexie counts before a final reload.
+- `preview_screenshot` hung once (30 s timeout) right after a synthetic update-banner click — the same
+  pre-existing tool flakiness Phases 3/3b/4a already documented, not a new issue: `preview_eval` and
+  `preview_console_logs` immediately confirmed the page was fully responsive with zero errors, and a
+  subsequent screenshot succeeded normally.
+
+### Notes for the next session
+
+There isn't a next build phase — this finishes everything in `00-PLAN.md` §10. What's left is entirely
+outside what an AI in this sandbox can do, the same boundary plan §9 already drew for the Cloud
+Console. Full detail is in `docs/OPERATIONS.md` §4; in short:
+
+1. **Create the GitHub repo** (public, needed for free Pages) and push `main` to it — merge
+   `phase-7a-sync` and `phase-7b-deploy` into `main` first (both are confirmed trivial fast-forwards).
+2. **Settings → Pages → Source: GitHub Actions.**
+3. **Settings → Secrets and variables → Actions → Variables** → add `VITE_GOOGLE_CLIENT_ID` (same value
+   as `.env.local`; must be a variable, not a secret — `pull_request` builds can't see secrets).
+4. **Cloud Console → the OAuth client → Authorized JavaScript origins** → add
+   `https://<your-github-username>.github.io` (origin only — no path, no trailing slash).
+5. Also **confirm the rest of the Cloud-Console checklist 7a carried forward** — consent screen
+   published to **Production** (else weekly re-auth), Drive API enabled, `drive.appdata` scope present,
+   client type **Web application** — none of that could be verified from this sandbox either.
+6. Push (or run the workflow manually), then work through `07-sync-and-deploy.md`'s acceptance
+   checklist for real: two devices, a live Google account, airplane mode, clearing site data and
+   reinstalling. That is the one thing no amount of sandbox testing can substitute for.
