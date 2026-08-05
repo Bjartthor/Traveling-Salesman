@@ -2,12 +2,19 @@
 // task 1). Returns a short-lived access token for the Drive appDataFolder scope.
 // No client secret, no refresh token, nothing sensitive in the bundle.
 //
-// The access token lives in module memory ONLY — never localStorage, never
-// IndexedDB. On a page reload we start tokenless. Re-acquiring one is only ever
-// attempted from a real user gesture (see hasUserActivation below) — GIS's
-// "silent" prompt still opens a real popup under the hood, which a reload's
-// automatic sync triggers can't provide, so a fresh reconnect tap (Sync now /
-// Retry / Connect) is what actually re-establishes the session, not silence.
+// The access token is cached in module memory and mirrored to sessionStorage —
+// never localStorage, never IndexedDB. sessionStorage (rather than memory-only)
+// is deliberate: mobile browsers reload the page far more often than it looks
+// like from the outside (backgrounding a tab or installed PWA commonly gets it
+// silently discarded and reloaded to reclaim memory), and a memory-only token
+// doesn't survive that. sessionStorage does, while still clearing on an actual
+// tab/app close — the token can only ever touch this app's own private Drive
+// folder either way, so this only widens the exposure window, not what it can
+// reach. When there's genuinely no valid token (expired, or the tab was really
+// closed), re-acquiring one is only ever attempted from a real user gesture
+// (see hasUserActivation below) — GIS's "silent" prompt still opens a real
+// popup under the hood, so a fresh reconnect tap (Sync now / Retry / Connect)
+// is what re-establishes the session, not silence.
 
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
@@ -124,7 +131,40 @@ interface StoredToken {
   value: string
   expiresAt: number
 }
-let token: StoredToken | null = null
+
+const STORAGE_KEY = 'atlas:driveToken'
+
+function readStoredToken(): StoredToken | null {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredToken>
+    return typeof parsed.value === 'string' && typeof parsed.expiresAt === 'number'
+      ? { value: parsed.value, expiresAt: parsed.expiresAt }
+      : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredToken(t: StoredToken): void {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(t))
+  } catch {
+    // Storage unavailable (e.g. Safari private mode) — the in-memory copy still
+    // carries the rest of this page's lifetime, it just won't survive a reload.
+  }
+}
+
+function clearStoredToken(): void {
+  try {
+    sessionStorage.removeItem(STORAGE_KEY)
+  } catch {
+    // ignore — nothing to clear if it's unavailable in the first place
+  }
+}
+
+let token: StoredToken | null = readStoredToken()
 let client: TokenClient | null = null
 let pending: { resolve: (t: string) => void; reject: (e: AuthError) => void } | null = null
 let inFlight: Promise<string> | null = null
@@ -151,9 +191,10 @@ function hasUserActivation(): boolean {
   return typeof navigator === 'undefined' || !('userActivation' in navigator) ? true : navigator.userActivation.isActive
 }
 
-/** Drop the in-memory token — called when Drive answers 401 (token no longer valid). */
+/** Drop the token, memory and sessionStorage alike — called on sign-out and when Drive answers 401 (token no longer valid). */
 export function forgetToken(): void {
   token = null
+  clearStoredToken()
 }
 
 function mapTokenError(resp: TokenResponse): AuthError {
@@ -193,6 +234,7 @@ function ensureClient(): TokenClient {
       if (!req) return
       if (resp.error || !resp.access_token) return req.reject(mapTokenError(resp))
       token = { value: resp.access_token, expiresAt: Date.now() + (resp.expires_in ?? 3600) * 1000 }
+      writeStoredToken(token)
       req.resolve(resp.access_token)
     },
     error_callback: (err) => {
@@ -254,7 +296,7 @@ export async function signIn(): Promise<void> {
  */
 export async function signOut(): Promise<void> {
   const current = token?.value
-  token = null
+  forgetToken()
   if (current && window.google?.accounts?.oauth2) {
     try {
       window.google.accounts.oauth2.revoke(current)
