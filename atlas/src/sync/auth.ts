@@ -3,8 +3,11 @@
 // No client secret, no refresh token, nothing sensitive in the bundle.
 //
 // The access token lives in module memory ONLY — never localStorage, never
-// IndexedDB. On a page reload we start tokenless and silently re-acquire one if
-// the user had connected Drive on this device (settings.driveConnected).
+// IndexedDB. On a page reload we start tokenless. Re-acquiring one is only ever
+// attempted from a real user gesture (see hasUserActivation below) — GIS's
+// "silent" prompt still opens a real popup under the hood, which a reload's
+// automatic sync triggers can't provide, so a fresh reconnect tap (Sync now /
+// Retry / Connect) is what actually re-establishes the session, not silence.
 
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
@@ -21,6 +24,7 @@ export type AuthErrorKind =
   | 'declined' // user closed the popup or denied access
   | 'popup_blocked' // browser blocked the popup (often: no user gesture)
   | 'revoked' // token gone / access revoked from the Google account page
+  | 'gesture_required' // no live token and no user gesture to safely request one
   | 'unknown'
 
 export class AuthError extends Error {
@@ -45,6 +49,8 @@ export function describeAuthError(kind: AuthErrorKind): string {
       return 'Your browser blocked the Google sign-in popup. Allow popups for this site, then tap Connect again.'
     case 'revoked':
       return 'Google Drive access has expired or was revoked. Tap Connect to sign in again — your local data is untouched.'
+    case 'gesture_required':
+      return 'Google Drive needs a moment of your attention to reconnect — tap Sync now. (Browsers block sign-in popups that don’t start from a tap, so this can’t happen automatically.)'
     default:
       return 'Something went wrong talking to Google. Your local data is safe. Please try again.'
   }
@@ -127,6 +133,24 @@ export function hasValidToken(): boolean {
   return token !== null && Date.now() < token.expiresAt - EXPIRY_MARGIN_MS
 }
 
+/**
+ * True if we're close enough to a real user tap/click that requesting a token is
+ * safe. GIS's "silent" `prompt: ''` token request still opens a real (auto-
+ * closing, if it can be satisfied silently) popup window under the hood — it is
+ * NOT a same-origin iframe like the ID-token/One Tap flow. Calling it outside a
+ * user gesture gets the popup blocked by the browser every time (confirmed
+ * against the live GIS library: `[GSI_LOGGER] Failed to open popup window`),
+ * which both defeats the "silently re-acquire on reload" design intent and is a
+ * plausible source of renderer instability when it happens automatically and
+ * repeatedly in an installed/standalone PWA (no tab strip to host the attempt).
+ * Falls back to `true` (previous, unguarded behaviour) on browsers without the
+ * User Activation API — Safari's without it too, but doesn't run GIS reliably
+ * either way, so no real-world coverage is lost.
+ */
+function hasUserActivation(): boolean {
+  return typeof navigator === 'undefined' || !('userActivation' in navigator) ? true : navigator.userActivation.isActive
+}
+
 /** Drop the in-memory token — called when Drive answers 401 (token no longer valid). */
 export function forgetToken(): void {
   token = null
@@ -191,6 +215,9 @@ export async function getAccessToken(): Promise<string> {
   if (!isConfigured()) throw new AuthError('not_configured', 'No Google client ID.')
   if (hasValidToken()) return token!.value
   if (inFlight) return inFlight
+  if (!hasUserActivation()) {
+    throw new AuthError('gesture_required', 'Reconnecting Google Drive needs a tap — automatic background sync can’t open the sign-in popup.')
+  }
 
   inFlight = (async () => {
     if (!navigator.onLine) throw new AuthError('offline', 'No network connection.')
