@@ -75,6 +75,7 @@ async function runSync(): Promise<SyncResult> {
     // 1. Pull.
     const remoteFile = await findFile(DATA_FILE)
     const remoteDoc = remoteFile ? await downloadJson<AtlasDoc>(remoteFile.id) : null
+    void logInfo('sync: pulled')
     if (remoteDoc && remoteDoc.schema > SYNC_SCHEMA_VERSION) {
       store.setError('This copy of Atlas is older than the data in your Drive. Update the app, then sync again.')
       return { outcome: 'error', pushed: false, pulled: false, message: 'remote schema newer' }
@@ -97,15 +98,20 @@ async function runSync(): Promise<SyncResult> {
 
     // 3. Photo pass first, so new/cleared driveFileIds ride along in the doc.
     await syncPhotos()
+    void logInfo('sync: photos done')
 
     // 4. Merge (photo metadata is now current in the local snapshot).
     const local = await buildLocalSnapshot()
     const merged: SyncSnapshot = remoteSnapshot
       ? mergeSnapshots({ local, remote: remoteSnapshot, settingsBase: bookkeeping.lastSyncedSettings })
       : local
+    void logInfo('sync: merged')
 
     // 5. Write locally only if the merge actually changed local state.
-    if (!snapshotsEqual(merged, local)) await applyMergedSnapshot(merged)
+    if (!snapshotsEqual(merged, local)) {
+      await applyMergedSnapshot(merged)
+      void logInfo('sync: applied merge locally')
+    }
 
     // 6. Push only if the remote is missing or differs — keeps re-syncing an
     //    unchanged payload from bumping the revision forever (idempotence).
@@ -122,6 +128,7 @@ async function runSync(): Promise<SyncResult> {
       }
       await uploadJson(DATA_FILE, doc, remoteFile?.id)
       pushed = true
+      void logInfo('sync: pushed')
     }
 
     // 7. Bookkeeping. finalRevision includes bumps from applyMergedSnapshot's
@@ -140,6 +147,7 @@ async function runSync(): Promise<SyncResult> {
 
     queued = false
     store.setIdle()
+    void logInfo('sync: ok')
     return { outcome: 'ok', pushed, pulled: remoteSnapshot !== null }
   } catch (e) {
     if (e instanceof AuthError) {
