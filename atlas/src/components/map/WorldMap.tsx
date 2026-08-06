@@ -10,6 +10,34 @@ import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
 
+// Generating each feature's SVG path `d` string (d3.geoPath) is the expensive
+// part of rendering this map — walking every coordinate of every
+// country/subdivision polygon (~250 countries for the world layer).
+// `decodeLayer` (@/components/map/topo) already caches the topo→GeoJSON
+// decode, but path generation is a separate step with no cache of its own,
+// and useMemo's cache dies the moment WorldMap unmounts. A rapid remount
+// storm — fast tab-switching, an OS back-gesture misfire, whatever the
+// trigger — redoes this for all ~250 countries from scratch on every single
+// remount. None of the inputs actually change across a remount on the same
+// device (same topology, same viewport), so caching at module scope turns a
+// remount storm into a cache hit instead of a repeated CPU/memory spike.
+const pathsCache = new Map<string, { key: string; paths: { id: string; name: string; d: string }[] }>()
+
+function getPaths(
+  cacheId: string,
+  pathGen: (f: MapFeature['feature']) => string | null,
+  features: readonly MapFeature[],
+  width: number,
+  height: number,
+): { id: string; name: string; d: string }[] {
+  const key = `${width}x${height}:${features.length}`
+  const cached = pathsCache.get(cacheId)
+  if (cached?.key === key) return cached.paths
+  const paths = features.map((f) => ({ id: f.id, name: f.name, d: pathGen(f.feature) ?? '' })).filter((p) => p.d)
+  pathsCache.set(cacheId, { key, paths })
+  return paths
+}
+
 // Past this zoom factor (relative to the whole-world fit), a selected
 // country's admin-1 regions load and draw on top of it. Chosen so a
 // mid-sized country (e.g. Germany) has grown large enough on screen for
@@ -96,11 +124,8 @@ export function WorldMap({ countryStatus, subdivisionStatus, selectedCode, onSel
   }, [size.height])
 
   const countryPaths = useMemo(
-    () =>
-      pathGen
-        ? worldFeatures.map((f) => ({ id: f.id, name: f.name, d: pathGen(f.feature) ?? '' })).filter((p) => p.d)
-        : [],
-    [pathGen, worldFeatures],
+    () => (pathGen ? getPaths('world', pathGen, worldFeatures, size.width, size.height) : []),
+    [pathGen, worldFeatures, size.width, size.height],
   )
 
   // --- pan/zoom: transform is applied directly to the DOM outside React's
@@ -165,11 +190,8 @@ export function WorldMap({ countryStatus, subdivisionStatus, selectedCode, onSel
   }, [selectedCode, overThreshold])
 
   const admin1Paths = useMemo(
-    () =>
-      pathGen
-        ? admin1Features.map((f) => ({ id: f.id, name: f.name, d: pathGen(f.feature) ?? '' })).filter((p) => p.d)
-        : [],
-    [pathGen, admin1Features],
+    () => (pathGen && selectedCode ? getPaths(`admin1:${selectedCode}`, pathGen, admin1Features, size.width, size.height) : []),
+    [pathGen, admin1Features, selectedCode, size.width, size.height],
   )
 
   if (loadError) {
