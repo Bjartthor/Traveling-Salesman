@@ -4,6 +4,7 @@
 
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
+import { logError, logInfo } from '@/debug/log'
 import { AuthError, describeAuthError, getAccessToken, isConfigured } from '@/sync/auth'
 import { DriveError, DriveUnavailableError, findFile, uploadJson, downloadJson } from '@/sync/drive'
 import { applyMergedSnapshot, buildLocalSnapshot } from '@/sync/snapshot'
@@ -67,6 +68,7 @@ async function runSync(): Promise<SyncResult> {
   }
 
   store.setSyncing()
+  void logInfo('sync: started')
   try {
     await getAccessToken() // may prompt/refresh; throws AuthError on failure
 
@@ -142,6 +144,7 @@ async function runSync(): Promise<SyncResult> {
   } catch (e) {
     if (e instanceof AuthError) {
       store.setError(describeAuthError(e.kind))
+      if (e.kind !== 'gesture_required') void logError(`sync: auth error (${e.kind})`, e.message)
       return { outcome: 'auth', pushed: false, pulled: false, message: e.message }
     }
     if (e instanceof DriveUnavailableError || !navigator.onLine) {
@@ -151,6 +154,7 @@ async function runSync(): Promise<SyncResult> {
     }
     const message = e instanceof DriveError ? e.message : e instanceof Error ? e.message : String(e)
     store.setError(`Sync failed: ${message}`)
+    void logError('sync: failed', message)
     return { outcome: 'error', pushed: false, pulled: false, message }
   }
 }

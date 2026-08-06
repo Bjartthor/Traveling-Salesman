@@ -3,6 +3,7 @@ import type {
   City,
   Country,
   Entry,
+  LogEntry,
   Photo,
   PhotoBlob,
   Settings,
@@ -26,6 +27,9 @@ export class AtlasDB extends Dexie {
   settings!: EntityTable<Settings, 'id'>
   syncState!: EntityTable<SyncState, 'id'>
 
+  // Device-only breadcrumb trail (@/debug/log) — never synced, not user data.
+  debugLog!: EntityTable<LogEntry, 'id'>
+
   constructor() {
     super('atlas')
 
@@ -42,6 +46,27 @@ export class AtlasDB extends Dexie {
 
       settings: 'id',
       syncState: 'id',
+    })
+
+    // Additive only — every table from version 1 restated unchanged, plus the
+    // new debugLog store. Dexie diffs against the prior version and only
+    // creates what's new, so this upgrades an existing device's database (real
+    // trips/places already on it) in place without touching any of it.
+    this.version(2).stores({
+      countries: 'code, code3, continent, region',
+      subdivisions: 'id, countryCode, name',
+      cities: 'geonameId, countryCode, subdivisionId, asciiName, *searchTokens',
+
+      entries: 'id, &[kind+refId], status, updatedAt',
+      trips: 'id, isActive, updatedAt',
+      tripEntries: 'id, tripId, entryId, updatedAt',
+      photos: 'id, entryId, tripId, uploadState, updatedAt',
+      photoBlobs: 'photoId',
+
+      settings: 'id',
+      syncState: 'id',
+
+      debugLog: '++id, ts',
     })
   }
 }

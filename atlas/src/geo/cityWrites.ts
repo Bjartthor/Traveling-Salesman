@@ -7,6 +7,7 @@
 
 import { db } from '@/db/schema'
 import type { City } from '@/db/types'
+import { logError, logInfo } from '@/debug/log'
 import { invalidateSearchIndex } from '@/geo/search'
 
 // Previously "read the current closest-to-zero row, use one less" — a
@@ -34,6 +35,7 @@ function randomNegativeId(): number {
 const MAX_INSERT_ATTEMPTS = 5
 
 async function insertCity(fields: Omit<City, 'geonameId' | 'searchTokens'>): Promise<City> {
+  void logInfo(`city: insert "${fields.name}" (${fields.source})`)
   for (let attempt = 0; ; attempt++) {
     try {
       const row: City = { ...fields, geonameId: randomNegativeId(), searchTokens: [] }
@@ -42,7 +44,10 @@ async function insertCity(fields: Omit<City, 'geonameId' | 'searchTokens'>): Pro
       return row
     } catch (e) {
       const isIdCollision = e instanceof Error && e.name === 'ConstraintError'
-      if (!isIdCollision || attempt >= MAX_INSERT_ATTEMPTS - 1) throw e
+      if (!isIdCollision || attempt >= MAX_INSERT_ATTEMPTS - 1) {
+        void logError(`city: insert failed for "${fields.name}"`, e instanceof Error ? e.message : String(e))
+        throw e
+      }
     }
   }
 }

@@ -1,0 +1,55 @@
+.debug-log__actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.debug-log__actions .settings-screen__action {
+  flex: 1;
+}
+
+.debug-log__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.debug-log__entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--contour);
+}
+
+.debug-log__entry:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.debug-log__time {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.debug-log__message {
+  font-size: var(--text-sm);
+  color: var(--chalk);
+}
+
+.debug-log__entry--error .debug-log__message {
+  color: var(--lived);
+}
+
+.debug-log__detail {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--haze);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}

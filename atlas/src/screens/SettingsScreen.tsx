@@ -13,6 +13,7 @@ import type { Trip } from '@/db/types'
 import { PhotoImportFlow } from '@/components/photos/PhotoImportFlow'
 import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
 import { BackupSettings } from '@/components/backup/BackupSettings'
+import { DebugLogSettings } from '@/components/debug/DebugLogSettings'
 import './SettingsScreen.css'
 
 interface TripStatsData {
@@ -213,6 +214,8 @@ export function SettingsScreen() {
           Photon / OpenStreetMap contributors, ODbL.
         </p>
       </section>
+
+      <DebugLogSettings />
 
       {showImport && (
         <PhotoImportFlow

@@ -10,6 +10,7 @@
 import { db } from '@/db/schema'
 import { tripEntriesRepo, tripsRepo } from '@/db/repo'
 import type { Trip } from '@/db/types'
+import { logInfo } from '@/debug/log'
 
 export type ActiveTripConflictResolution = 'close' | 'leaveOpen'
 
@@ -55,6 +56,7 @@ export interface CreateTripInput {
  * required (the caller must ask the user first — see TripForm/TripConflictDialog).
  */
 export async function createTrip(input: CreateTripInput, resolution?: ActiveTripConflictResolution): Promise<Trip> {
+  void logInfo(`trip: create "${input.name}"`)
   const isActive = input.endDate === null
   if (isActive) {
     const active = await getActiveTrip()

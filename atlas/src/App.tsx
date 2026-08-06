@@ -1,4 +1,6 @@
-import { HashRouter, Route, Routes } from 'react-router-dom'
+import { useEffect } from 'react'
+import { HashRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { logInfo } from '@/debug/log'
 import { GeoGate } from '@/geo/GeoGate'
 import { BottomNav } from '@/components/nav/BottomNav'
 import { MapScreen } from '@/screens/MapScreen'
@@ -14,10 +16,19 @@ import { UpdateBanner } from '@/components/pwa/UpdateBanner'
 import { useSyncTriggers } from '@/sync/useSyncTriggers'
 import './App.css'
 
+function RouteLogger() {
+  const location = useLocation()
+  useEffect(() => {
+    void logInfo(`nav: ${location.pathname}`)
+  }, [location.pathname])
+  return null
+}
+
 function App() {
   useSyncTriggers()
   return (
     <HashRouter>
+      <RouteLogger />
       <GeoGate>
         <div className="app-shell">
           <main className="app-content">

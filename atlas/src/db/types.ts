@@ -141,6 +141,18 @@ export interface Settings {
   photoUploadOnCellular: boolean
 }
 
+// --- Debug log (device-only, never synced) ---
+
+export type LogLevel = 'info' | 'error'
+
+export interface LogEntry {
+  id: number // auto-increment primary key
+  ts: number
+  level: LogLevel
+  message: string
+  detail: string | null // e.g. an error's stack trace
+}
+
 export interface SyncState {
   id: 1
   revision: number // local authored-change counter; bumped by every repo write
