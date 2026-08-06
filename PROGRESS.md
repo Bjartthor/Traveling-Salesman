@@ -1953,3 +1953,169 @@ Console. Full detail is in `docs/OPERATIONS.md` §4; in short:
 6. Push (or run the workflow manually), then work through `07-sync-and-deploy.md`'s acceptance
    checklist for real: two devices, a live Google account, airplane mode, clearing site data and
    reinstalling. That is the one thing no amount of sandbox testing can substitute for.
+
+## Post-launch stabilization — real-device crash fixes (done)
+
+Phase 7b shipped Drive sync and deployment; this session is the first real-world usage pass against
+the deployed PWA on the user's own phone, working through a series of live bug reports rather than a
+planned task list. No design doc drove this — each fix started from a symptom report, was reproduced
+live where this sandbox allows, and verified before shipping. Eight fixes, eight separate commits, each
+pushed and confirmed deployed individually so real usage could validate one before the next shipped.
+
+### What was fixed
+
+1. **Automatic Drive sync attempting a token popup with no user gesture — the likely source of
+   repeated "Aw, Snap!" crashes.** [`auth.ts`](atlas/src/sync/auth.ts). Google Identity Services'
+   "silent" `prompt: ''` token request still opens a real popup window under the hood (confirmed live:
+   `[GSI_LOGGER] Failed to open popup window` fires every time `getAccessToken()` runs outside a user
+   gesture). Every automatic sync trigger — app start, foreground, reconnect, the 30 s post-change
+   debounce — called it this way. `getAccessToken()` now checks `navigator.userActivation.isActive`
+   before attempting a token and throws a new `AuthError` kind (`gesture_required`) instead, routed
+   through the existing error display — the always-visible `SyncIndicator`'s Retry button is a real
+   click, so reconnecting is one tap instead of a silent failure. Also the root cause of "sign in more
+   than once": the reload-triggered "silent" reacquire was never actually silent, it was a doomed popup
+   attempt every time.
+2. **Dev server running under Node 18, not 20.** [`.claude/launch.json`](.claude/launch.json) pointed
+   at system `npm`; this project's PWA tooling needs Node 20 (`docs/OPERATIONS.md`), easy to forget in a
+   sandbox with no `nvm` auto-init. Repointed at the Node 20 binary directly.
+3. **Reconnect required almost every app open, even seconds after a successful sync.** Same file. The
+   access token was deliberately memory-only (a considered Phase 7a security choice) — but mobile
+   browsers reload far more often than it looks like from the outside: backgrounding a tab or installed
+   PWA commonly gets it silently discarded and reloaded by the OS to reclaim memory, indistinguishable
+   from "I did nothing" on the user's side. Confirmed against the real device: reconnect needed again
+   about a minute after a successful sync, no action in between. Mirrored the token to `sessionStorage`
+   (still never `localStorage`/IndexedDB) — survives any reload within the browser session, clears only
+   on a real close, sign-out, or 401. The `gesture_required` guard from fix 1 remains the fallback for
+   when there's genuinely no valid token.
+4. **Service worker never noticing a new deploy.** [`registerUpdatePrompt.ts`](atlas/src/pwa/registerUpdatePrompt.ts).
+   The browser's own navigation-triggered update check is throttled to roughly once per 24 h per spec —
+   fine for a tab reloaded often, not for an installed PWA that's mostly resumed. `onRegisteredSW` now
+   calls `registration.update()` hourly and on every return to the foreground (mirrors
+   `@/sync/useSyncTriggers`'s own foreground trigger). Phase 7b's own notes had flagged this as
+   untested against a real deploy; this was its first real-world exercise, and it failed until fixed.
+5. **`ConstraintError: Key already exists in the object store` on every online-search add, after one
+   crashed mid-add.** [`cityWrites.ts`](atlas/src/geo/cityWrites.ts). `nextSyntheticId()` read "the
+   current closest-to-zero row" and used one less — a read-then-write two overlapping inserts (a
+   double-tap, or a second tap landing just before the button's `disabled` state re-rendered) could
+   race. Reproduced live: 8 concurrent `addOnlineCity()` calls reliably collided. Surprising finding
+   along the way, worth remembering — neither an immediate nor a delayed (15–60 ms) retry of the read
+   reliably resolved the race; repeated retries kept reading the same stale "current max" even once the
+   winning write had genuinely committed, which reads like Dexie's transaction-zone tracking letting
+   sibling calls issued in the same batch share a stale read (waiting didn't fix it, so not a plain
+   commit-visibility timing issue). Rather than chase the exact mechanism, removed the read entirely:
+   the id is now a random draw from a ~4.3-billion-value negative range (still guaranteed disjoint from
+   real positive GeoNames ids; confirmed nothing in the app treats it as sequential — see `git grep
+   geonameId`), with a small retry-on-collision loop as cheap insurance rather than the primary defence.
+   Verified live: 32 concurrent inserts (mixed online/manual), zero collisions.
+6. **No way to see what led up to a crash — the user's own request, mid-session.** Added a durable,
+   capped (300-entry) breadcrumb log in a new `debugLog` IndexedDB table
+   ([`db/schema.ts`](atlas/src/db/schema.ts) version 2, additive-only — verified live it upgrades an
+   existing device's database in place, all 170k+ prior rows untouched), written by
+   [`debug/log.ts`](atlas/src/debug/log.ts). Paired with two things the app never had: a top-level React
+   `ErrorBoundary` ([`debug/ErrorBoundary.tsx`](atlas/src/debug/ErrorBoundary.tsx)) catching render-time
+   errors with the full stack and component stack instead of leaving a blank page, and global `window`
+   `error`/`unhandledrejection` handlers ([`debug/globalHandlers.ts`](atlas/src/debug/globalHandlers.ts))
+   for exceptions outside React's render. Breadcrumbs added at the handful of points real crash reports
+   had actually touched: place status changes, trip creation, city inserts, sync start/failure, route
+   changes. Settings → Debug log ([`components/debug/DebugLogSettings.tsx`](atlas/src/components/debug/DebugLogSettings.tsx))
+   lists entries newest-first with Copy (clipboard, falling back to "select below" if the API is
+   unavailable — confirmed live this fallback fires correctly in a document without focus) and Clear.
+   Verified live end to end: forced a real render throw (not a simulated event) and confirmed the
+   ErrorBoundary caught it, logged the full trace, and showed a recoverable screen; confirmed the
+   300-entry cap trims correctly under a 320-entry burst.
+7. **Finer sync-phase breadcrumbs.** [`sync.ts`](atlas/src/sync/sync.ts), same feature, next commit. A
+   real crash report showed "sync: started" and then nothing — not enough to know how far it got. Added
+   a log line after each phase (`pulled`, `photos done`, `merged`, `applied merge locally` — only when a
+   merge write actually happens, `pushed` — only when something changed, `ok`). Verified live against
+   mocked Drive responses, both the merge-happens and nothing-to-merge branches, that phases fire in the
+   right order.
+8. **WorldMap recomputing all ~250 countries' SVG paths on every remount.**
+   [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx). Diagnosed from a real debug-log report: a
+   ~20 s stretch of dozens of rapid nav events cycling through all four tabs, some under 100 ms apart —
+   far faster than physically possible tapping. This app has no programmatic navigation anywhere
+   (`grep -rn "useNavigate\|navigate("` across `src` returns nothing — every route change is a real
+   click or the browser's own history handling), which rules out a self-inflicted loop and points to
+   something external: most likely an OS back-gesture misfiring, or mis-taps as the on-screen keyboard
+   reshaped the layout during the fast typing the user described doing right before the crash. Not
+   something the app can prevent outright — but `countryPaths` (`d3.geoPath` over every country's
+   geometry, the genuinely expensive step) was memoized with `useMemo`, whose cache dies with the
+   component instance, so every remount of `/` — the most expensive of the four screens — redid the
+   full computation from scratch. `decodeLayer` (`@/components/map/topo`) already caches the
+   topo→GeoJSON decode step; path generation itself had no equivalent. Moved to a module-level cache
+   keyed by viewport size. Verified live: 30 rapid remounts produced 1 cache miss and 22+ hits, versus
+   30 full recomputations before. Colors are read fresh from `countryStatus`/`subdivisionStatus` on
+   every render regardless — only the static geometry is cached, confirmed visually (a country set to
+   visited still rendered green afterward).
+
+### Edge cases / surprises found
+
+- GIS's OAuth **token client** (`initTokenClient`, as opposed to the ID-token/One Tap flow) implements
+  "silent" via a real popup attempt, not a same-origin iframe — undocumented enough to be worth
+  restating here for the next person who hits it.
+- Mobile OS backgrounding a tab or installed PWA and silently discarding-then-reloading it is common
+  enough that it should be assumed, not treated as an edge case, when reasoning about anything that
+  depends on in-memory state surviving "the user didn't do anything."
+- Dexie's transaction-zone tracking can apparently let *sibling* `db.transaction()` calls issued in the
+  same batch share a stale read of another sibling's still-in-flight write — confirmed empirically, not
+  fully explained. Worth remembering before writing any other "read current max, write max+1" pattern
+  anywhere else in this codebase (none currently exist, per a full-codebase check of `.add(` call sites).
+- The unauthenticated GitHub REST API's 60-requests/hour rate limit is easy to burn through when polling
+  a slow deploy repeatedly in one session; `github.com/<repo>/actions` (the plain HTML page) isn't
+  subject to the same limit and is a fine fallback for a status check.
+- GitHub Pages deploy times were unusually variable this session (15 s–6 m 51 s on the same "Deploy to
+  GitHub Pages" step, no correlation found with payload size) — infrastructure-side, not this app's
+  doing.
+
+### Left undone / open questions
+
+- **The exact trigger of the rapid-navigation storm (fix 8) is not identified**, only ruled out as
+  self-inflicted app code. A true instant crash leaves no final breadcrumb by definition, so there is no
+  way to fully confirm the WorldMap cache was *the* cause rather than *a* contributing factor. The user
+  has been asked to keep using the app and report whether crashes continue.
+- **One never-explained log entry**: `nav: /config` appeared once, immediately before a crash-adjacent
+  gap in an earlier report — not a route this app defines anywhere (confirmed by reading `App.tsx`'s
+  full route list and grepping for "config"). Backgrounding was ruled out by the user directly. Best
+  guess is the same external navigation-storm mechanism as fix 8, but unconfirmed.
+- **No real end-to-end Google OAuth completion was possible in this sandbox for any of these fixes** —
+  the same standing limitation as every prior sync-related phase. The gesture guard, sessionStorage
+  persistence, and update-check fixes were each verified as thoroughly as a headless environment allows
+  (mocked tokens, forced code paths, live DOM/state inspection), but the definitive test is real,
+  continued use on the actual device — which is exactly what surfaced fixes 5 through 8 in the first
+  place.
+- **Sync's write path (`applyMergedSnapshot`) still does a full clear-and-bulk-add of
+  `entries`/`tripEntries` on every merge that changes anything, not a targeted diff.** Not identified as
+  a proven problem this session, but worth a look if a future crash's debug log shows `sync: applied
+  merge locally` as a recurring point of failure, now that it's individually logged.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**138/138**, unchanged — none of this session's fixes
+  were pure functions in the way `merge.ts`/`cascade.ts` are, so each was verified live in the browser
+  rather than with new unit tests) clean after every single commit, not just at the end.
+- Every fix driven live in a real dev-server browser against real IndexedDB/Dexie, not just read from
+  the source: the GIS popup-blocked error reproduced and then confirmed gone; the sessionStorage token
+  proven to survive a reload and to correctly fall through to the gesture guard once cleared; the
+  geonameId race reproduced with up to 32 concurrent inserts and confirmed resolved; the ErrorBoundary
+  tested against a real forced `throw`, not a simulated event; the sync phase log tested against mocked
+  Drive responses on both the merge and no-op branches; the WorldMap cache tested by direct hit/miss
+  counting across 30 rapid remounts.
+- Each commit pushed individually and its GitHub Actions deploy confirmed `completed`/`success` before
+  moving to the next fix (one, the debug-log commit, additionally verified by diffing the live deployed
+  bundle's contents before and after).
+- App/database left in a clean state after every verification pass — test entries, trips, cities and
+  debug-log rows cleared, `syncState` and `settings` reset — the same convention every prior phase's
+  testing has followed.
+
+### Notes for the next session
+
+- **Settings → Debug log is now the first thing to check for any future crash report.** Ask for a copy
+  of it before doing anything else — it now captures phase-by-phase sync detail, not just top-level
+  outcomes.
+- If crashes persist even after fix 8, the WorldMap cache rules out one real hot spot but the *trigger*
+  (see Left undone) is still unknown — worth checking whether the same rapid-nav pattern recurs, and if
+  so, whether it's reproducible enough to isolate (e.g. specifically during fast typing, specifically
+  near the screen edges, specifically on this one device).
+- The `/config` mystery is unresolved and low-priority unless it recurs with more surrounding context
+  next time.
+- Consider whether `applyMergedSnapshot`'s full clear-and-bulk-add is worth narrowing to a targeted diff
+  — see Left undone.
