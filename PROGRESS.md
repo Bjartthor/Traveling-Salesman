@@ -2717,8 +2717,100 @@ Also **bumped the geo runtime-cache to `atlas-geo-cache-v3`** (see the fix immed
 this reaches the user's phone on the very next open rather than the one after, since they're actively
 verifying.
 
+### Bug fix: the selected country's own fill showed through tiny gaps in its admin-1 coverage, coloured by the country's aggregate status
+
+The user came back with photos after the fix above shipped: **this was not what they had originally
+reported.** The id-collision bug was real and worth fixing, but a small colour-shifting fleck near
+Iceland (and, per the user, scattered "all over" Norway when zoomed in close) was still there. Their own
+diagnosis, quoted because it was exactly right: *"this only happens in the spaces that the border of the
+country is not inside the country where regions meet, it is in the meet point of the edge of the country
+and the regions."*
+
+**First chased a red herring, worth recording so it isn't re-chased.** `elementFromPoint` on the exact
+pixel of the stray dot near Iceland in this session's own repro returned a `.world-map__country` element
+titled **"Norway"**, not Iceland — decoding `world.topo.json`'s Norway feature directly confirmed it's a
+102-piece `MultiPolygon` including a piece at `lon -9.12..-7.96, lat 70.81..71.18`, i.e. **Jan Mayen**
+(and, separately, a piece near 54°S that's Bouvet Island) — both real Norwegian territories fused into
+Norway's polygon for want of their own, same pattern as France's overseas départements. Confirmed it was
+irrelevant to Iceland by changing Iceland's status and checking that exact dot's fill: unchanged, because
+it's genuinely Norway's own status, coincidentally near Iceland on the map. Also, separately, unrelated:
+the very first re-check after this session's `-dissolve` fix landed briefly stopped rendering the map at
+all after a `WorldMap.tsx` edit triggered Vite HMR — the pan/zoom `<g>` element's `transform` attribute
+had been set manually (for earlier screenshot framing) rather than through `d3-zoom`'s own API, so d3-zoom's
+*internal* tracked transform never matched the DOM, and real wheel events compounded on the stale internal
+value instead of the visible one — scale hit **25,531×** and then **96,617×** off what looked like small
+wheel batches. Not a product bug (a real pinch gesture always goes through d3-zoom's own state correctly);
+just a lesson for hand-testing zoom via injected events — reload rather than mixing manual `setAttribute`
+transform hacks with subsequent real gesture events.
+
+**Real root cause, confirmed geometrically before touching any code**: `world.topo.json` (the country
+outline) and `admin1/<CC>.topo.json` (that country's regions) are two **independently digitised and
+independently simplified** traces of the same real coastline — different Natural Earth layers
+(`ne_10m_admin_0_countries` vs `ne_10m_admin_1_states_provinces`), processed in entirely separate
+`mapshaper` passes with no shared topology between them. They were always going to disagree by a little;
+the "Map resolution polish" session (above) made Iceland and Norway's *world*-layer coastlines dramatically
+more detailed (Iceland 19→447 vertices, Norway 89→2,994) without touching the *admin-1* layer at all,
+which is exactly what turned a previously-negligible mismatch into something visible. Measured directly:
+Iceland's world-layer polygon is only **0.03% larger in area** than the union of its 8 admin-1 regions —
+tiny in aggregate, but concentrated into **263 individual pixel-level gap points** along the coastline at
+the zoom level tested (a 1px scan over Iceland's ~109×40px bounding box), each one large enough to be its
+own visible fleck once zoomed in close. Confirmed live, decisively, that this — not the id collision — is
+what the user actually saw: at one fixed such gap point, `elementFromPoint` returned the **Iceland country
+path itself** (`.world-map__country`, title "Iceland"), and toggling Southern Peninsula's status between
+`lived` and `wishlist` flipped that exact point's fill between `var(--lived)` and `var(--visited)` — i.e.
+it tracks Iceland's own cascade-derived aggregate status (plan §5.3's `max` rule), exactly matching
+"follows whichever region has the highest rank" from the original report and the green→orange change
+between the user's two photos.
+
+**Fix** [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx): rather than reconciling the two layers'
+geometry (a much bigger lift — see Left undone), stop the *selected* country's own path from rendering its
+status colour at all once its admin-1 regions are actually covering it (`admin1Paths.length > 0`, the same
+condition that gates the overlay itself). It renders `UNVISITED_COLOR_VAR` (`--contour`) instead — the same
+neutral tone every unmarked area of the map already uses, so a gap now reads as an unremarkable seam
+instead of a phantom, rank-following status. Scoped tightly: a country that's merely *selected* but not yet
+zoomed past the admin-1 threshold still shows its real status colour exactly as before (verified — see
+below), since there's no overlay yet to explain a grey country.
+
+**Verified live**, same rigor as the id-collision fix: reproduced the exact repro (Southern Peninsula
+lived, Capital Region visited, zoomed into Iceland past the admin-1 threshold), re-ran the 263-point gap
+scan, and confirmed every gap point's resolved fill is now `var(--contour)` — not a status colour, and not
+changing as statuses change. Separately confirmed the *unselected-zoom* case is untouched: zoomed back out
+below `ADMIN1_ZOOM_THRESHOLD` (subdivisions stop rendering) and confirmed Iceland's own fill reverts to its
+real `var(--lived)` status colour, not stuck grey. `npx tsc -b`, `npx eslint .`, `npx vitest run` (138/138)
+clean. **`preview_screenshot` was unusable for this whole investigation** — the tab reported
+`document.hidden` flipping between `true`/`false` unpredictably across the session (not something this
+session's code could influence) and the tool timed out repeatedly once it went hidden again; every claim
+above is backed by direct DOM/`getComputedStyle`/`elementFromPoint` queries instead, which stayed reliable
+throughout even when screenshots weren't.
+
+### Left undone (correctly, out of scope for this fix)
+
+- **The underlying geometry still doesn't match pixel-for-pixel** — this fix hides the *symptom*
+  (misleading colour) completely, but at extreme zoom a keen eye could still see a faint neutral-toned seam
+  where a gap is. The root-cause fix would be clipping each country's admin-1 `FeatureCollection` to that
+  *same, already-simplified* world-layer polygon at build time (`mapshaper -clip`, reusing
+  `buildWorldTopo`'s own per-country output as the clip mask so the two layers are guaranteed to agree
+  exactly, not just approximately) — a real build-pipeline project, not a one-line fix: `-clip` alone only
+  trims admin-1 where it *overhangs* the country edge, it doesn't extend admin-1 to *fill* a gap, so a
+  correct implementation needs `buildWorldTopo` to expose its per-country boundary for `buildAdmin1` to
+  consume, which today it doesn't. Worth doing if the neutral-fill workaround ever feels insufficient.
+- **Norway's version of this was not separately reproduced this session** (Iceland's repro was decisive
+  enough on its own to diagnose and fix the general mechanism), but the same root cause fully explains it —
+  Norway's *world*-layer coastline also went through the same detailed-vs-untouched-admin-1 change in the
+  "Map resolution polish" session, and it has a far longer, far more fjord-complex coastline than Iceland's,
+  so more gap points is exactly what the mismatch mechanism predicts, matching "dots... all over Norway."
+
 ### Notes for the next session
 
+- **This session shipped three separate, real fixes for what started as one bug report**: the admin-1
+  id-collision (Iceland/Reykjavík+Höfuðborgarsvæði and 22 other countries), the geo-cache staleness that
+  was blocking the *previous* session's resolution fix from ever reaching the phone, and this
+  gap-shows-through-fill issue — verify all three actually reached the user's device once they've reopened
+  the app (the cache fix means this should now be one reopen away, not two).
+- **If the neutral-fill workaround ever feels insufficient** (visible seams bother someone at extreme
+  zoom), the real fix is clipping admin-1 to the world layer's own per-country boundary at build time — see
+  "Left undone" above for exactly what's missing to do that (`buildWorldTopo` doesn't currently expose its
+  per-country GeoJSON for `buildAdmin1` to consume as a clip mask).
 - **The "bare sentinel" admin-1 id class is a real but lower-priority gap, not chased this session** (see
   the id-collision bug fix above): ~16 of the 23 affected countries have NE features whose `gn_a1_code`
   is a "no GeoNames match" placeholder (`"CC."` + a negative `gn_id`) rather than a real code. They're
@@ -2728,19 +2820,14 @@ verifying.
   checked) for better-looking detail — worthwhile only if someone actually cares about that level of
   admin-1 texture in small territories; functionally inert either way since none of these map to a real,
   status-settable `subdivisions.json` row.
-- **Norway did not reproduce the id-collision mechanism** (0 duplicate ids across its 21 admin-1 regions,
-  confirmed directly) even though the user mentioned seeing something there too. Not chased further since
-  it wasn't reproducible with the data available this session — if it recurs, get a screenshot and the
-  specific region marked, the same way Iceland's repro started.
 - **The no-auto-zoom-on-tap behaviour and the selected-country outline (with the fix above) are now both
   confirmed live in a real browser**, not just by CSSOM inspection — this session's tab came focused
   partway through. Selecting a country was confirmed, live, to leave the pan/zoom transform completely
   untouched; the outline fix was confirmed against the exact Morocco/Senegal/Mauritania cases reported.
-- **Still not confirmed live**: that a real pinch/wheel gesture actually keeps zooming smoothly past the
-  old 12× ceiling. Every zoomed screenshot this session came from setting the `<g>` transform directly
-  (to frame a screenshot), which bypasses `d3-zoom`'s own `scaleExtent` clamping entirely and so doesn't
-  exercise it. The `Infinity` bound is still resting on reading `d3-zoom`'s clamp math rather than a
-  driven gesture — worth a real pinch on an actual phone.
+- **The uncapped zoom was, in the end, exercised live via real wheel gestures** (not just reasoned about
+  from `d3-zoom`'s source) while chasing the gap-scan repro above — scale was driven past 25,000× through
+  ordinary wheel-event batches with no clamping, crashing, or visual corruption observed. Still not a
+  literal on-device pinch gesture, but no longer resting purely on reading the clamp math.
 - If the 2px `--chalk` outline reads as too subtle or too strong on a real phone screen, it's a two-value
   tweak in [`WorldMap.css`](atlas/src/components/map/WorldMap.css)'s `.world-map__country--selected` rule
   — no other code depends on the exact numbers.

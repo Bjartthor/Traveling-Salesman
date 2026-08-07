@@ -5,7 +5,7 @@ import { zoom as d3zoom, zoomIdentity, type D3ZoomEvent } from 'd3-zoom'
 import type { Status } from '@/db/types'
 import { loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
-import { colorForStatus } from '@/components/map/statusColor'
+import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -219,6 +219,21 @@ export function WorldMap({
     [pathGen, admin1Features, selectedCode, size.width, size.height],
   )
 
+  // The world layer and the admin-1 layer trace the same real coastline
+  // independently (separate Natural Earth datasets, simplified separately),
+  // so they don't align to the pixel — a country's admin-1 regions almost
+  // always leave a scattering of tiny gaps along its own coastline where no
+  // region quite reaches the edge. Normally invisible (nothing renders in a
+  // gap), but the selected country's own path sits directly underneath the
+  // admin-1 overlay, coloured by *its own* status — so every gap shows a
+  // fleck of that colour, and since it's the country's cascade-derived
+  // status, every fleck tracks whichever child ranks highest, exactly like a
+  // real (but wrong) extra region would. Once admin-1 regions are actually
+  // covering the selected country, its own fill switches to the same neutral
+  // tone every unvisited area already uses — a gap then reads as an
+  // unremarkable seam instead of a phantom status.
+  const showingAdmin1 = admin1Paths.length > 0
+
   if (loadError) {
     return (
       <div className="world-map world-map--error" role="alert">
@@ -249,7 +264,7 @@ export function WorldMap({
               key={p.id}
               d={p.d}
               className={p.id === selectedCode ? 'world-map__country world-map__country--selected' : 'world-map__country'}
-              style={{ fill: colorForStatus(countryStatus.get(p.id)) }}
+              style={{ fill: p.id === selectedCode && showingAdmin1 ? UNVISITED_COLOR_VAR : colorForStatus(countryStatus.get(p.id)) }}
               onClick={(e) => {
                 e.stopPropagation()
                 onSelectCountry(p.id)

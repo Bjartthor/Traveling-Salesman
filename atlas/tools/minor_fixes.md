@@ -125,3 +125,29 @@ individually select or colour one regardless. To improve: when `gn_a1_code` matc
 (placeholder, no real code), fall through to `iso_3166_2`/`adm1_code` instead — both are confirmed
 unique per feature in the Anguilla/GB samples checked — so each gets its own distinct id and renders as
 its real shape, still uncoloured, just with more coastline/border detail than one merged blob.
+
+---
+
+## 7. `world.topo.json` and `admin1/<CC>.topo.json` trace the same coastline independently, so they don't line up pixel-for-pixel
+
+**Status:** acceptable; correctness bug already fixed at the rendering layer, this is the geometric root cause.
+
+The world layer (`ne_10m_admin_0_countries`) and the admin-1 layer (`ne_10m_admin_1_states_provinces`)
+are two separate Natural Earth datasets, digitised independently and simplified in two entirely separate
+`mapshaper` passes with no shared topology between them (`buildWorldTopo` and `buildAdmin1` never see
+each other's output). They were always going to disagree by a little; that only became visible once the
+"Map resolution polish" session made the *world*-layer coastline for detail-heavy countries (Iceland,
+Norway, etc. — see `WORLD_SIMPLIFY_DETAILED_EXCEPTIONS`) dramatically finer without touching the
+admin-1 layer at all. Measured directly for Iceland: only **0.03%** area difference in aggregate, but
+concentrated into **263 individual pixel-level gap points** along the coastline at a typical zoomed-in
+scale — small in total, but each one a visible fleck once you're zoomed in close on a real device. Fixed
+at the *rendering* layer (see PROGRESS.md's "the selected country's own fill showed through tiny gaps"
+session) by not drawing the selected country's own status colour once its admin-1 overlay is actually
+covering it, so a gap now shows the same neutral tone every unmarked area uses instead of a misleading
+status colour — but the underlying geometry still doesn't match exactly, so a sufficiently close zoom
+could still show a faint neutral-toned seam. To fix at the root: have `buildWorldTopo` export its
+per-country, already-simplified boundary (not just write it into `world.topo.json`), then have
+`buildAdmin1` `-clip` each country's admin-1 `FeatureCollection` to that exact boundary before
+simplifying. `-clip` alone only trims *overhang* (admin-1 extending past the country edge) — it doesn't
+extend admin-1 to *fill* a gap — so getting this fully right needs more thought than a one-line change,
+which is why it wasn't attempted in the session that found it.
