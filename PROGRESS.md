@@ -2119,3 +2119,336 @@ pushed and confirmed deployed individually so real usage could validate one befo
   next time.
 - Consider whether `applyMergedSnapshot`'s full clear-and-bulk-add is worth narrowing to a targeted diff
   — see Left undone.
+
+## Map resolution polish — higher-fidelity coastlines (done)
+
+Self-directed polish session, not a numbered phase (same category as Phase 3b): the user reported the
+world map's country shapes looked bad, Iceland specifically ("looks terrible"), and asked for higher
+resolution generally plus better detail when zoomed in.
+
+### Root cause
+
+Two compounding issues in [`build-geo.mjs`](atlas/tools/build-geo.mjs)'s `buildWorldTopo()`, traced by
+directly counting vertices in the committed `world.topo.json`:
+
+1. **The world map sourced Natural Earth 1:50m Admin-0 Countries** — a coarse dataset — while admin-1
+   (subdivisions) already used the much finer 1:10m. Nobody had revisited the world-layer source after
+   Phase 2 picked it.
+2. **A flat `-simplify 8%` is a *global* Visvalingam points budget, not a per-country one.** Visvalingam
+   weight tracks effective area, so a landmass the size of Russia consumes most of an 8%-of-all-points
+   budget on its own, leaving small, intricate coastlines nearly stripped bare. Measured directly:
+   Iceland's polygon held just **19 vertices** — recognizable as a landmass, not as Iceland.
+
+Both causes needed fixing together — a finer source alone would still have been gutted by the same flat
+global percentage.
+
+### What was built
+
+- **Source swap**: `SOURCES.neCountries` now points at Natural Earth **1:10m** Admin-0 Countries (same
+  nvkelso GeoJSON mirror, just the finer layer) instead of 1:50m.
+- **Tiered simplification** replacing the flat 8%: `WORLD_SIMPLIFY_DETAILED_EXCEPTIONS` (`build-geo.mjs`)
+  names the large/complex-coastline countries (Russia, Canada, US, China, Brazil, Australia, Kazakhstan,
+  India, Argentina, Antarctica, Indonesia, Greenland, Chile) that get simplified harder
+  (`WORLD_SIMPLIFY_EXCEPTION_PCT`, 5%); everyone else keeps a much higher rate
+  (`WORLD_SIMPLIFY_DEFAULT_PCT`, 25%). Implemented with mapshaper's `-simplify variable percentage=<expr>`
+  — a per-feature-adaptive threshold within **one** shared-topology dissolve+simplify pass, so adjacent
+  countries' borders still align exactly (verified: DE/FR, DE/AT, DE/PL, US/CA and ES/PT each still share
+  the same arc index across the border after the pass — no gap or overlap risk from independent
+  per-country simplification, which was the rejected alternative).
+- **Chosen empirically**, not analytically: prototyped a dozen mapshaper runs outside the repo (flat
+  percentages at several rates, fixed `interval=`, several big/rest percentage pairs for `variable`)
+  and picked the pair that gave Iceland real, recognizable detail without letting Russia/Canada/Antarctica
+  dominate the byte budget. Chosen numbers, measured on the real committed output:
+
+  | | old (1:50m, flat 8%) | new (1:10m, tiered) | |
+  |---|---|---|---|
+  | Iceland | 19 vertices | 447 | 23.5x |
+  | Norway | 89 | 2,994 | 33.6x |
+  | Croatia | 33 | 489 | 14.8x |
+  | Greece | 44 | 1,323 | 30.1x |
+  | UK | 51 | 1,209 | 23.7x |
+  | Japan | 85 | 1,780 | 20.9x |
+  | Canada (exception tier) | 669 | 2,555 | 3.8x |
+  | Russia (exception tier) | 664 | 3,052 | 4.6x |
+  | US (exception tier) | 318 | 1,399 | 4.4x |
+  | **world.topo.json total** | **96 KB** | **667 KB** | |
+
+  Raised the hard-fail size budget in `build-geo.mjs` from 500 KB to 900 KB to match (with headroom).
+- **Fail-loud earned its keep.** The 1:10m layer separates out 10 administrative/disputed micro-entities
+  the coarser 1:50m layer never bothered to carve out — Cyprus's two UK Sovereign Base Areas (Akrotiri,
+  Dhekelia), the Cyprus UN buffer zone, USNB Guantanamo Bay, the Southern Patagonian Ice Field, Bir Tawil,
+  and four disputed reefs/banks (Spratly Is., Scarborough Reef, Bajo Nuevo Bank, Serranilla Bank). The
+  build failed loud naming all ten on the first run against the new source, exactly as designed. Added to
+  `EXCLUDE_NE` in [`fixups.mjs`](atlas/tools/fixups.mjs) with the same reason-per-entry convention as the
+  three that were already there (Somaliland, Northern Cyprus, Siachen Glacier).
+- **Free bonus: Gibraltar and the US Minor Outlying Islands now render.** Both were in `KNOWN_NO_POLYGON`
+  (omitted at 1:50m); 1:10m has a real polygon for each, so they graduated out for free. Documented no
+  longer-polygon-less territories dropped from 13 to 11. Removed their now-dead `TERRITORY_COORDS`
+  fallback entries; left `TERRITORY_OF` untouched since it's checked unconditionally regardless of
+  polygon availability (zero behavior change for those two codes either way).
+- **Docs updated to match**: [`tools/README.md`](atlas/tools/README.md) (sources/outputs tables, the new
+  tiered-simplification explanation, the `EXCLUDE_NE`/`KNOWN_NO_POLYGON` fixup descriptions) and
+  [`tools/minor_fixes.md`](atlas/tools/minor_fixes.md) §1 (11 territories, not 13; the vertex-starvation
+  problem the section used to describe is fixed, not just the 2 graduated codes).
+
+### On "increased resolution when zooming in"
+
+Worth recording the reasoning since it shaped what *wasn't* built. This map is SVG vector geometry, not
+raster map tiles — zooming (`d3-zoom`) applies a scale transform over a fixed set of path coordinates, it
+doesn't fetch higher-detail tiles the way Google Maps-style raster/vector-tile zoom does. There is no
+"zoom level" to hook a level-of-detail swap onto for the base country shape. The only way an SVG country
+polygon "gets better resolution when you zoom in" is if its coordinate data already has enough vertices
+that zooming reveals a smooth coastline instead of straight-edge facets — which is exactly what raising
+the base vertex count (above) delivers at every zoom level simultaneously, including fully zoomed in.
+Roughly checked the numbers: Iceland's ~450 vertices over its real coastline length works out to roughly
+10–15 screen-px spacing between vertices at the map's 12x `scaleExtent` max on a typical phone width —
+should read as a coastline, not a polygon facet.
+
+This is deliberately **separate** from Phase 3's existing `ADMIN1_ZOOM_THRESHOLD` mechanic (admin-1
+subdivision boundaries loading on top of the *selected* country once zoomed past 4x) — that's a different
+feature (showing regions within a country you've tapped), already working, and untouched this session.
+
+### Left undone (correctly, out of scope)
+
+- **The 11 remaining `KNOWN_NO_POLYGON` territories** (French Guiana, Guadeloupe, Martinique, Réunion,
+  Mayotte, Bonaire/St-Eustatius/Saba, Bouvet, Cocos, Christmas Island, Svalbard, Tokelau) are unchanged —
+  `minor_fixes.md` §1 still has the graft-it-later recipe, just renumbered to 11.
+- **No code changes to `WorldMap.tsx`, the zoom/pan behavior, or `ADMIN1_ZOOM_THRESHOLD`** — this session
+  is entirely a data-pipeline change (`tools/`) plus the regenerated `public/geo/world.topo.json` and
+  `countries.json` artifacts. Nothing in `src/` was touched.
+- **Admin-1 (subdivision) files were not regenerated or touched** — same source (1:10m) and same
+  per-country-independent simplify loop as before; this session's vertex-starvation problem was specific
+  to the world layer's old flat-global-percentage approach, which admin-1 never had.
+- **Found and deliberately did not ship: `subdivisions.json` regenerates with ~593/3865 rows carrying
+  tiny (sub-km to a few km) centroid drift** versus the committed copy, even though `buildAdmin1()` and
+  its cached inputs (`admin1CodesASCII.txt`, the NE 10m admin-1 shapefile conversion) are both untouched
+  this session and reused straight from `tools/.cache/` unmodified. Same row count, same 3865 ids, just
+  different `lat`/`lon` on about 15% of rows, spread across unrelated countries (Angola, Argentina,
+  Azerbaijan, Belgium, …) — not something this session's changes could plausibly cause, since nothing
+  touched by this session feeds `buildAdmin1`. `git checkout HEAD -- atlas/public/geo/subdivisions.json`
+  to keep this session's diff scoped to what it actually changed. One real (and negligibly small) side
+  effect of that revert: the US Minor Outlying Islands' 9 GeoNames subdivisions keep using UM's *old*
+  fallback centroid (from the now-removed `TERRITORY_COORDS` fixup) instead of the new real-polygon one
+  — UM has 0 recorded population and is a display-only fallback per `minor_fixes.md` §2, so this doesn't
+  matter in practice. **Left for a future session to root-cause** — worth knowing the cache/pipeline can
+  drift from what's committed even with zero relevant code or cached-input changes.
+
+### Verified
+
+- `npm run build:geo` (Node 20) passes fail-loud validation end to end: `250 countries reconciled, 11
+  documented no-polygon territories`, 239 country polygons (was 237 — +GI +UM), all subdivision/cities
+  output byte-identical in approach (only the world-layer inputs changed).
+- Adjacent-country shared borders confirmed intact post-simplify by checking arc-index overlap directly
+  in the output topology (DE/FR, DE/AT, DE/PL, US/CA, ES/PT all still share at least one arc) — the
+  variable-simplify pass still operates on one shared arc pool, so it can't introduce a border gap the
+  way independent per-country simplification would have.
+- **Visual verification used direct rendering, not the live app**, because this session's browser
+  automation tab came up with `document.hidden = true` / not focused from the start — confirmed this is
+  an environment characteristic, not a transient glitch, by stopping and restarting the dev server/tab
+  and seeing the identical state both times (a stricter variant of the `ResizeObserver`-in-a-backgrounded-
+  tab issue Phases 3/3b/4a already documented; that one was recoverable with a reload, this one wasn't).
+  Instead, rendered `world.topo.json` (old, via `git show HEAD:...`, vs. new) through the exact same
+  `d3-geo` + `topojson-client` libraries `WorldMap.tsx`/`topo.ts` use, to standalone SVG → PNG (via the
+  system's ImageMagick, same tool Phase 1 used for icon generation) for Iceland, Norway, Croatia, Canada,
+  Russia and the UK. All six showed dramatic, correct improvement with no rendering artifacts — Iceland's
+  Westfjords and Reykjanes peninsula, Norway's fjords, Croatia's Istria-to-Dalmatia coastline, and the UK's
+  Scottish islands all went from unrecognizable polygons to genuinely legible coastlines. Confirms the
+  data is correct; did not re-confirm in-app chrome (grid lines, status colours, pan/zoom feel) since
+  those are unchanged code paths this session never touched.
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**138/138**, unchanged — no `src/` code touched, so no
+  new tests were needed) and `npm run build` all clean. PWA precache size unaffected (934.94 KiB, app
+  shell only) — `/geo/*` including the now-larger `world.topo.json` is Workbox runtime-cached, not
+  precached, so this doesn't change the install-time download.
+
+### Notes for the next session
+
+- **If another country still looks rough, it's a one-line tuning change**: add its code to
+  `WORLD_SIMPLIFY_DETAILED_EXCEPTIONS` if it's ballooning the byte budget, or just raise
+  `WORLD_SIMPLIFY_DEFAULT_PCT` if detail is the complaint and 900 KB still has headroom, then
+  `npm run build:geo` and re-check the size report.
+- **This session's browser automation couldn't visually confirm inside the actual running app** (see
+  Verified) — if a future session has a working preview tab, worth a real in-app zoom-and-screenshot pass
+  on Iceland as a final sanity check, though the underlying data is now verified correct independent of
+  that.
+- All four changed files (`tools/build-geo.mjs`, `tools/fixups.mjs`, `tools/README.md`,
+  `tools/minor_fixes.md`) plus the regenerated `public/geo/world.topo.json` and `public/geo/countries.json`
+  are sitting uncommitted in the working tree as of the end of this session — not committed/pushed, per
+  the standing "only commit when asked" rule.
+
+## Map polish — country panel is now an in-map sheet, not a full-screen popup (done)
+
+Another self-directed polish session (same category as 3b / the map-resolution one above). The user
+disliked that tapping a country opened a full-screen `CountryDetail` popup — they wanted the same
+information and editing, but as something that doesn't hide the rest of the map. Asked three scoping
+questions before writing code (panel style, whether tapping should auto-zoom, whether this should also
+change the Places-list entry point); all three were answered with the recommended option, which is what's
+described below.
+
+### What was built
+
+- **`CountrySheet`** [`src/components/map/CountrySheet.tsx`](atlas/src/components/map/CountrySheet.tsx) —
+  a new draggable bottom sheet, opened from the Map tab only. Two snap points
+  (`COUNTRY_SHEET_PEEK_VH`/`COUNTRY_SHEET_EXPANDED_VH` — 40vh/88vh, in the new
+  [`countrySheetLayout.ts`](atlas/src/domain/countrySheetLayout.ts)), dragged via a handle bar using
+  `pointermove`/`pointerup` on `window` (not `setPointerCapture` — window-level listeners already track
+  the gesture correctly even if the finger leaves the handle element, which is simpler). Releasing below
+  `COUNTRY_SHEET_CLOSE_THRESHOLD_VH` (18vh) closes the sheet instead of snapping to peek — a drag-down-to-
+  dismiss gesture. Content (status + why, area/population/capital/regions-visited, cities list, photos —
+  add/view/caption/delete) is unchanged from `CountryDetail`, with **one deliberate removal**: no more
+  embedded `CountryAdmin1Map` mini-map, because the real map now shows the country's regions in place (see
+  below) — showing them twice, once small inside a now-partial-height sheet, would have been redundant.
+  **Deliberately no backdrop** — unlike every other sheet/overlay in this app
+  (`place-sheet-backdrop`/`full-screen-overlay`), the entire point of this one is that the map stays
+  visible and interactive around and above it. Dismissal is the close button, drag-down, tapping the
+  now-selected country again, or tapping open ocean on the map.
+- **`WorldMap` auto-zooms to frame a selected country** [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx) —
+  tapping a country now animates the pan/zoom transform (`selection.transition().call(zoomBehavior.transform,
+  target)`, the standard d3-zoom pattern for a smooth programmatic transition — needed adding `d3-transition`
+  as an explicit dependency, previously only a transitive one, since nothing in this codebase had called
+  `.transition()` on a selection before; see Deviations) to fit the country's bounding box into the space
+  **above** the sheet's peek height, comfortably padded (`COUNTRY_FIT_FRACTION = 0.55`) so neighbouring
+  countries stay visible around it, not just barely peeking in at the edges. The target scale is floored at
+  the existing `ADMIN1_ZOOM_THRESHOLD` (4×) so regions are visible immediately — no separate manual pinch-
+  zoom needed the way Phase 3 originally required. Deselecting animates back to the whole-world view.
+  `prefers-reduced-motion` skips the transition (instant snap), matching every other animated element in
+  this app. The geometry (bbox → target scale/translate, given the viewport and how much of it the sheet
+  covers) is a pure, exported, **unit-tested** function,
+  [`countryFitTransform.ts`](atlas/src/components/map/countryFitTransform.ts) — see Verified for why.
+- **Tapping a region now opens the status sheet directly.** WorldMap's admin-1 overlay previously just
+  re-selected the parent country on click (a Phase-3 leftover from when the map was read-only). Now that
+  regions render on the primary map instead of a separate always-editable mini-map, `onSelectSubdivision`
+  routes the tap straight to `usePlaceSheetStore` — the same one-tap-to-edit behaviour `CountryAdmin1Map`
+  already had.
+- **Tap-empty-ocean-to-deselect.** The outer `<svg>` gained an `onClick={onDeselect}`; country and
+  admin-1 paths now `stopPropagation()` so selecting one doesn't immediately trigger the same handler.
+- **Shared the country-detail data-fetching** between the old and new surfaces:
+  [`useCountryDetailData.ts`](atlas/src/domain/useCountryDetailData.ts) is the exact query `CountryDetail.tsx`
+  used to run inline (status, subdivision statuses, cities, the cascade "why" explanation, rolled-up
+  photos), now a hook both `CountryDetail` and `CountrySheet` call — avoids the two surfaces silently
+  drifting apart later.
+- **`CountryDetail` (Places-list entry point) is otherwise untouched** — same full-screen popup, same
+  `CountryAdmin1Map` mini-map, same `countryDetailStore`. There's no map on that screen to keep visible
+  behind it, so a full-screen detail view still makes sense there; only the Map tab's own tap behaviour
+  changed. `CountryAdmin1Map`/`FullScreenOverlay`/`countryDetailStore` are all still live code, still used,
+  just by one caller instead of two now.
+
+### Deviations from what was asked, and why
+
+1. **Added `d3-transition` (+ `@types/d3-transition`) as explicit dependencies (asked implicitly by a
+   `tsc` failure, not asked by the user).** `d3-zoom` already pulls in `d3-transition` transitively — it's
+   what implements `.transition()` on a d3 selection, needed for the animated pan/zoom — but nothing in
+   this codebase had ever called `.transition()` before, so neither the runtime patch nor (more
+   immediately) the TypeScript module-augmentation that adds `.transition()` to `Selection`'s type were
+   ever pulled in. `tsc -b` caught this immediately (`Property 'transition' does not exist on type
+   'Selection<...>'`). Installed both explicitly, following the same "explicit direct dependency, not a
+   relied-upon hoisted transitive" precedent Phase 3 already set for `d3-geo`/`topojson-client`, plus a
+   bare `import 'd3-transition'` side-effect import in `WorldMap.tsx` (needed for both the type
+   augmentation and the runtime prototype patch — a type-only import wouldn't have been enough).
+2. **`zoom.transform()` does not itself clamp to `translateExtent` the way a real drag/wheel gesture
+   does — traced this in `node_modules/d3-zoom/src/zoom.js` rather than assuming.** A hand-built transform
+   passed to `zoomBehavior.transform(selection, t)` is applied verbatim; the `constrain()` wrapping that
+   keeps pan/pinch from going off-world only happens inside the gesture-specific handlers (wheel, drag,
+   touch), not in the public `.transform()` API. Fixed by calling the zoom behaviour's own configured
+   `.constrain()` function directly on the hand-built transform, passing it the same `.extent()`/
+   `.translateExtent()` the live behaviour is already configured with (`zoomBehavior.constrain()(raw,
+   zoomBehavior.extent().call(svgEl, undefined), zoomBehavior.translateExtent())`) — reuses d3's own
+   logic exactly rather than re-deriving the clamp math by hand, which would have been easy to get subtly
+   wrong in a way this session couldn't visually catch (see Verified).
+
+### Left undone (correctly, per the answered scope questions)
+
+- **The Places-list entry point still opens the old full-screen `CountryDetail`** — by design (see
+  Deviations/"What was built" above), not an oversight.
+- **No snap-point animation "peek" beyond two fixed heights** (no velocity-based fling physics, no
+  intermediate "half" state) — two snap points plus free internal scrolling at either height covers the
+  same content reachability with much less code; revisit only if it feels wrong in practice.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**143/143** — 5 new, for
+  `countryFitTransform.test.ts`), and `npm run build` all clean.
+- **`countryFitTransform.ts`'s geometry is unit-tested** (centering, correctly picking the more
+  restrictive of width/height so the bbox never overflows either axis, clamping up to `minScale` for a
+  tiny country and down to `maxScale` for a huge one, and that a taller sheet correctly shrinks the framed
+  area) — this is the one part of this session's interactive feature that could be verified rigorously
+  without a browser.
+- **No live in-app interaction was possible this session.** This session's browser automation tab came up
+  with `document.hidden = true` / not focused from the very first check, same as the map-resolution
+  session earlier — except this time restarting the dev server *and* starting an entirely fresh tab still
+  produced the identical state both times, confirming it's this session's environment, not anything
+  page- or reload-related. Since `WorldMap`'s `ResizeObserver` never fires in a hidden tab, `size` stays
+  `{0,0}` and *nothing* renders (zero `path.world-map__country` elements) — there was no path to a partial
+  screenshot-based check the way the geo-resolution session found one (that one didn't need live
+  interaction, just static rendering of committed data through the same libraries; this session's feature
+  is fundamentally about live drag/tap/animation, which has no equivalent offline substitute). Compensated
+  with: (a) the unit-tested geometry above, (b) tracing `d3-zoom`'s actual source in `node_modules` rather
+  than assuming API behaviour (see Deviation 2), and (c) a full manual re-read of all three touched/new
+  files afterward, specifically checking hook ordering (all hooks run before any early return, in every
+  component), prop wiring end-to-end (confirmed `<WorldMap` has exactly one call site via `grep`, so
+  `tsc -b`'s clean pass genuinely covers every usage), and CSS class-name cross-references between the
+  `.tsx` and `.css` files.
+
+### Bug fix: the auto-zoom centered on a country plus all its scattered territories
+
+Reported by the user immediately after confirming the sheet itself worked: tapping France didn't centre
+on France, it centred on some point that also accounted for French Guiana, Guadeloupe, Martinique,
+Réunion and Mayotte — because those don't have a separate polygon at this map resolution (§ the
+map-resolution session above), so they're literally fused into France's own `MultiPolygon` geometry.
+`pathGen.bounds(feature)` was computing a bounding box across *all* of that — mainland Europe to South
+America to the Indian Ocean — and framing the midpoint of that box, not France. The user guessed
+correctly that the USA had "probably" the same problem, for a related but distinct reason: Alaska and
+Hawaii are genuinely, integrally part of the US (no fixup involved), but they blow up the bounding box
+the same way.
+
+**Checked how widespread this actually is before fixing it**, rather than special-casing France and the
+USA: wrote a one-off script against the real committed `world.topo.json` computing, per country, what
+fraction of its total polygon area the single largest piece accounts for. **Over 40 countries** have no
+single piece holding a clear majority of their area or are otherwise multi-piece enough to be worth
+checking — from obvious cases (France 84.6%, the US 84.0%, the UK 89.8%, Norway, Denmark) down to
+genuine multi-island nations with *no* dominant piece at all (Indonesia's largest single island is only
+28.6% of its total area; the Bahamas, Solomon Islands, Vanuatu are similar).
+
+**Fix**: [`dominantLandmass.ts`](atlas/src/components/map/dominantLandmass.ts) — if one polygon piece
+is a strict majority (>50%) of the country's total area, frame *that piece only*; otherwise (Indonesia
+and the other genuine archipelagos) there's no principled "main" piece to prefer, so fall back to the
+full geometry exactly as before. One general rule, no per-country list to maintain. Wired into
+`WorldMap.tsx`'s auto-zoom effect ahead of the existing bounds/fit calculation.
+
+Unit-tested (`dominantLandmass.test.ts`, 6 cases: isolates a clear majority, returns null for a
+genuine near-even split, both trivial single-piece shapes, insensitive to which order the pieces are
+listed in, and the exact threshold boundary). **Writing these caught a real bug in the test fixtures,
+not the implementation**: `d3-geo`'s `geoArea` is a spherical calculation sensitive to ring winding
+order — my first attempt at synthetic test polygons wound them backwards, which `geoArea` interprets as
+"the area of everything *except* this ring" (returned ~4π, i.e. almost the whole sphere, for a
+deliberately tiny test box) rather than throwing, so the bug silently inverted which piece looked
+"biggest" in three of the six tests. Caught by the tests actually failing, not by inspection — verified
+the correct winding empirically against real topojson data (every genuine ring in `world.topo.json`
+reports a small, sane area) before fixing the fixtures. The production code itself was never affected,
+since real topojson/mapshaper output is always correctly wound.
+
+**This time, live browser verification was actually possible** — the tab came up focused
+(`document.hidden: false`) partway through this fix, unlike both of the prior sessions above. Clicking
+France live: `<g transform>` came back `translate(-2164.41,-2540.13) scale(12)`; hand-checked against
+mainland France's real bbox at this exact viewport, the resulting screen position of the bbox centre
+matched the target point *exactly* (195.0, 170.7 — screen-centre horizontally, vertically centred in the
+space above the sheet, not the full viewport). Screenshot confirmed it visually: France framed with its
+own regions visible and Britain/Spain/Italy/Germany still visible around it, sheet showing "13 regions,
+547,030 km², Paris" without covering the map. Same live check for the US: framed on the CONUS with
+Canada/Mexico visible, no Pacific/Atlantic dead space from Alaska or Hawaii. Also exercised, live, for
+the first time: tap-open-ocean correctly deselects and animates back to `translate(0,0) scale(1)`; tap a
+region (tested on Washington state) correctly opens the place-status sheet with the right breadcrumb
+("United States"), not the old do-nothing re-select. Zero console errors through the whole sequence.
+
+### Notes for the next session
+
+- **The France/USA framing bug is fixed and, unlike the rest of this session's feature, has now actually
+  been confirmed live in a browser** — see the bug-fix section just above. The broader drag/snap-point
+  feel (handle dragging, drag-to-dismiss) still hasn't been touched by a human or a working browser; try
+  that next if a preview tab is available.
+- If the drag feels laggy or janky on a real device, the likely first suspect is the `isDragging` ?
+  `'none'` : CSS-transition toggle in `CountrySheet.tsx` not actually suppressing the transition during
+  active drag (should be instant 1:1 tracking, no easing, while a finger is down).
+- `d3-transition` is now a real dependency — if a future session sees an unexpectedly large main bundle
+  chunk warning grow further, this plus `d3-transition`'s own dependencies (`d3-timer`, `d3-ease`,
+  `d3-interpolate`, `d3-color`) are new weight added this session, on top of the pre-existing >500KB
+  warning `npm run build` already prints (unrelated, pre-existing, not investigated either session).
