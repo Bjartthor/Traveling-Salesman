@@ -2452,3 +2452,168 @@ region (tested on Washington state) correctly opens the place-status sheet with 
   chunk warning grow further, this plus `d3-transition`'s own dependencies (`d3-timer`, `d3-ease`,
   `d3-interpolate`, `d3-color`) are new weight added this session, on top of the pre-existing >500KB
   warning `npm run build` already prints (unrelated, pre-existing, not investigated either session).
+
+## Map interaction polish — uncapped zoom, no auto-zoom on tap, phone-friendly selection outline (done)
+
+Another self-directed polish session, driven by three specific user complaints rather than a written
+brief: the 12× pinch-zoom ceiling felt limiting, the auto-zoom-on-tap added by the previous "in-map
+sheet" session was unwanted (the user wants a tap to open the sheet without the map moving under it),
+and the tap/hover outline that marks the selected country "doesn't look as good" on a phone as it does
+hovering with a mouse. No scoping questions were asked — all three reads were unambiguous enough to
+implement directly (see Deviations for the judgment calls made along the way).
+
+### What was built
+
+- **No cap on zooming in** [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx) —
+  `d3zoom().scaleExtent([1, 12])` → `scaleExtent([1, Infinity])`. The lower bound (`1`, can't zoom out
+  past the whole-world fit) is untouched; only the upper bound was a user complaint.
+- **Tapping a country no longer moves the map.** The entire "auto-zoom on select" `useEffect` — added
+  by the previous session to animate-and-frame a tapped country above the country sheet — is deleted.
+  Tapping a country still does exactly what it did before that effect existed: opens `CountrySheet` and
+  (once the current, user-controlled zoom is already past `ADMIN1_ZOOM_THRESHOLD`) loads and colours its
+  admin-1 regions. Deselecting (close button, drag-down, tapping the same country again, tapping open
+  ocean) likewise no longer animates back to the whole-world view — there is no automatic zoom in either
+  direction now, matching "just do everything like now but not the automatic zoom in" literally.
+- **A visible, phone-reliable outline for the selected country** [`WorldMap.css`](atlas/src/components/map/WorldMap.css)/[`.tsx`](atlas/src/components/map/WorldMap.tsx) —
+  the root cause of "the outline doesn't look as good on phone" is that it was pure `:hover`: a 0.5px
+  hairline that flips from `--abyss` to `--haze`, driven by a pseudo-class touchscreens only
+  approximate (no real hover state on a finger; browsers simulate "hover until the next tap elsewhere"
+  inconsistently, which reads as sticky or missing rather than deliberate). Fixed with two changes
+  working together: (1) `:hover` is now gated behind `@media (hover: hover) and (pointer: fine)`, so a
+  touch device never relies on the simulated version at all; (2) the tapped/selected country — tracked
+  by the existing `selectedCode` React state, not a pointer pseudo-class — now gets an explicit
+  `world-map__country--selected` class rendering a `2px` `--chalk` stroke (4× the default width, and the
+  brightest colour in the quiet palette), so the "this one is open" signal is deliberate, stable, and
+  identical on mouse and touch alike. Written as the compound selector
+  `.world-map__country.world-map__country--selected` specifically so it outranks the (still-present, for
+  desktop) `:hover` rule on specificity rather than depending on source-order luck for the common desktop
+  case of "still hovering the country you just clicked." `fill`'s existing transition grew two siblings
+  (`stroke`, `stroke-width`) so the new state eases in instead of popping; the existing
+  `prefers-reduced-motion` override (`transition: none`) still blanket-disables all three.
+
+### Deviations from what was asked, and why
+
+1. **Deleted `countryFitTransform.ts`/`.test.ts` and `dominantLandmass.ts`/`.test.ts` outright, plus the
+   `d3-transition`/`@types/d3-transition` dependency pair (not asked; a direct consequence of task 2).**
+   All four files were purpose-built for the auto-zoom-on-select feature the previous session added
+   (confirmed by `grep -rn` across `src/` before deleting — `WorldMap.tsx` was their only caller outside
+   their own tests), and `d3-transition` was added to `package.json` by that same session purely to get
+   `.transition()` on a d3 selection for the animated pan/zoom. With the feature gone, all four are dead
+   code and an unused dependency, not speculative future value — left in place they'd be exactly the kind
+   of orphaned code this project's own conventions (see e.g. Phase 4a/4b's "nothing else may write to
+   `entries`" and repeated dead-code removals through Phase 7b) argue against keeping. `npx tsc -b`,
+   `npx eslint .` and `npx vitest run` were all confirmed clean after the deletions, and `d3-transition`
+   remains in `package-lock.json` as a transitive dependency of `d3-zoom` itself (which still needs it
+   internally) — only the project's own *direct*, explicit dependency on it was removed.
+2. **The stroke colour/width for `--selected` (`--chalk`, 2px) is a judgment call, not specified by the
+   user.** Picked from the existing token set (no new colour introduced, per the "no component may
+   hardcode a colour" rule in `tokens.css`) as the brightest available option against the dark map, at a
+   width clearly distinct from every other stroke on the map (ocean/grid have none, default country
+   border is 0.5px, subdivision borders are 0.75px) without introducing a glow/shadow effect that would
+   sit oddly against this app's deliberately quiet, hairline/instrument-panel visual language. Easy to
+   retune (two CSS values) if it doesn't land right on a real device.
+3. **Scope stayed on countries only, not admin-1 subdivisions.** The user's third point named "a
+   country" specifically, and unlike `selectedCode`, WorldMap has no persistent "selected region" state
+   to hang an equivalent class on — `onSelectSubdivision` fires-and-forgets straight to opening the
+   place-status sheet. Adding one would be a bigger, unrequested change; subdivisions keep their existing
+   unconditional (ungated) styling, which has no `:hover` rule to begin with.
+
+### Left undone
+
+Nothing from the three requests — all three are implemented as asked. Nothing else on the map was
+touched (admin-1 threshold, pan clamping, grid backdrop, ocean fill all untouched).
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**138/138** — down from 149, i.e. exactly the 11 tests
+  that belonged to the two deleted test files, nothing else moved), and `npm run build` all clean.
+- **Live in-app interaction was blocked again this session** — same `document.hidden: true` /
+  `ResizeObserver`-never-fires environment issue the map-resolution and country-sheet sessions both hit
+  and documented above. Tried harder than either of those sessions before giving up on it: a full page
+  reload (worked for a much earlier session, didn't here), resizing the viewport to force a fresh
+  `ResizeObserver` delivery, and directly monkey-patching `document.hidden`/`visibilityState` to `false`
+  plus dispatching synthetic `visibilitychange`/`resize`/`focus` events — the tab still reported
+  `document.hidden: true` throughout and the map SVG never received a real size (`viewBox` stuck at
+  `"0 0 1 1"`). This confirms it as genuine renderer-level backgrounding beneath what page JS can
+  override, not something worth chasing further from inside the page.
+- **Compensated with direct proof against the live bundle instead of the rendered map**, one level more
+  rigorous than a plain code read: confirmed the exact new CSS rules are present in the browser's real
+  `document.styleSheets` (not just in the source file), then built a real `<path>` element with
+  `class="world-map__country world-map__country--selected"` from scratch (a fresh element, not a mutated
+  one — an initial attempt that mutated an existing element's class and re-read `getComputedStyle`
+  returned stale values, itself another symptom of the same hidden-tab throttling rather than a real bug,
+  confirmed by the fresh-element version giving the correct answer immediately) and read its
+  `getComputedStyle` back: `stroke: rgb(233, 238, 240)` (exactly `--chalk`) and `stroke-width: 2px`,
+  versus `rgb(12, 18, 22)` (exactly `--abyss`) and `0.5px` for `.world-map__country` alone — proves the
+  selector, specificity and token values all resolve exactly as designed. Also confirmed the full,
+  correctly-scoped `@media (hover: hover) and (pointer: fine) { .world-map__country:hover { ... } }`
+  rule is present verbatim in the live stylesheet.
+- Also manually re-read the entire touched file end-to-end afterward (hook ordering, dependency arrays,
+  that no reference to the deleted effect/helpers survives anywhere, prop wiring into `MapScreen.tsx`)
+  — the same compensating technique the country-sheet session used under the identical blocker.
+- **Not independently re-confirmed this session**: that pinching past 12× on a real device actually keeps
+  going smoothly (no d3-zoom internal issue with an `Infinity` bound) — reasoned from `d3-zoom`'s source
+  (`Math.min`/`Math.max` clamping, which is well-defined for `Infinity`) rather than observed directly,
+  since no live gesture could be driven this session either.
+
+### Bug fix: selected country's outline was hidden along shared borders with other countries
+
+Reported by the user immediately after the pass above, with two concrete examples: Morocco's new
+outline only showed up against open ocean, not against Algeria or Western Sahara; and of Senegal and
+Mauritania, only Mauritania displayed a full outline.
+
+**Root cause**: SVG paints sibling elements strictly in document order, and `countryPaths` is ordered
+however the topology's `objects.countries.geometries` happens to list them — arbitrary with respect to
+which country is selected. Two adjacent countries' polygons each carry a stroke centered on their shared
+border; whichever one paints *later* in that fixed order covers the earlier one's stroke (and a sliver of
+its fill) along that edge. The ocean always paints first, so a coastline was always safe — a land border
+was only safe if the selected country happened to already sit later than its neighbour in the dataset's
+incidental order, exactly matching both reported examples (Mauritania apparently sorts after Senegal in
+the source data, so it "worked" by accident; Morocco and Senegal did not).
+
+**Fix** [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx): a new `orderedCountryPaths` memo,
+derived from `countryPaths` (which itself stays cache-stable — only the rendering order changes) and
+used only for the JSX `.map()`, moves the selected country (if any) to the very end of the paint order
+every time selection changes, guaranteeing nothing paints over its outline on any side, coastline or
+land border alike. React's keyed reconciliation moves the one affected DOM node rather than remounting
+anything, so this is cheap.
+
+**Verified live this time**, unlike the pass above — this session's preview tab came up focused partway
+through fixing this (`document.hidden: false`), the same kind of lucky timing the France/USA framing
+session (in the original in-map-sheet session, above) had. Selected Morocco, Senegal and Mauritania in
+turn and confirmed programmatically that each becomes the last child in paint order (out of 240: ocean +
+239 countries) the instant it's selected, then captured real screenshots zoomed on each: Mauritania shows
+a complete bright outline against Western Sahara, Algeria, Mali *and* Senegal simultaneously, and Senegal
+shows the same including specifically its Mauritania border — the exact pair reported broken. Also
+re-ran `npx tsc -b`, `npx eslint .` and `npx vitest run` (138/138) clean after the fix, since the earlier
+`orderedCountryPaths` draft (using `.splice()` + array destructuring) failed `tsc` under this project's
+`noUncheckedIndexedAccess` — rewritten with `.find()`/`.filter()` instead, which needs no non-null
+assertion and reads more plainly as "everything else, then the selected one."
+
+One tooling wrinkle worth recording for the next session, not an app issue: `preview_screenshot` was
+flaky again in exactly the way Phase 3b and others already documented (stale/desynced frames), including
+one screenshot that showed a *deselected* map while a same-moment direct DOM query confirmed a country
+was still genuinely selected — most likely the screenshot tool's own stale-frame recovery mechanism
+synthesizing a tap that landed on the map and deselected it, though this wasn't confirmed directly. A
+throwaway `1+1` eval between changing state and screenshotting reliably produced a fresh frame, the same
+workaround Phase 3b found. Trust a direct DOM/eval query over a screenshot if the two ever disagree.
+
+### Notes for the next session
+
+- **The no-auto-zoom-on-tap behaviour and the selected-country outline (with the fix above) are now both
+  confirmed live in a real browser**, not just by CSSOM inspection — this session's tab came focused
+  partway through. Selecting a country was confirmed, live, to leave the pan/zoom transform completely
+  untouched; the outline fix was confirmed against the exact Morocco/Senegal/Mauritania cases reported.
+- **Still not confirmed live**: that a real pinch/wheel gesture actually keeps zooming smoothly past the
+  old 12× ceiling. Every zoomed screenshot this session came from setting the `<g>` transform directly
+  (to frame a screenshot), which bypasses `d3-zoom`'s own `scaleExtent` clamping entirely and so doesn't
+  exercise it. The `Infinity` bound is still resting on reading `d3-zoom`'s clamp math rather than a
+  driven gesture — worth a real pinch on an actual phone.
+- If the 2px `--chalk` outline reads as too subtle or too strong on a real phone screen, it's a two-value
+  tweak in [`WorldMap.css`](atlas/src/components/map/WorldMap.css)'s `.world-map__country--selected` rule
+  — no other code depends on the exact numbers.
+- `dominantLandmass`'s underlying idea (pick the >50%-area piece of a multi-polygon country) might still
+  be useful someday for something other than auto-zoom framing — it was deleted rather than kept dormant
+  per this project's "don't keep unused code around" convention, but the logic (and its unit tests, which
+  caught a real spherical-winding bug in their own fixtures — see the original session above) is sitting
+  in git history (`git log --diff-filter=D -- '*dominantLandmass*'`) if a future feature wants it back.

@@ -1,15 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { geoNaturalEarth1, geoPath, type GeoSphere } from 'd3-geo'
 import { select } from 'd3-selection'
-import 'd3-transition' // side-effect: patches .transition() onto d3-selection's Selection (used by the auto-zoom-on-select effect below)
-import { zoom as d3zoom, zoomIdentity, type D3ZoomEvent, type ZoomTransform } from 'd3-zoom'
+import { zoom as d3zoom, zoomIdentity, type D3ZoomEvent } from 'd3-zoom'
 import type { Status } from '@/db/types'
 import { loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus } from '@/components/map/statusColor'
-import { computeCountryFitTransform } from '@/components/map/countryFitTransform'
-import { dominantLandmass } from '@/components/map/dominantLandmass'
-import { COUNTRY_SHEET_PEEK_VH } from '@/domain/countrySheetLayout'
 import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -45,16 +41,8 @@ function getPaths(
 // Past this zoom factor (relative to the whole-world fit), a selected
 // country's admin-1 regions load and draw on top of it. Chosen so a
 // mid-sized country (e.g. Germany) has grown large enough on screen for
-// its subdivisions to read as individual shapes rather than a smear. Also
-// doubles as the *floor* for the auto-zoom-on-select below, so regions are
-// always visible the moment a country is selected, not just once zoomed.
+// its subdivisions to read as individual shapes rather than a smear.
 const ADMIN1_ZOOM_THRESHOLD = 4
-
-// How much of the space above the country sheet a selected country's bbox
-// should occupy once framed — comfortably padded so neighbouring countries
-// stay visible around it, not just barely peeking in at the edges.
-const COUNTRY_FIT_FRACTION = 0.55
-const ZOOM_TRANSITION_MS = 500
 
 interface Size {
   width: number
@@ -81,7 +69,6 @@ export function WorldMap({
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const gRef = useRef<SVGGElement>(null)
-  const wasSelectedRef = useRef(false)
 
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
@@ -150,6 +137,22 @@ export function WorldMap({
     [pathGen, worldFeatures, size.width, size.height],
   )
 
+  // SVG paints siblings in document order, so whichever country happens to
+  // sit later in this array paints over its neighbours' shared-border stroke
+  // — normally invisible (every stroke is the same thin --abyss hairline,
+  // so it doesn't matter who's "on top"), but the selected country's outline
+  // needs to win that fight on every side, not just where it happens to
+  // border the ocean or a dataset-earlier neighbour. Moving it to the end of
+  // the paint order (not the array itself — countryPaths stays cache-stable)
+  // guarantees nothing is drawn after it. React's key-based reconciliation
+  // moves the existing DOM node rather than remounting it.
+  const orderedCountryPaths = useMemo(() => {
+    if (!selectedCode) return countryPaths
+    const selected = countryPaths.find((p) => p.id === selectedCode)
+    if (!selected) return countryPaths
+    return [...countryPaths.filter((p) => p.id !== selectedCode), selected]
+  }, [countryPaths, selectedCode])
+
   // --- pan/zoom: transform is applied directly to the DOM outside React's
   // render cycle (setAttribute, not setState) so drag/pinch stays smooth;
   // React state only updates once a gesture settles ('end'), which is all
@@ -157,7 +160,7 @@ export function WorldMap({
   const zoomBehavior = useMemo(
     () =>
       d3zoom<SVGSVGElement, unknown>()
-        .scaleExtent([1, 12])
+        .scaleExtent([1, Infinity]) // no cap on zooming in
         .clickDistance(6), // tolerate small finger jitter without swallowing a tap as a drag
     [],
   )
@@ -191,58 +194,6 @@ export function WorldMap({
     // resets to identity, since a stale transform against a re-fitted
     // projection would visibly misalign (e.g. after an orientation change).
   }, [zoomBehavior, size.width, size.height])
-
-  // --- auto-zoom on select: frame the tapped country above the country
-  // sheet (which covers the bottom COUNTRY_SHEET_PEEK_VH of the viewport),
-  // with neighbours still visible around it, and animate back out to the
-  // whole-world view on deselect. The transform is constructed by hand (not
-  // a drag/wheel gesture), so it has to be run through the zoom behaviour's
-  // own configured constrain function itself — zoom.transform() does not do
-  // this automatically the way real gestures do — to respect the same
-  // translateExtent that keeps pan/pinch from going off-world. ---
-  useEffect(() => {
-    const svgEl = svgRef.current
-    if (!svgEl || size.width === 0 || size.height === 0) return
-    const selection = select(svgEl)
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-    function animateTo(target: ZoomTransform) {
-      if (reduceMotion) zoomBehavior.transform(selection, target)
-      else selection.transition().duration(ZOOM_TRANSITION_MS).call(zoomBehavior.transform, target)
-    }
-
-    if (!selectedCode) {
-      if (wasSelectedRef.current) animateTo(zoomIdentity)
-      wasSelectedRef.current = false
-      return
-    }
-    wasSelectedRef.current = true
-
-    if (!pathGen) return
-    const feature = worldFeatures.find((f) => f.id === selectedCode)
-    if (!feature) return
-    // Frame the dominant landmass, not the whole geometry — a country whose
-    // shape is mainland-plus-scattered-territories (France's overseas
-    // départements, the US's Alaska/Hawaii...) would otherwise center on the
-    // midpoint of a bounding box spanning half the globe. Falls back to the
-    // whole feature for genuinely multi-island nations with no single
-    // dominant piece (Indonesia, the Bahamas...) — see dominantLandmass.ts.
-    const mainland = dominantLandmass(feature.feature.geometry)
-
-    const [, maxScale] = zoomBehavior.scaleExtent()
-    const fit = computeCountryFitTransform({
-      bounds: pathGen.bounds(mainland ?? feature.feature),
-      viewportWidth: size.width,
-      viewportHeight: size.height,
-      peekFraction: COUNTRY_SHEET_PEEK_VH / 100,
-      fitFraction: COUNTRY_FIT_FRACTION,
-      minScale: ADMIN1_ZOOM_THRESHOLD,
-      maxScale,
-    })
-    const raw = zoomIdentity.translate(fit.x, fit.y).scale(fit.k)
-    const constrained = zoomBehavior.constrain()(raw, zoomBehavior.extent().call(svgEl, undefined), zoomBehavior.translateExtent())
-    animateTo(constrained)
-  }, [selectedCode, pathGen, worldFeatures, size.width, size.height, zoomBehavior])
 
   // --- admin-1 overlay: only for the selected country, only once zoomed past
   // the threshold. Loads lazily and resolves null gracefully for countries
@@ -293,11 +244,11 @@ export function WorldMap({
         </g>
         <g ref={gRef}>
           {spherePath && <path className="world-map__ocean" d={spherePath} />}
-          {countryPaths.map((p) => (
+          {orderedCountryPaths.map((p) => (
             <path
               key={p.id}
               d={p.d}
-              className="world-map__country"
+              className={p.id === selectedCode ? 'world-map__country world-map__country--selected' : 'world-map__country'}
               style={{ fill: colorForStatus(countryStatus.get(p.id)) }}
               onClick={(e) => {
                 e.stopPropagation()

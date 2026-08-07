@@ -31,11 +31,28 @@
   stroke-width: 0.5;
   vector-effect: non-scaling-stroke;
   cursor: pointer;
-  transition: fill var(--duration-fast) var(--easing-standard);
+  transition:
+    fill var(--duration-fast) var(--easing-standard),
+    stroke var(--duration-fast) var(--easing-standard),
+    stroke-width var(--duration-fast) var(--easing-standard);
 }
 
-.world-map__country:hover {
-  stroke: var(--haze);
+/* Real pointers only — touch browsers simulate :hover on tap in ways that
+   are inconsistent and can stick until the next tap elsewhere, which reads
+   as broken rather than helpful. The selected style below is what phones use. */
+@media (hover: hover) and (pointer: fine) {
+  .world-map__country:hover {
+    stroke: var(--haze);
+  }
+}
+
+/* Driven by React state (which country is open), not a pointer pseudo-class,
+   so it's identical and reliable on touch and mouse alike. Compound selector
+   so it always outranks the :hover rule above rather than losing a specificity
+   tie when a mouse is still hovering the country that was just clicked. */
+.world-map__country.world-map__country--selected {
+  stroke: var(--chalk);
+  stroke-width: 2;
 }
 
 .world-map__subdivision {
