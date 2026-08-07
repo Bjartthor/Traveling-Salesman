@@ -23,6 +23,7 @@ export function MapScreen() {
 
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
   const subdivisionStatus = useMemo(() => buildStatusIndex(entries ?? [], 'subdivision'), [entries])
+  const cityStatus = useMemo(() => buildStatusIndex(entries ?? [], 'city'), [entries])
 
   const metric = useMemo(
     () =>
@@ -54,9 +55,11 @@ export function MapScreen() {
         <WorldMap
           countryStatus={countryStatus}
           subdivisionStatus={subdivisionStatus}
+          cityStatus={cityStatus}
           selectedCode={selectedCode}
           onSelectCountry={selectCountry}
           onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+          onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
           onDeselect={() => setSelectedCode(null)}
         />
         {!hasAnyEntries && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}

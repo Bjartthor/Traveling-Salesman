@@ -2836,3 +2836,264 @@ throughout even when screenshots weren't.
   per this project's "don't keep unused code around" convention, but the logic (and its unit tests, which
   caught a real spherical-winding bug in their own fixtures — see the original session above) is sitting
   in git history (`git log --diff-filter=D -- '*dominantLandmass*'`) if a future feature wants it back.
+
+## City labels on the world map (done)
+
+A self-directed polish session, not a numbered phase — the user asked for cities to appear on the map
+once zoomed in enough, "first the big cities... capitals and such... then the smaller the more you zoom
+in," and to ask if anything was unclear. Two scope questions were asked and answered (both recommended
+options) before writing code, since they changed the feature's shape, not just its presentation: (1)
+cities are a **reference layer plus your entries** — every real city can appear as you zoom, colour-coded
+by status where you've logged one, neutral otherwise, and tappable to open the same status sheet
+countries/regions already use; (2) the biggest cities get a **mono-font text label**, not just a dot,
+once zoomed in enough.
+
+### What was built
+
+- **`src/geo/mapCities.ts`** — a third small, memoised in-memory index over the ~170k-row `cities` table,
+  same "build once, invalidate on reseed" shape `@/geo/search` and `@/geo/nearestCity` already
+  established (deliberately not shared with either — each of the three needs a differently-shaped index,
+  and that's already how the other two relate to each other). Adds one derived field neither of those
+  needed: `isCapital`, a best-effort normalized-name match between a bundled city and its country's
+  `capital` string (the data model has no `geonameId` link between the two — plan §4's `Country.capital`
+  is a bare name). Wired into [`geo/loader.ts`](atlas/src/geo/loader.ts)'s `ensureReferenceData()`
+  alongside the other two index invalidations.
+- **`src/components/map/cityLayer.ts`** — the actual selection logic, pure and unit-tested (10 new
+  tests, [`cityLayer.test.ts`](atlas/src/components/map/cityLayer.test.ts)), same "logic lives outside
+  the component" precedent as the deleted `countryFitTransform.ts`/`dominantLandmass.ts`. Below
+  `CITY_MIN_SCALE` (2.5× the whole-world fit) nothing shows at all. Above it, a city is eligible once its
+  population clears a floor that relaxes in six steps as you zoom further (`POPULATION_TIERS`), *or*
+  unconditionally if it's a capital or a place you've already logged — so a tiny visited village never
+  waits behind some unrelated country's population cutoff. Eligible cities are culled to the current
+  viewport (`visibleRect`, inverting the live d3-zoom transform back to base-projected bounds, padded
+  25%), ranked (your entries beat capitals beat plain population) and capped at `MAX_CITY_MARKERS` (200),
+  with the top `MAX_CITY_LABELS` (36) of that ranked list getting a text label.
+- **`WorldMap.tsx`/`WorldMap.css`** — city markers render as a new top-most layer inside the existing
+  pan/zoom group, loaded lazily (only once the user actually crosses `CITY_MIN_SCALE` once, same
+  "don't pay the ~170k-row cost until it's needed" precedent as the admin-1 topology and the search/
+  nearest-city indexes). The `scale` state Phase 3 used only for the admin-1 threshold is now a full
+  `{k,x,y}` settled-transform state, still only updated on the zoom gesture's `'end'` — recomputing which
+  cities to show is a discrete, occasional decision, not a per-frame one, same rationale the original
+  scale-only state documented. Each marker is tappable (`stopPropagation` + `onSelectCity`, wired in
+  `MapScreen.tsx` to `openPlaceSheet({kind:'city', refId})` — the exact existing pattern
+  `onSelectSubdivision` already used), with a ~44px transparent hit-circle around the small visible dot
+  per plan §8's tap-target floor, and a `<title>` for every marker regardless of whether it's labeled.
+  - **The one genuinely new technique this session**: zoom is uncapped (`scaleExtent([1, Infinity])`,
+    per the earlier "map interaction polish" session), so a marker sized in the same local coordinate
+    units as country geometry would grow without bound — a `--zoom-k` CSS custom property is now set on
+    the pan/zoom group on every `'zoom'` tick (one cheap extra line next to the existing
+    `gEl.setAttribute('transform', ...)` write), and every marker counter-scales against it
+    (`transform: scale(calc(1 / var(--zoom-k, 1)))`, `transform-box: fill-box`) so dot/label size stays
+    constant on screen through an entire gesture, long or short, instead of only being corrected once the
+    gesture settles. See Verified below — this was proven with a throwaway probe element, not just
+    reasoned about, since it's exactly the kind of thing this project's own history (the paint-order
+    outline bug, the admin-1 gap-fill bug) shows is easy to get subtly wrong.
+- **`--text-2xs` token** added to [`tokens.css`](atlas/src/styles/tokens.css) (0.625rem) — smaller than
+  any existing size in the scale, needed because map labels are denser than any UI text this app has had
+  before; follows the same "add the missing token rather than hardcode a value" precedent Phase 1 and 3b
+  both set. The label itself reuses the existing shared `.mono` class (uppercase, wide letter-spacing) —
+  plan §8 names "map labels" as one of that treatment's own stated purposes, so this is the first place
+  in the app that purpose is actually exercised. A thin `--abyss` text-stroke halo (`paint-order: stroke`)
+  keeps a label legible over any of the four status colours, unvisited land, or open ocean underneath it.
+- **`MapScreen.tsx`** — computes `cityStatus = buildStatusIndex(entries, 'city')` (same one-line pattern
+  as the existing country/subdivision indexes) and passes it plus `onSelectCity` down.
+
+### Design decisions worth flagging
+
+1. **Capital matching is best-effort by design, not a data-model change.** Checked against the real
+   seeded dataset: 249 of 250 countries' capitals matched by normalized name, including every case that
+   actually matters for "capitals and such come first" — a capital that *isn't* its country's biggest
+   city (Washington vs. New York City, Ottawa vs. Toronto, Canberra vs. Sydney all confirmed correctly
+   flagged, the non-capital megacity confirmed *not* flagged). A miss just means that one capital ranks
+   by population like any other city instead of being force-promoted — it can never wrongly promote an
+   unrelated city, since the match requires equality. Didn't chase the one remaining miss; not worth a
+   data-model change (a real `geonameId` link on `Country`) for one country.
+2. **Label priority is global-importance-first, not proximity-aware, and that has a real, self-correcting
+   edge case worth recording.** Tested live against the real dataset: zoomed on Iceland at `k=4` (the
+   first zoom tier where cities not yet clearing the 2,000,000-population floor start to include lower
+   ones), Reykjavík ranked **89th of 200** returned markers and did **not** get a label — buried behind
+   every bigger foreign capital (Moscow, Cairo, London, Kinshasa...) also technically in view, because at
+   `k=4` the visible area is still roughly a quarter of the globe's width. Re-ran at `k=7/11/16/24`:
+   Reykjavík's rank climbed to 29 (labeled), 10, 3, then 2 of 200 as the shrinking viewport dropped
+   competing foreign capitals out of view — fully resolved by the very next population tier up. Read as
+   an acceptable, self-correcting characteristic of "rank by global importance within whatever's on
+   screen" rather than a bug: real atlases also let a big, distant capital outrank a small, nearby one
+   when both are genuinely on screen at once. Documented rather than fixed with a proximity-weighted
+   score (e.g. population ÷ distance-from-view-centre) — that's a real, testable improvement if a future
+   session finds the first-zoom-tier moment feels wrong on a real device, but it's a judgment call the
+   plan didn't ask for and the effect fixes itself within one zoom step.
+3. **No label-collision avoidance.** `MAX_CITY_LABELS` and the priority ranking keep the *count*
+   reasonable, but two labeled cities close together on screen can still overlap. A known, accepted
+   cartographic simplification (real maps hit the same problem), not silently shipped — flagging it here
+   rather than building real collision detection, which is a meaningfully bigger feature than this pass.
+4. **`MAX_CITY_MARKERS` (200), `MAX_CITY_LABELS` (36), `CITY_MIN_SCALE` (2.5) and the six-step
+   `POPULATION_TIERS` table are picked constants**, same "documented, easy to retune" precedent
+   `ADMIN1_ZOOM_THRESHOLD` set — nothing else depends on their exact values.
+
+### Left undone (correctly, out of scope for this pass)
+
+Proximity-weighted label priority and label-collision avoidance (see Design decisions 2–3 above). Long
+city names aren't truncated or wrapped — a very long labeled name can visually extend past its neighbours
+at extreme zoom, same "known, not chased" treatment as the two items above.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**148/148**, up from 138 — the 10 new `cityLayer.test.ts`
+  cases: scale gating, both population-tier boundaries, capital bypass, entry bypass, viewport culling,
+  cap+priority ordering including the entry-beats-capital-beats-population tiebreak, label-count cutoff,
+  and `visibleRect`'s geometry both padded and unpadded) all clean. `npm run build` clean under Node 20
+  (this sandbox's non-interactive shell still needs `nvm use 20` first — Phase 1's standing note);
+  bundle grew by ~1 KB gzip, negligible.
+- **This session hit the same backgrounded-tab/`ResizeObserver`-never-fires environment issue documented
+  since Phase 3b** — confirmed, not assumed: `document.hidden` was `true` from the start, a reload didn't
+  clear it, monkey-patching `document.hidden`/`visibilityState` to `false` plus dispatching synthetic
+  `visibilitychange`/`focus`/`resize` events didn't either, and neither did a real `preview_resize` call
+  (which normally *does* force a fresh `ResizeObserver` delivery) — `.world-map__svg` stayed at
+  `viewBox="0 0 1 1"` throughout. Confirms this as the same "genuine renderer-level backgrounding beneath
+  what page JS can override" the map-interaction-polish session already concluded, not a regression from
+  this session's changes. **Compensated with the same direct-bundle technique those earlier sessions
+  used, pushed further** since this feature has a genuinely novel rendering mechanism to prove out:
+  - **The live compiled stylesheet contains every new CSS rule verbatim** (`document.styleSheets`
+    inspection), confirming Vite built and served them correctly.
+  - **The counter-scale mechanism was proven, not just read** — built a throwaway real `<svg>` (own
+    `viewBox`, unrelated to the app's stuck one) with a `.world-map__city` marker nested inside a `<g>`
+    whose `transform` attribute and `--zoom-k` property were driven exactly the way `WorldMap.tsx`'s
+    `'zoom'` handler drives the real one, and read back `getBoundingClientRect()`. At `k = 1, 5, 20, 0.5`
+    (a 40× range) with `--zoom-k` kept in sync, the dot's rendered size was **bit-for-bit identical every
+    time** (5.625×5.625px). Re-ran at `k=20` *without* updating `--zoom-k`, confirming the same dot
+    renders at exactly **20× that size** (112.5px) — proving both that the technique works and that the
+    test actually exercises it (i.e. it isn't just returning a constant regardless of input).
+  - **Ran the real selection pipeline against the real, fully-seeded dataset** (250 countries, 3,865
+    subdivisions, 170,486 cities — confirmed seeded, `geoDataVersion: 1`) via dynamic `import()` in the
+    page: `loadMapCities()` built the full index in ~2.2s cold (one-time, lazy, matches the ~1.2s
+    `@/geo/search` precedent for the same table plus this index's extra country join), correctly
+    population-sorted, 249/250 capitals matched (see Design decisions 1). Built a real `geoNaturalEarth1`
+    projection at a 375×600 fit (matching the app's own projection setup) and ran `selectVisibleCities`
+    against it centred on Iceland: a real logged entry (added via the sanctioned `setPlaceStatus`, not a
+    raw Dexie write — see below) showed up labeled and correctly coloured regardless of its tiny
+    population, Reykjavík showed up as a capital regardless of population, a control city (Tokyo)
+    correctly fell outside the culled viewport, and the self-correcting label-priority behaviour in
+    Design decision 2 was observed directly, not inferred.
+  - **Exercised the real sanctioned write/remove path** end to end: `setPlaceStatus({kind:'city', ...})`
+    on Iceland's smallest bundled city (Laugar, pop. 1,001) correctly created the derived subdivision
+    (`IS.40`) and country (`IS`) entries alongside the explicit city one; `removePlaceEntry(id)` correctly
+    soft-deleted all three, leaving the table exactly as it was before (0 live entries, confirmed).
+  - **Exercised the tap→sheet path the SVG `onClick` hands off to**: since the literal marker `<g>` never
+    rendered this session, called `usePlaceSheetStore.getState().open({kind:'city', refId})` directly (the
+    exact call `onSelectCity` makes) and confirmed via an accessibility-tree snapshot that
+    `PlaceStatusSheet` opened correctly for a **city** `PlaceRef` specifically — flag, code, subdivision/
+    country breadcrumb ("Northeast, Iceland"), "Currently Lived" (matching the entry just created), and
+    all four status buttons all present. The coverage headline also live-updated to 0.4% from the same
+    write, with no reload. The one link not literally exercised is the `onClick`/`stopPropagation` on the
+    marker `<g>` itself — the same pattern `onSelectSubdivision` already uses in production, so low risk,
+    but flagging it as the one piece resting on code-reading rather than a fired event.
+  - App confirmed left clean afterward: 0 live entries (matched the fresh-install state found at the
+    start of the session).
+
+### Notes for the next session
+
+- **If a real device/focused browser is available, the one thing worth a quick look that this session
+  couldn't do**: an actual pinch/wheel gesture watching city dots and labels appear and stay
+  constant-sized in the real rendered map, plus a literal tap on a marker. Everything feeding into that
+  rendering (the CSS mechanism, the selection logic, the data, the tap target's downstream handler) was
+  independently verified for real this session — this would be confirming wiring, not discovering new
+  behaviour.
+- **`CITY_MIN_SCALE`, `POPULATION_TIERS`, `MAX_CITY_MARKERS` and `MAX_CITY_LABELS`** (all in
+  `@/components/map/cityLayer.ts`) are the levers if the reveal feels wrong on a real phone — too sparse,
+  too cluttered, capitals appearing too late, etc. — same "picked constant, easy to retune" spirit as
+  `ADMIN1_ZOOM_THRESHOLD`.
+- If the first-moment-of-reveal label priority (Design decision 2) ever draws a complaint, the fix is a
+  proximity term in `cityLayer.ts`'s sort — the viewport rect's centre is already computed by
+  `visibleRect`, so the missing piece is just a distance calculation and a decision about how strongly to
+  weight it against population, not a data or architecture change.
+
+### Bug fix: city markers rendered thousands of pixels off-screen, invisible
+
+Reported by the user immediately after the session above shipped, on a real `npm run dev` — "I can't see
+the cities pop up." Diagnosing this took several rounds specifically *because* this session's own live
+verification (above) was done entirely through the sandboxed preview tool, which never once managed to
+actually render the map (the standing `ResizeObserver`-never-fires-in-a-backgrounded-tab issue this
+project's history keeps hitting), so the mechanism that turned out to be broken was one this session had
+proven correct only in isolation, on a synthetic throwaway element — never against a real marker with a
+real, non-zero translate.
+
+**Ruled out first, each with real evidence, not assumption**: nothing committed vs. deployed (user
+confirmed same `npm run dev`, same checkout); a silent load failure (added a missing `.catch()` this
+session found while re-reading the code — genuine gap, fixed, but not the cause: the real dataset loaded
+fine, 170,486 cities, no error); not zoomed in far enough (user was zoomed past the point Germany no
+longer fits on screen — confirmed via reasoning about the projection that this is *deep*, tens-of-times
+zoom, not the ~2.5–4× city-reveal range); the `CountrySheet` covering the lower part of the screen
+(plausible but not it); browser/OS zoom instead of the map's own pinch/zoom (the user's most direct
+pushback — confirmed wrong with live evidence, see below).
+
+**Found via a live, real-time capture in the user's own browser**, after two rounds of instrumented
+console snippets (pasted by the user, output relayed back): a `wheel`-event listener plus a transform
+poller showed the user's actual scroll *did* reach the SVG (31 real `wheel` events) and *did* drive the
+zoom transform correctly across a huge range (scale 1 → 89× and back), with `maxCitiesSeen: 200` proving
+markers were genuinely created in the DOM. So the zoom mechanics, the data layer, and the selection logic
+(all independently verified live this session, and reconfirmed here) were never the problem. A follow-up
+snapshot of one real marker's `getBoundingClientRect()` nailed it: positioned at roughly
+`(-12562, -6613)` — thousands of pixels outside the SVG's actual `(0, 107)`–`(752, 781)` bounds — while
+its *size* was exactly right (9×9px, correctly constant regardless of zoom).
+
+**Root cause**: [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx)'s marker `<g>` carried *both* the
+per-city `transform="translate(x,y)"` **attribute** (for position) and the `.world-map__city` class's CSS
+`transform: scale(calc(1/var(--zoom-k)))` **property** (for the constant-size counter-scale introduced
+earlier this session). A CSS `transform` on an SVG element does not compose with a `transform` attribute
+on the same element — it replaces it outright. So every marker's translate was silently discarded, and
+each one rendered at wherever its group's local `(0,0)` happened to land under the pan/zoom group's own
+transform — which is exactly the ballpark the observed `(-12562,-6613)` sits in (close to that group's own
+`translate`, since a near-zero local point contributes almost nothing on top of it). This session's
+earlier "proof" of the counter-scale technique (see the original entry above) tested only a marker whose
+own translate stayed fixed while the *ancestor's* scale varied — it never varied the marker's own
+translate away from a value close to its test setup's implicit zero, so this exact failure mode produced
+no visible symptom in that test.
+
+**Fix**: split position and scale onto two different, nested elements — an outer `<g>` carrying only the
+plain `transform="translate(x,y)"` attribute (now untouched by any CSS `transform` rule), wrapping an
+inner `<g className="world-map__city">` carrying only the counter-scale CSS. Also switched
+`transform-origin` from `fill-box`/`center` (which pivots around the *content's* bounding box — for a
+labeled marker that box is skewed by the label text, so origin drifts depending on how long each city's
+name is) to a plain `transform-origin: 0 0` against the element's own local coordinate system, which is
+origin- and content-independent.
+
+**Verified two ways.** (1) A corrected, rigorous version of this session's earlier synthetic-probe
+technique: built a throwaway marker with a *non-zero* translate this time, computed the mathematically
+expected screen position from the outer group's own translate/scale (`tx + k·x`, `ty + k·y` — the same
+formula a country path's coordinates resolve through), and compared. The original two-CSS-properties
+structure was off by an amount that grew with `k` (confirming the bug); the fixed two-element structure
+still showed a small discrepancy in this *particular* sandboxed harness even at `k=1` (a no-op scale,
+which cannot legitimately produce any error) — evidence the remaining few pixels there were the harness's
+own known measurement flakiness (this project's history has repeatedly documented `preview_screenshot`
+and rapid style-mutate-then-immediately-measure patterns behaving inconsistently in this tool), not a
+real bug. (2) **Decisive confirmation against the real, live app**: re-ran the same wheel-zoom sequence
+against the actual `WorldMap` component (not a probe) and compared one real marker's measured centre to
+the expected formula — `observedCx: 236.8` vs `expectedCx: 236.8`, `observedCy: 279.3` vs
+`expectedCy: 279.3`, exact to one decimal place, dot width still exactly 9.00003px (correctly constant),
+and the marker confirmed within the SVG's visible bounds. `npx tsc -b`, `npx eslint .` and
+`npx vitest run` (148/148, unchanged — this fix touches only JSX structure and CSS, no logic) all clean
+under Node 20 afterward.
+
+### Left undone
+
+Nothing — the user confirmed on their own device, after this fix, that cities now render and are visible
+while zoomed in ("okay it works"). This closes the loop this session's own sandboxed preview tool couldn't:
+it never once rendered the map visually end to end, only via DOM/CSSOM queries, so the user's own eyes on
+a real browser are the only confirmation this bug (and the original feature) actually works visually, not
+just mathematically.
+
+### Notes for the next session
+
+- **The general lesson, worth restating**: this project's sandboxed preview tool cannot be trusted to
+  catch bugs in *how multiple transform mechanisms compose* on a real element with real, varying data —
+  it proved the counter-scale technique's *size* invariant convincingly (correctly, as it turned out) but
+  missed the *position* bug entirely because the original probe never varied the thing that mattered. If a
+  future session adds another transform-driven visual mechanic, prefer testing it against a full
+  reproduction of the real element structure with genuinely varying inputs (as the fix's verification
+  above finally did), not a simplified stand-in — and treat any anomaly that appears even at a
+  known-identity transform (`k=1`, `scale(1)`) as a measurement artifact of this specific tool, not a code
+  bug, since a true identity transform cannot itself introduce error.
+- If the user's re-check finds anything still off, the two live-instrumentation techniques used to
+  diagnose this (a temporary `wheel`-event + transform-poll listener, and a `getBoundingClientRect()`/
+  `getComputedStyle()` capture of a real marker) are reusable recipes for the next map-rendering report
+  that can't be reproduced in-sandbox.

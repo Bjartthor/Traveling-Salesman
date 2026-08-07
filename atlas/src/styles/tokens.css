@@ -23,6 +23,7 @@
   --font-body: 'Public Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
+  --text-2xs: 0.625rem; /* below --text-xs; map city labels only, where --text-xs would collide at high density */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;

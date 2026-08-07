@@ -68,6 +68,51 @@
   }
 }
 
+/* Counter-scaled against the live --zoom-k custom property (set every zoom
+   tick in WorldMap.tsx) so a marker's on-screen size stays constant no
+   matter how far zoomed in — zoom has no upper cap, so sizing markers in
+   plain local units alone would eventually swallow the viewport.
+   Deliberately on its own inner <g>, never the same element that carries the
+   translate(x,y) *attribute* one level up in WorldMap.tsx: a CSS `transform`
+   on an SVG element replaces its `transform` attribute rather than composing
+   with it, so putting both on one element silently drops the position.
+   transform-origin is pinned to this element's own local (0,0) — NOT
+   `fill-box`/`center`, which would pivot around the content's bounding box
+   and drift depending on the label text's width. */
+.world-map__city {
+  transform-origin: 0 0;
+  transform: scale(calc(1 / var(--zoom-k, 1)));
+  cursor: pointer;
+}
+
+.world-map__city-hit {
+  fill: transparent; /* ~44px on-screen tap target regardless of the tiny visible dot (00-PLAN.md §8) */
+}
+
+.world-map__city-dot {
+  stroke: var(--abyss);
+  stroke-width: 1;
+  transition: fill var(--duration-fast) var(--easing-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-map__city-dot {
+    transition: none;
+  }
+}
+
+.world-map__city-label {
+  font-size: var(--text-2xs);
+  fill: var(--chalk);
+  pointer-events: none;
+  /* A thin --abyss halo so the label stays legible over any of the four
+     status colours (or open ocean, or unvisited land) sitting beneath it. */
+  paint-order: stroke;
+  stroke: var(--abyss);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
+
 .world-map--error {
   flex: 1;
   display: flex;

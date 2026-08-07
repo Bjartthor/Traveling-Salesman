@@ -4,8 +4,11 @@ import { select } from 'd3-selection'
 import { zoom as d3zoom, zoomIdentity, type D3ZoomEvent } from 'd3-zoom'
 import type { Status } from '@/db/types'
 import { loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
+import { loadMapCities, type MapCity } from '@/geo/mapCities'
+import { logError } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
+import { CITY_MIN_SCALE, selectVisibleCities } from '@/components/map/cityLayer'
 import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -52,18 +55,22 @@ interface Size {
 interface WorldMapProps {
   countryStatus: Map<string, Status>
   subdivisionStatus: Map<string, Status>
+  cityStatus: ReadonlyMap<string, Status>
   selectedCode: string | null
   onSelectCountry: (code: string) => void
   onSelectSubdivision: (subdivisionId: string) => void
+  onSelectCity: (refId: string) => void
   onDeselect: () => void
 }
 
 export function WorldMap({
   countryStatus,
   subdivisionStatus,
+  cityStatus,
   selectedCode,
   onSelectCountry,
   onSelectSubdivision,
+  onSelectCity,
   onDeselect,
 }: WorldMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -73,8 +80,15 @@ export function WorldMap({
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [scale, setScale] = useState(1)
+  // The settled (post-gesture) zoom transform — k drives the admin-1 and
+  // city-reveal thresholds, x/y (together with k) drive which cities are in
+  // view. Deliberately only updated on 'end', same rationale as the old
+  // scale-only state this replaces: recomputing which features to show is a
+  // discrete, occasional decision, not something that needs to track every
+  // frame of a gesture.
+  const [transform, setTransform] = useState({ k: 1, x: 0, y: 0 })
   const [admin1Features, setAdmin1Features] = useState<MapFeature[]>([])
+  const [mapCities, setMapCities] = useState<readonly MapCity[]>([])
 
   // --- container size (drives the projection fit; never changes on pan/zoom) ---
   useEffect(() => {
@@ -177,15 +191,22 @@ export function WorldMap({
     zoomBehavior.extent(extent).translateExtent(extent)
     zoomBehavior.on('zoom', (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
       gEl.setAttribute('transform', event.transform.toString())
+      // City markers counter-scale against this custom property (WorldMap.css)
+      // so their dot/label size stays constant on screen through the gesture,
+      // instead of growing without bound — zoom has no upper cap (see
+      // ADMIN1_ZOOM_THRESHOLD above), so a marker sized in local units alone
+      // would eventually swallow the whole viewport.
+      gEl.style.setProperty('--zoom-k', String(event.transform.k))
     })
     zoomBehavior.on('end', (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
-      setScale(event.transform.k)
+      setTransform({ k: event.transform.k, x: event.transform.x, y: event.transform.y })
     })
 
     const selection = select(svgEl)
     selection.call(zoomBehavior)
     selection.call(zoomBehavior.transform, zoomIdentity)
-    setScale(1)
+    setTransform({ k: 1, x: 0, y: 0 })
+    gEl.style.setProperty('--zoom-k', '1')
 
     return () => {
       selection.on('.zoom', null)
@@ -198,7 +219,7 @@ export function WorldMap({
   // --- admin-1 overlay: only for the selected country, only once zoomed past
   // the threshold. Loads lazily and resolves null gracefully for countries
   // with no admin-1 file (Bouvet Island etc.) — no error, no overlay. ---
-  const overThreshold = scale >= ADMIN1_ZOOM_THRESHOLD
+  const overThreshold = transform.k >= ADMIN1_ZOOM_THRESHOLD
   useEffect(() => {
     if (!selectedCode || !overThreshold) {
       setAdmin1Features([])
@@ -217,6 +238,48 @@ export function WorldMap({
   const admin1Paths = useMemo(
     () => (pathGen && selectedCode ? getPaths(`admin1:${selectedCode}`, pathGen, admin1Features, size.width, size.height) : []),
     [pathGen, admin1Features, selectedCode, size.width, size.height],
+  )
+
+  // --- city layer: loaded lazily (the ~170k-row index costs real time to
+  // build, per @/geo/mapCities) the first time the user actually zooms in
+  // far enough to reveal cities at all, not on every map mount. ---
+  const citiesUnlocked = transform.k >= CITY_MIN_SCALE
+  useEffect(() => {
+    if (!citiesUnlocked) return
+    let cancelled = false
+    loadMapCities()
+      .then((cities) => {
+        if (!cancelled) setMapCities(cities)
+      })
+      .catch((e: unknown) => {
+        // Non-fatal: the city layer is supplementary, unlike the world
+        // topology load above — the rest of the map keeps working. But this
+        // used to fail silently (no .catch() at all), which would look
+        // indistinguishable from "no cities near here yet" — surface it.
+        if (!cancelled) {
+          console.error('[map] failed to load city index', e)
+          void logError('map: failed to load city index', e instanceof Error ? e.stack ?? e.message : String(e))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [citiesUnlocked])
+
+  const cityMarkers = useMemo(
+    () =>
+      projection
+        ? selectVisibleCities({
+            cities: mapCities,
+            cityStatus,
+            scale: transform.k,
+            transform,
+            viewportWidth: size.width,
+            viewportHeight: size.height,
+            project: (lon, lat) => projection([lon, lat]),
+          })
+        : [],
+    [projection, mapCities, cityStatus, transform, size.width, size.height],
   )
 
   // The world layer and the admin-1 layer trace the same real coastline
@@ -288,6 +351,43 @@ export function WorldMap({
                 >
                   <title>{p.name}</title>
                 </path>
+              ))}
+            </g>
+          )}
+          {cityMarkers.length > 0 && (
+            <g className="world-map__cities">
+              {cityMarkers.map((c) => (
+                // Position and counter-scale must live on two DIFFERENT elements.
+                // A CSS `transform` on an SVG element completely replaces its
+                // `transform` attribute rather than composing with it — putting
+                // both the translate(x,y) attribute and the counter-scale CSS
+                // rule on the same <g> silently discarded the translate,
+                // stranding every marker at wherever the group's local (0,0)
+                // happened to map to instead of its real position (found via a
+                // live bug report — see PROGRESS.md).
+                <g
+                  key={c.refId}
+                  transform={`translate(${c.x},${c.y})`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSelectCity(c.refId)
+                  }}
+                >
+                  <title>{c.name}</title>
+                  <g className="world-map__city">
+                    <circle className="world-map__city-hit" r={22} />
+                    <circle
+                      className="world-map__city-dot"
+                      r={c.isCapital ? 4.5 : 3}
+                      style={{ fill: c.status ? colorForStatus(c.status) : 'var(--haze)' }}
+                    />
+                    {c.labeled && (
+                      <text className="world-map__city-label mono" x={7} y={3}>
+                        {c.name}
+                      </text>
+                    )}
+                  </g>
+                </g>
               ))}
             </g>
           )}
