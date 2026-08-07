@@ -1,0 +1,219 @@
+/* z-index 32: above the map/nav, below the place-status sheet (40) so tapping
+   status/a city here can still stack the editing sheet on top. Deliberately
+   no full-screen backdrop — unlike place-sheet/full-screen-overlay, the point
+   of this one is that the map (and the countries around the selected one)
+   stays visible and interactive above it. */
+.country-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 32;
+  display: flex;
+  flex-direction: column;
+  background: var(--shelf);
+  border-top: 1px solid var(--contour);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--shadow-md);
+  transition: height 280ms var(--easing-standard);
+  overflow: hidden;
+}
+
+.country-sheet__drag-handle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) 0;
+  touch-action: none;
+  cursor: grab;
+}
+
+.country-sheet__handle-bar {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--contour);
+}
+
+.country-sheet__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-5) var(--space-3);
+}
+
+.country-sheet__eyebrow {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.country-sheet__name {
+  font-size: var(--text-xl);
+  color: var(--chalk);
+  margin-top: var(--space-1);
+}
+
+.country-sheet__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target-min);
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  font-size: var(--text-lg);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.country-sheet__close:hover {
+  color: var(--chalk);
+}
+
+.country-sheet__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: 0 var(--space-5) var(--space-5);
+  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+}
+
+.country-sheet__empty {
+  padding: var(--space-5);
+  color: var(--haze);
+  font-size: var(--text-sm);
+}
+
+.country-sheet__status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  text-align: left;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+}
+
+.country-sheet__status-dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.country-sheet__status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.country-sheet__status-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--chalk);
+}
+
+.country-sheet__status-because {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.country-sheet__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--contour);
+}
+
+.country-sheet__stat dt {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
+
+.country-sheet__stat dd {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  color: var(--chalk);
+  margin-top: var(--space-1);
+}
+
+.country-sheet__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--contour);
+}
+
+.country-sheet__section-title {
+  font-size: var(--text-base);
+  color: var(--chalk);
+}
+
+.country-sheet__city-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.country-sheet__city-list li + li {
+  border-top: 1px solid var(--contour);
+}
+
+.country-sheet__city-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--abyss);
+  text-align: left;
+}
+
+.country-sheet__city-row:hover {
+  background: var(--contour);
+}
+
+.country-sheet__bar {
+  width: 4px;
+  align-self: stretch;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.country-sheet__city-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--chalk);
+  font-size: var(--text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-sheet__city-date {
+  color: var(--haze);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .country-sheet {
+    transition: none;
+  }
+}

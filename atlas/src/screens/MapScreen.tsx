@@ -7,7 +7,8 @@ import { WorldMap } from '@/components/map/WorldMap'
 import { CoverageHeadline } from '@/components/map/CoverageHeadline'
 import { CoverageStrip } from '@/components/map/CoverageStrip'
 import { Legend } from '@/components/map/Legend'
-import { useCountryDetailStore } from '@/domain/countryDetailStore'
+import { CountrySheet } from '@/components/map/CountrySheet'
+import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import './MapScreen.css'
 
 export function MapScreen() {
@@ -15,11 +16,10 @@ export function MapScreen() {
   const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
   const settings = useLiveQuery(() => db.settings.get(1))
 
-  // Which country's admin-1 breakdown WorldMap shows once zoomed in past its
-  // threshold — a map-exploration affordance, independent of whether the
-  // full country detail overlay (opened below) happens to be showing for it.
+  // The selected country: drives WorldMap's admin-1 breakdown + auto-zoom
+  // *and* the country sheet below, in place of the old full-screen popup.
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
-  const openCountryDetail = useCountryDetailStore((s) => s.open)
+  const openPlaceSheet = usePlaceSheetStore((s) => s.open)
 
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
   const subdivisionStatus = useMemo(() => buildStatusIndex(entries ?? [], 'subdivision'), [entries])
@@ -39,8 +39,8 @@ export function MapScreen() {
   if (!countries || !settings || !metric) return null
 
   function selectCountry(code: string) {
-    setSelectedCode(code)
-    openCountryDetail(code)
+    // tapping the already-selected country again deselects it
+    setSelectedCode((prev) => (prev === code ? null : code))
   }
 
   return (
@@ -56,11 +56,14 @@ export function MapScreen() {
           subdivisionStatus={subdivisionStatus}
           selectedCode={selectedCode}
           onSelectCountry={selectCountry}
+          onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+          onDeselect={() => setSelectedCode(null)}
         />
         {!hasAnyEntries && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}
       </div>
       <CoverageStrip metric={metric} mode={settings.statMode} />
       <Legend />
+      {selectedCode && <CountrySheet code={selectedCode} onClose={() => setSelectedCode(null)} />}
     </div>
   )
 }
