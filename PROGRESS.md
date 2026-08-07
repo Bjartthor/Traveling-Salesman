@@ -2598,6 +2598,46 @@ synthesizing a tap that landed on the map and deselected it, though this wasn't 
 throwaway `1+1` eval between changing state and screenshotting reliably produced a fresh frame, the same
 workaround Phase 3b found. Trust a direct DOM/eval query over a screenshot if the two ever disagree.
 
+### Bug fix: the higher-resolution map from an earlier session never reached the user's phone
+
+Reported after committing/pushing/deploying this session's work: the user's installed PWA still showed
+the old, coarse country shapes from before the "Map resolution polish" session (above), despite that
+session's commit (`b4ec009`) being on `main` and genuinely deployed.
+
+**Checked deployment first, since the user suspected it** — confirmed innocent. `git show --stat
+b4ec009` shows `world.topo.json`/`countries.json` were committed; a live `curl -I` against the deployed
+`.../geo/world.topo.json` returned `content-length: 682705`, byte-identical to the local, post-upgrade
+copy; the GitHub Actions run for the latest push showed `status: completed, conclusion: success`. The
+server has always had the right file.
+
+**Root cause is client-side**: [`vite.config.ts`](atlas/vite.config.ts)'s Workbox `runtimeCaching` rule
+for `/geo/.*` used `CacheFirst` with a one-year `maxAgeSeconds`. `/geo/*` isn't part of the precached,
+content-hashed app shell (`globPatterns` only covers `js,css,html,ico,png,svg,woff2` — deliberate, so a
+fresh install doesn't have to pull the full geo payload before showing a screen), so it only ever gets
+cached lazily via this runtime rule under a plain, unversioned URL. `CacheFirst` means *never check the
+network again once cached* until the entry's own expiration — a device that had already cached the old
+`world.topo.json` (any device that had opened the app before the resolution-upgrade deploy) would go on
+serving that same stale response forever, through every later app update, since updating the service
+worker's precached JS/CSS doesn't touch a separately-named runtime cache at all.
+
+**Fix**: switched the `/geo/*` rule to `StaleWhileRevalidate` (serves the cached copy instantly, same
+offline-first behaviour, but also fires a background fetch to refresh the cache for next time — so a
+data change now reaches an installed device within one extra app-open instead of never), and bumped the
+cache name to `atlas-geo-cache-v2` so devices already carrying the old, permanently-stale `CacheFirst`
+entries get a clean cache bucket immediately on their next update rather than needing `Stale...` to
+slowly work through data that would otherwise never be revisited. Documented the mechanism and the
+"bump the cache name for an instant, not one-open-later, propagation" lever in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) §3, since this is a general property of how geo-data updates
+now reach installed devices, not a one-off.
+
+**Verified**: `npx tsc -b`, `npx eslint .`, `npx vitest run` (138/138) clean; `npm run build` then
+grepped the generated `dist/sw.js` directly and confirmed it registers
+`new StaleWhileRevalidate({cacheName:"atlas-geo-cache-v2", ...})` for the `/geo/.*` route — the actual
+compiled Workbox output, not just the source config. **Not verified**: that this specific fix, once
+deployed, actually clears the *user's own phone's* stale cache and shows the sharper coastlines — that
+needs the user to update the installed app and check, the same standing limitation every sync/PWA change
+in this project has had (no real device reachable from this sandbox).
+
 ### Notes for the next session
 
 - **The no-auto-zoom-on-tap behaviour and the selected-country outline (with the fix above) are now both

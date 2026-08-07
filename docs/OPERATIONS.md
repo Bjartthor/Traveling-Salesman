@@ -99,6 +99,22 @@ orphans user data.
    couple of country detail screens; run `rebuildDerivedEntries()` and confirm it reports **0**
    mutations (no drift between stored and recomputed status).
 
+**On an already-installed device, the new data shows up one app-open after the update, not
+immediately.** `atlas/public/geo/*` isn't part of the precached app shell — `vite.config.ts`'s Workbox
+`globPatterns` only covers `js,css,html,ico,png,svg,woff2`, deliberately, so a fresh install doesn't
+have to download the full geo payload (world shapes + all admin-1 files + the cities index) before it
+can show a first screen. It's served through the `/geo/*` runtime-caching rule instead, which uses
+`StaleWhileRevalidate`: a device serves whatever it already has cached instantly, and separately kicks
+off a background fetch to refresh that cache for *next* time. So the very next load after a redeploy
+still shows the old data (from cache) while quietly fetching the new copy; the load after that shows
+the new data. This bit an actual deploy once — see "Map interaction polish" in `PROGRESS.md` — when
+`/geo/*` was still on `CacheFirst` (serves cache, never re-checks the network at all until a **1-year**
+expiry), which meant a device that had cached the old, lower-resolution `world.topo.json` kept serving
+it forever, through every subsequent app update, until the cache itself was manually cleared. If a geo
+update ever needs to land the *instant* an update installs rather than one open later, bump the
+`atlas-geo-cache-v2` cache name in `vite.config.ts` (any string change works — it just makes Workbox
+start a fresh, empty cache bucket instead of reusing the old one) alongside the data regen.
+
 ---
 
 ## 4. Deployment

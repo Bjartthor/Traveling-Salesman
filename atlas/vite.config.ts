@@ -60,10 +60,22 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
+            // StaleWhileRevalidate, not CacheFirst: geo data is regenerated and
+            // redeployed occasionally (e.g. higher-resolution country shapes), and
+            // these files aren't content-hashed the way the precached app shell is
+            // — a CacheFirst entry would never be revalidated against the network
+            // again until its 1-year expiration, so a phone that had already
+            // cached the old data would keep serving it indefinitely even after
+            // installing every subsequent app update. StaleWhileRevalidate still
+            // serves the cached copy instantly (same offline-first behaviour) but
+            // also refreshes it in the background, so a data change is visible
+            // within one extra app open instead of never. `-v2` cache name bumps
+            // past the old CacheFirst-era cache so already-affected devices don't
+            // need a manual data clear to pick this up.
             urlPattern: /\/geo\/.*/,
-            handler: 'CacheFirst',
+            handler: 'StaleWhileRevalidate',
             options: {
-              cacheName: 'atlas-geo-cache',
+              cacheName: 'atlas-geo-cache-v2',
               expiration: {
                 maxEntries: 100,
                 maxAgeSeconds: 60 * 60 * 24 * 365,
