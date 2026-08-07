@@ -52,7 +52,7 @@ small/detailed coastlines (Iceland, Norway's fjords) down to near-nothing. See "
 | Artefact | ~Size | Notes |
 |---|---|---|
 | `world.topo.json` | 667 KB | All countries, dissolved per ISO code. Object `countries`, props `{code,name}`. Budget < 900 KB. |
-| `admin1/<CC>.topo.json` | ≤ 76 KB | One per country with subdivisions (240 files). Object `admin1`, props `{id,name}`. Big countries simplified harder to fit < 150 KB. |
+| `admin1/<CC>.topo.json` | ≤ 76 KB | One per country with subdivisions (240 files). Object `admin1`, props `{id,name}`. Big countries simplified harder to fit < 150 KB. Features sharing an `id` are dissolved into one before writing — see below. |
 | `countries.json` | 53 KB | 250 reference rows. |
 | `subdivisions.json` | 540 KB | 3865 rows, GeoNames-authoritative, NE-enriched. |
 | `cities.json.gz` | 4.2 MB | 170k cities, columnar `{fields, rows}`, gzipped. |
@@ -79,6 +79,19 @@ runtime loader derives `subdivisionId = <CC>.<admin1Code>` when that subdivision
 exists, else `null`. NE 10m admin-1 joins to GeoNames via its `gn_a1_code` field
 (already in `<CC>.<code>` form), which is what makes subdivision enrichment and the
 per-country admin-1 shapes line up with everything else.
+
+**That NE→GeoNames join is occasionally many-to-one, not one-to-one** — NE's own
+`gn_a1_code`/`gn_id` cross-reference sometimes tags two distinct polygons with the
+same GeoNames id (confirmed directly in `ne_10m_admin_1.geojson`: Iceland's
+"Reykjavík" and "Höfuðborgarsvæði" both carry `gn_id: 3426182`), and separately, NE
+uses a literal `"<CC>."` placeholder (paired with a negative `gn_id`) for polygons it
+can't confidently link to GeoNames at all, which every such feature in a country
+would otherwise share. Left alone, either case means two differently-shaped map
+regions read from the same `Map<id, Status>` entry — setting a status on one paints
+both. `buildAdmin1()` runs `-dissolve id copy-fields=name` per country before
+simplifying (same technique `buildWorldTopo` uses for multi-piece countries) so this
+can't happen, and fails loud if a country's output still has a repeated id after
+that. See PROGRESS.md's admin-1 id-collision bug fix for the full investigation.
 
 ## What each fixup is for (`fixups.mjs`)
 

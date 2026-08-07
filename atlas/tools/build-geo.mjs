@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import AdmZip from 'adm-zip'
 import mapshaper from 'mapshaper'
 import { geoCentroid } from 'd3-geo'
+import { feature } from 'topojson-client'
 import {
   CODE_OVERRIDES,
   EXCLUDE_NE,
@@ -301,6 +302,11 @@ async function main() {
   log(`  subdivisions.json   ${kb(subsBytes)}`)
   log(`  cities.json.gz      ${kb(citiesBytes)}  (${cityReport.count} cities, ${cityReport.resolved} resolve to a subdivision, ${cityReport.count - cityReport.resolved} -> null)`)
   log(`  admin1/*.topo.json  ${admin1Report.files} files, ${kb(admin1Report.totalBytes)} total`)
+  if (admin1Report.dupeGroupsMerged > 0) {
+    log(
+      `  admin1 id collisions fixed: ${admin1Report.dupeGroupsMerged} groups / ${admin1Report.dupeFeaturesMerged} features (Natural Earth linked two+ distinct polygons to one GeoNames admin1 id — see PROGRESS.md)`,
+    )
+  }
 
   if (worldBytes > 900 * 1024) {
     console.error(`\n*** world.topo.json is ${kb(worldBytes)} — over the 900 KB budget. Lower WORLD_SIMPLIFY_DEFAULT_PCT / WORLD_SIMPLIFY_EXCEPTION_PCT.`)
@@ -409,21 +415,60 @@ async function buildAdmin1(admin1Rows, countries) {
   let totalBytes = 0
   let largestBytes = 0
   let largestName = ''
+  let dupeGroupsMerged = 0
+  let dupeFeaturesMerged = 0
   for (const [cc, feats] of byCountry) {
     if (!feats.length) continue
+
+    // Natural Earth's own gn_a1_code/gn_id cross-reference occasionally links
+    // two distinct polygons to the same GeoNames admin1 entry — verified
+    // directly against the raw NE properties, not assumed: Iceland's
+    // "Reykjavík" and "Höfuðborgarsvæði" both carry gn_id 3426182 and
+    // gn_a1_code "IS.39". Left alone, both features render under the same
+    // `id`, so the app's Map<id, Status> lookup can't tell them apart —
+    // setting the one real, selectable subdivision that id represents paints
+    // *both* shapes, and the wrongly-duplicated one can end up anywhere on
+    // the country's coastline. `-dissolve id` (the same technique
+    // buildWorldTopo already uses for multi-piece countries) merges any
+    // same-id features into one, guaranteeing the 1:1 id<->shape
+    // correspondence the rest of the app assumes — a no-op for the (usual)
+    // case where every feature already has a distinct id.
+    const idCounts = new Map()
+    for (const f of feats) idCounts.set(f.properties.id, (idCounts.get(f.properties.id) ?? 0) + 1)
+    for (const [, count] of idCounts) {
+      if (count > 1) {
+        dupeGroupsMerged++
+        dupeFeaturesMerged += count
+      }
+    }
+
     const fc = { type: 'FeatureCollection', features: feats }
     // Big countries need harder simplification to fit the 150 KB budget.
     let pct = bigCountries.has(cc) ? 8 : 15
     let buf
     for (;;) {
       const out = await runMapshaper(
-        `-i input.geojson -simplify ${pct}% keep-shapes -rename-layers admin1 -o format=topojson out.topo.json`,
+        `-i input.geojson -dissolve id copy-fields=name -simplify ${pct}% keep-shapes -rename-layers admin1 -o format=topojson out.topo.json`,
         { 'input.geojson': JSON.stringify(fc) },
       )
       buf = Buffer.from(out['out.topo.json'])
       if (buf.length <= 150 * 1024 || pct <= 4) break
       pct = Math.max(4, Math.round(pct * 0.7))
     }
+
+    // Fail loud rather than silently ship a repeat of the bug this just
+    // fixed — confirm the dissolve actually left one feature per id.
+    const outTopo = JSON.parse(buf.toString('utf8'))
+    const seenIds = new Set()
+    for (const f of feature(outTopo, outTopo.objects.admin1).features) {
+      const id = f.properties.id
+      if (seenIds.has(id)) {
+        console.error(`\n*** ${cc}.topo.json still has more than one feature with id "${id}" after dissolving.`)
+        process.exit(1)
+      }
+      seenIds.add(id)
+    }
+
     fs.writeFileSync(path.join(ADMIN1_OUT, `${cc}.topo.json`), buf)
     files++
     totalBytes += buf.length
@@ -433,7 +478,7 @@ async function buildAdmin1(admin1Rows, countries) {
     }
   }
 
-  return { subdivisions, admin1Report: { enriched, files, totalBytes, largestBytes, largestName } }
+  return { subdivisions, admin1Report: { enriched, files, totalBytes, largestBytes, largestName, dupeGroupsMerged, dupeFeaturesMerged } }
 }
 
 // cities.json.gz: trimmed cities1000, sorted by population desc, gzipped.

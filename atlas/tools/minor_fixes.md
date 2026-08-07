@@ -105,3 +105,23 @@ unset and seed concurrently. Within a tab the load is idempotent; across tabs th
 `clear()` + `bulkAdd()` could in principle race. Harmless in the normal single-tab
 case. Proper cross-tab coordination (BroadcastChannel / a seeding lock) belongs
 with the Phase-7 sync work.
+
+---
+
+## 6. ~16 countries' admin-1 sets include NE polygons with no GeoNames match, merged into one inert shape instead of kept distinct
+
+**Status:** acceptable; correctness bug already fixed, this is a detail improvement.
+
+Natural Earth marks an admin-1 polygon it couldn't confidently link to GeoNames with a literal
+`"<CC>."` placeholder in `gn_a1_code` (paired with a negative `gn_id`) rather than leaving the field
+empty — e.g. all 15 of Anguilla's districts, all 32 of the London boroughs. `buildAdmin1()`'s id
+selection (`gn_a1_code || iso_3166_2 || adm1_code`) picks that placeholder up as if it were a real id,
+so every such feature in a country collapses onto the same key — fixed from becoming a *colouring* bug
+(see PROGRESS.md's admin-1 id-collision session) by dissolving same-id features together, but that
+also means these particular features render as one undifferentiated blob per country rather than as
+individually-shaped districts. Harmless in practice: none of them correspond to a real row in
+`subdivisions.json` either way (GeoNames doesn't subdivide that finely), so a user could never
+individually select or colour one regardless. To improve: when `gn_a1_code` matches `/^[A-Z]{2}\.$/`
+(placeholder, no real code), fall through to `iso_3166_2`/`adm1_code` instead — both are confirmed
+unique per feature in the Anguilla/GB samples checked — so each gets its own distinct id and renders as
+its real shape, still uncoloured, just with more coastline/border detail than one merged blob.

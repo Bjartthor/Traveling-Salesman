@@ -69,13 +69,14 @@ export default defineConfig({
             // installing every subsequent app update. StaleWhileRevalidate still
             // serves the cached copy instantly (same offline-first behaviour) but
             // also refreshes it in the background, so a data change is visible
-            // within one extra app open instead of never. `-v2` cache name bumps
-            // past the old CacheFirst-era cache so already-affected devices don't
-            // need a manual data clear to pick this up.
+            // within one extra app open instead of never. Bump this cache name
+            // (any string change) whenever a geo-data update should land on the
+            // very next open instead of the one after — done again for -v3 to
+            // ship the admin1 id-collision fix (PROGRESS.md) immediately.
             urlPattern: /\/geo\/.*/,
             handler: 'StaleWhileRevalidate',
             options: {
-              cacheName: 'atlas-geo-cache-v2',
+              cacheName: 'atlas-geo-cache-v3',
               expiration: {
                 maxEntries: 100,
                 maxAgeSeconds: 60 * 60 * 24 * 365,

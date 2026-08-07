@@ -2638,8 +2638,100 @@ deployed, actually clears the *user's own phone's* stale cache and shows the sha
 needs the user to update the installed app and check, the same standing limitation every sync/PWA change
 in this project has had (no real device reachable from this sandbox).
 
+### Bug fix: two Natural Earth admin-1 polygons could share one GeoNames id, so setting a region's status could colour a second, unrelated shape
+
+Reported with a screenshot: after marking Iceland's Southern Peninsula visited, a small disconnected
+green sliver also appeared elsewhere on the island. The user correctly guessed it wasn't one-off — it
+also appeared in Norway, and the colour always tracked *whichever region had the highest status rank*
+across the country, not a fixed wrong spot.
+
+**Root cause, confirmed against the raw source data, not guessed**: [`tools/build-geo.mjs`](atlas/tools/build-geo.mjs)'s
+`buildAdmin1()` derives each admin-1 polygon's id as `p.gn_a1_code || p.iso_3166_2 || p.adm1_code` — but
+Natural Earth's *own* `gn_a1_code`/`gn_id` cross-reference to GeoNames occasionally links two genuinely
+different polygons to the same GeoNames entry. Checked directly against `tools/.cache/ne_10m_admin_1.geojson`:
+Iceland's "Reykjavík" and "Höfuðborgarsvæði" (Capital Region) features both carry `gn_id: 3426182` and
+`gn_a1_code: "IS.39"` — a genuine upstream NE data error, not something this build script introduced, but
+one it faithfully propagated. Since the app's admin-1 rendering keys everything off that `id`
+(`subdivisionStatus.get(p.id)` in [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx)), two
+differently-shaped, differently-located polygons ended up reading from the exact same map entry — setting
+a status on the one real, selectable subdivision that id represents (`IS.39` = Capital Region) painted
+*both* NE shapes, and because it's a live lookup against whatever status that id currently holds, the
+wrongly-duplicated shape necessarily tracks the same (highest-rank, cascade-derived) value as the real one,
+exactly matching "follows whichever region has the highest rank."
+
+**Confirmed live before writing any fix** — reproduced in this session's browser (not assumed): queried
+`db.subdivisions` for Iceland (8 real rows), then decoded the admin-1 topology directly and found **9**
+features, with `id: "IS.39"` printed twice (`Reykjavík` and `Höfuðborgarsvæði`). Cross-checked Norway's
+admin-1 topology the same way and found **zero** id collisions there (21 unique ids) — the specific
+mechanism the user hit doesn't reproduce for Norway with this data, so if Norway shows something similar
+it likely has a different cause; not chased further since it couldn't be reproduced.
+
+**Checked how widespread this actually is before fixing it** — the same investigative discipline the
+map-resolution session used for the France/USA framing bug. Wrote a one-off script (scratchpad, not
+committed) decoding every committed `admin1/<CC>.topo.json` and grouping features by id per country:
+**23 countries, 170 duplicated features across 33 id groups** — far beyond an Iceland-only glitch. Two
+distinct upstream shapes, both traced to raw NE properties:
+- **A literal "no match" sentinel treated as a real id.** NE stores `gn_a1_code: "AI."` (bare
+  `{ISO2}.` with nothing after the dot) plus `gn_id: -99` or another negative value when it has *no*
+  confident GeoNames link — e.g. all 15 of Anguilla's districts, all 32 of the London boroughs the GB
+  regions dissolve absorbed. `p.gn_a1_code || ...` treats that non-empty string as valid and picks it
+  first, so every such feature in a country collapses onto the same `"CC."` id. None of these correspond
+  to a real row in `subdivisions.json` either way (GeoNames doesn't subdivide that finely), so this class
+  was never reachable via a real user-set status — a data-fidelity gap, not the reported correctness bug.
+- **A genuine NE cross-reference duplicate onto a valid, real id** — Iceland's case, and the one that
+  actually mis-colours a real, user-settable region. Also hit Australia (NSW/Lord Howe Island), the UK
+  (Cornwall/Isles of Scilly), Croatia, Hungary (five county/city pairs), Nauru, French Polynesia, the
+  Philippines, Mauritius and Barbados.
+
+**Fix** [`tools/build-geo.mjs`](atlas/tools/build-geo.mjs): added `-dissolve id copy-fields=name` to each
+country's mapshaper pipeline, immediately before simplification — the same technique `buildWorldTopo`
+already uses to merge a country's scattered territories into one feature per `code`. Any features sharing
+an id (either root cause above) now merge into one (Multi)Polygon feature, guaranteeing the 1:1
+id↔shape correspondence the rest of the app assumes; countries with no collisions are unaffected (a
+group of size 1 dissolves to itself). Added a **fail-loud post-check** — decode each country's freshly
+written topology and assert no id repeats — so a future re-download that introduces a *new* NE
+cross-reference error, or any case this dissolve doesn't actually resolve, breaks the build instead of
+silently shipping, matching this project's established convention (Phase 2's join validation, the
+map-resolution session's `EXCLUDE_NE` check). The size report now also logs how many groups/features
+were merged.
+
+Deliberately **did not** also fix the "bare sentinel" class (falling through to `iso_3166_2`/`adm1_code`
+for a real distinct id per feature) — those features can never be individually selected or coloured
+either way (no matching `subdivisions.json` row), so it's a detail/fidelity improvement, not a
+correctness fix, and expanding scope there risked second-guessing data this session hadn't fully audited.
+Left as a candidate for a future session; `dissolve` still fully neutralises the bug for that class today
+by merging them into one inert, always-grey shape per country instead of leaving them free to collide.
+
+**Verified**: `npm run build:geo` (Node 20) completed clean — `admin1 id collisions fixed: 33 groups /
+170 features` logged, zero fail-loud exits. **Independently re-scanned the regenerated output** with a
+fresh copy of the diagnostic script (not the build's own internal check): 240 files, 4,447 total admin-1
+features, **zero remaining id collisions anywhere**. Iceland specifically: exactly 8 features now (was
+9), each with a distinct id. Reproduced the original bug's exact repro live, post-fix: reloaded the
+running app, re-selected Iceland, zoomed past the admin-1 threshold — 8 subdivisions render (not 9),
+`Suðurnes` and the merged `IS.39` shape both show `--visited` correctly (both really are visited in the
+test data) with no third, disconnected shape anywhere on the island; screenshotted and visually confirmed
+clean. `npx tsc -b`, `npx eslint .`, `npx vitest run` (138/138) and `npm run build` all clean afterward
+(this fix only touches the Node build tool, no `src/` change, so no test count change).
+
+Also **bumped the geo runtime-cache to `atlas-geo-cache-v3`** (see the fix immediately above this one) so
+this reaches the user's phone on the very next open rather than the one after, since they're actively
+verifying.
+
 ### Notes for the next session
 
+- **The "bare sentinel" admin-1 id class is a real but lower-priority gap, not chased this session** (see
+  the id-collision bug fix above): ~16 of the 23 affected countries have NE features whose `gn_a1_code`
+  is a "no GeoNames match" placeholder (`"CC."` + a negative `gn_id`) rather than a real code. They're
+  dissolved into one inert per-country blob today rather than colliding, which fixes the correctness bug,
+  but a future session could give each a distinct id via the already-present, already-unique
+  `iso_3166_2`/`adm1_code` fallback fields (confirmed unique per feature in the Anguilla/GB samples
+  checked) for better-looking detail — worthwhile only if someone actually cares about that level of
+  admin-1 texture in small territories; functionally inert either way since none of these map to a real,
+  status-settable `subdivisions.json` row.
+- **Norway did not reproduce the id-collision mechanism** (0 duplicate ids across its 21 admin-1 regions,
+  confirmed directly) even though the user mentioned seeing something there too. Not chased further since
+  it wasn't reproducible with the data available this session — if it recurs, get a screenshot and the
+  specific region marked, the same way Iceland's repro started.
 - **The no-auto-zoom-on-tap behaviour and the selected-country outline (with the fix above) are now both
   confirmed live in a real browser**, not just by CSSOM inspection — this session's tab came focused
   partway through. Selecting a country was confirmed, live, to leave the pan/zoom transform completely
