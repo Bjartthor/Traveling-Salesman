@@ -52,8 +52,8 @@ const SOURCES = {
     binary: true,
   },
   neCountries: {
-    file: 'ne_50m_admin_0_countries.geojson',
-    url: 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson',
+    file: 'ne_10m_admin_0_countries.geojson',
+    url: 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson',
   },
   neAdmin1: {
     file: 'ne_10m_admin_1_states_provinces.zip',
@@ -302,15 +302,32 @@ async function main() {
   log(`  cities.json.gz      ${kb(citiesBytes)}  (${cityReport.count} cities, ${cityReport.resolved} resolve to a subdivision, ${cityReport.count - cityReport.resolved} -> null)`)
   log(`  admin1/*.topo.json  ${admin1Report.files} files, ${kb(admin1Report.totalBytes)} total`)
 
-  if (worldBytes > 500 * 1024) {
-    console.error(`\n*** world.topo.json is ${kb(worldBytes)} — over the 500 KB budget. Lower the --simplify percentage.`)
+  if (worldBytes > 900 * 1024) {
+    console.error(`\n*** world.topo.json is ${kb(worldBytes)} — over the 900 KB budget. Lower WORLD_SIMPLIFY_DEFAULT_PCT / WORLD_SIMPLIFY_EXCEPTION_PCT.`)
     process.exit(1)
   }
   log('\nDone. Commit public/geo/.\n')
 }
 
+// A flat simplify percentage is a *global* Visvalingam budget: mapshaper keeps
+// the N% highest-weight points across every country combined. Weight tracks
+// effective area, so a landmass the size of Russia soaks up most of that
+// budget and a small, intricate coastline like Iceland's is left with almost
+// nothing (measured: 8% flat -> Iceland kept just 19 points). These are the
+// large/complex-coastline countries where that's worth capping harder so the
+// budget goes to everyone else instead. Picked empirically by comparing
+// per-country vertex counts across candidate settings — see PROGRESS.md.
+const WORLD_SIMPLIFY_DETAILED_EXCEPTIONS = new Set([
+  'RU', 'CA', 'US', 'CN', 'BR', 'AU', 'KZ', 'IN', 'AR', 'AQ', 'ID', 'GL', 'CL',
+])
+const WORLD_SIMPLIFY_EXCEPTION_PCT = 0.05
+const WORLD_SIMPLIFY_DEFAULT_PCT = 0.25
+
 // world.topo.json: dissolve to one (multi)polygon per country, simplify, keep
-// only { code, name } per feature. ~8% of vertices, target < 500 KB.
+// only { code, name } per feature. One shared-topology pass (so adjacent
+// countries' borders still align exactly) with a per-country simplification
+// rate via mapshaper's `-simplify variable`, rather than one flat percentage —
+// see WORLD_SIMPLIFY_DETAILED_EXCEPTIONS above for why. Target < 900 KB.
 async function buildWorldTopo(neByA2) {
   const features = []
   for (const [a2, entry] of neByA2) {
@@ -319,8 +336,16 @@ async function buildWorldTopo(neByA2) {
     }
   }
   const fc = { type: 'FeatureCollection', features }
+  const exceptionList = [...WORLD_SIMPLIFY_DETAILED_EXCEPTIONS].map((c) => `'${c}'`).join(',')
+  const percentExpr = `[${exceptionList}].includes(code) ? ${WORLD_SIMPLIFY_EXCEPTION_PCT} : ${WORLD_SIMPLIFY_DEFAULT_PCT}`
   const out = await runMapshaper(
-    '-i input.geojson -dissolve code copy-fields=name -simplify 8% keep-shapes -rename-layers countries -o format=topojson world.topo.json',
+    [
+      '-i input.geojson',
+      '-dissolve code copy-fields=name',
+      `-simplify variable percentage="${percentExpr}" keep-shapes`,
+      '-rename-layers countries',
+      '-o format=topojson world.topo.json',
+    ].join(' '),
     { 'input.geojson': JSON.stringify(fc) },
   )
   fs.writeFileSync(path.join(OUT, 'world.topo.json'), out['world.topo.json'])

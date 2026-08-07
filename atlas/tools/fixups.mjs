@@ -32,10 +32,25 @@ export const CODE_OVERRIDES = {
 // have no row in GeoNames countryInfo.txt. We drop their polygons rather than
 // invent codes. The land simply renders unshaded (Phase 3 concern). Keyed by
 // ADM0_A3 with the reason.
+//
+// The list grew a lot when the map source moved from 1:50m to 1:10m Admin-0
+// (see PROGRESS.md): the finer layer separates out administrative/disputed
+// micro-entities the 1:50m layer didn't bother to carve out at all (military
+// bases, buffer zones, disputed reefs).
 export const EXCLUDE_NE = {
   SOL: 'Somaliland — self-declared, no ISO code, folded under Somalia (SO) in ISO/GeoNames.',
   CYN: 'Northern Cyprus — recognised only by Turkey, no ISO code; territory is CY in ISO.',
   KAS: 'Siachen Glacier — disputed India/Pakistan military zone, not a country.',
+  ESB: 'Dhekelia — UK Sovereign Base Area on Cyprus, no ISO code; territory is CY in ISO.',
+  WSB: 'Akrotiri — UK Sovereign Base Area on Cyprus, no ISO code; territory is CY in ISO.',
+  USG: 'US Naval Station Guantanamo Bay — leased US base on Cuban soil, no separate ISO code.',
+  CNM: "Cyprus U.N. Buffer Zone — demilitarised zone between Cyprus and Northern Cyprus, not a country.",
+  SPI: 'Southern Patagonian Ice Field — unresolved Chile/Argentina border area, no ISO code.',
+  BRT: 'Bir Tawil — unclaimed land between Egypt and Sudan, no ISO code.',
+  PGA: 'Spratly Islands — disputed South China Sea islets claimed by several states, no ISO code.',
+  BJN: 'Bajo Nuevo Bank — disputed Caribbean reef/bank, no ISO code.',
+  SER: 'Serranilla Bank — disputed Caribbean reef/bank, no ISO code.',
+  SCR: 'Scarborough Reef — disputed South China Sea shoal, no ISO code.',
 }
 
 // ---------------------------------------------------------------------------
@@ -49,33 +64,36 @@ export const EXCLUDE_GEONAMES = {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Territories with NO polygon in Natural Earth 1:50m "Countries"
+// 4. Territories with NO polygon in Natural Earth 1:10m "Countries"
 // ---------------------------------------------------------------------------
 // These ARE current ISO countries and DO get a countries.json row (territories
-// count as their own entries per plan §2), but the 1:50m Admin-0 *Countries*
+// count as their own entries per plan §2), but the 1:10m Admin-0 *Countries*
 // layer either fuses them into a parent polygon (the French DOMs into France,
-// Christmas/Cocos into Australia) or omits them at this resolution. They are
-// therefore trackable rows without a distinct clickable landmass on the world
-// map in v1. This set tells the validator "these missing polygons are expected"
-// so it does not fail the build — anything missing that is NOT listed here is a
-// real error and stops the build.
+// Christmas/Cocos into Australia) or omits them even at this resolution. They
+// are therefore trackable rows without a distinct clickable landmass on the
+// world map in v1. This set tells the validator "these missing polygons are
+// expected" so it does not fail the build — anything missing that is NOT
+// listed here is a real error and stops the build.
 //
 // >>> This is the documented consequence of the Phase-2 map-source decision.
 // >>> See tools/minor_fixes.md for how to graft these shapes in later. <<<
+//
+// Gibraltar and the US Minor Outlying Islands used to be here too — they were
+// omitted at the original 1:50m source but *do* have their own polygon at
+// 1:10m, so they graduated out of this set for free when a later polish pass
+// upgraded the map source (see PROGRESS.md).
 export const KNOWN_NO_POLYGON = new Set([
   'GF', // French Guiana      — fused into France's polygon
   'GP', // Guadeloupe         — fused into France's polygon
   'MQ', // Martinique         — fused into France's polygon
   'RE', // Réunion            — fused into France's polygon
   'YT', // Mayotte            — fused into France's polygon
-  'GI', // Gibraltar          — omitted at 1:50m (tiny)
-  'BQ', // Bonaire, St Eustatius and Saba — omitted at 1:50m
-  'BV', // Bouvet Island      — omitted at 1:50m (uninhabited)
+  'BQ', // Bonaire, St Eustatius and Saba — omitted at 1:10m
+  'BV', // Bouvet Island      — omitted at 1:10m (uninhabited)
   'CC', // Cocos (Keeling) Islands — fused into NE "Indian Ocean Ter." (AU)
   'CX', // Christmas Island   — fused into NE "Indian Ocean Ter." (AU)
   'SJ', // Svalbard and Jan Mayen — drawn within Norway's polygon
-  'TK', // Tokelau            — omitted at 1:50m (uninhabited by cities1000 scale)
-  'UM', // US Minor Outlying Islands — scattered specks, omitted at 1:50m
+  'TK', // Tokelau            — omitted at 1:10m (uninhabited by cities1000 scale)
 ])
 
 // ---------------------------------------------------------------------------
@@ -108,14 +126,12 @@ export const TERRITORY_COORDS = {
   MQ: [14.64, -61.02],
   RE: [-21.13, 55.53],
   YT: [-12.82, 45.17],
-  GI: [36.14, -5.35],
   BQ: [12.18, -68.25],
   BV: [-54.42, 3.36],
   SJ: [78.0, 20.0],
   TK: [-9.2, -171.85],
   CC: [-12.17, 96.83],
   CX: [-10.49, 105.62],
-  UM: [19.28, 166.6], // Wake Island, the largest of the group
 }
 
 // ---------------------------------------------------------------------------

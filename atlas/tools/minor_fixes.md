@@ -6,21 +6,27 @@ map work (Phase 3+) makes them worth the effort.
 
 ---
 
-## 1. Territories with no world-map polygon at 1:50m  ⭐ (the big one)
+## 1. Territories with no world-map polygon at 1:10m  ⭐ (the big one)
 
-**Status:** deferred by explicit decision (see the Phase-2 session).
+**Status:** deferred by explicit decision (see the Phase-2 session); source layer
+upgraded from 1:50m to 1:10m in a later polish pass (see PROGRESS.md), which
+resolved 2 of the original 13 for free (Gibraltar, US Minor Outlying) and also
+fixed the much bigger problem this section used to describe — 1:50m simplified at
+a flat 8% left small/detailed coastlines like Iceland's at ~19 vertices. Iceland
+is now ~450. The 11 remaining no-polygon territories below are a separate,
+smaller, genuinely deferred issue.
 
-**What/why.** The plan names *Natural Earth 1:50m Admin 0 – Countries* as the world
-map source. That layer does not draw a **separate** polygon for 13 GeoNames
-territories — it either fuses them into a parent (the French overseas départements
-into France; Christmas & Cocos into Australia; Svalbard into Norway) or omits them
-at this resolution (Gibraltar, Bonaire, Bouvet, Tokelau, US Minor Outlying):
+**What/why.** *Natural Earth 1:10m Admin 0 – Countries* does not draw a
+**separate** polygon for 11 GeoNames territories — it either fuses them into a
+parent (the French overseas départements into France; Christmas & Cocos into
+Australia; Svalbard into Norway) or omits them even at this resolution (Bonaire,
+Bouvet, Tokelau):
 
 ```
 GF French Guiana   GP Guadeloupe   MQ Martinique   RE Réunion   YT Mayotte   (→ France)
 CC Cocos Islands   CX Christmas Island                                       (→ Australia)
 SJ Svalbard & Jan Mayen                                                      (→ Norway)
-GI Gibraltar   BQ Bonaire/St-Eustatius/Saba   BV Bouvet   TK Tokelau   UM US Minor Outlying
+BQ Bonaire/St-Eustatius/Saba   BV Bouvet   TK Tokelau
 ```
 
 These **do** get full `countries.json` rows (territories count as their own
@@ -36,16 +42,16 @@ country row.
 Natural Earth layer and merge them into `world.topo.json`:
 
 1. Download `ne_10m_admin_0_map_subunits` (S3, same pattern as the other sources).
-   It separates the French DOMs, Gibraltar, etc. as individual subunits with ISO
-   codes.
+   It separates the French DOMs, etc. as individual subunits with ISO codes.
 2. For each code in `KNOWN_NO_POLYGON`, pull its subunit feature, simplify it to
-   match the world map (~8%), tag it `{ code, name }`, and append it to the
-   FeatureCollection in `buildWorldTopo()` before the dissolve.
+   match the world map's non-exception rate (currently `WORLD_SIMPLIFY_DEFAULT_PCT`,
+   25%), tag it `{ code, name }`, and append it to the FeatureCollection in
+   `buildWorldTopo()` before the dissolve.
 3. Remove the grafted codes from `KNOWN_NO_POLYGON`. The validator then *requires*
    them to have a polygon, guaranteeing you did not miss any.
 
-The truly tiny/uninhabited specks (Bouvet, US Minor Outlying) can stay as
-exceptions if they are not worth the vertices — decide per code.
+The truly tiny/uninhabited specks (Bouvet) can stay as exceptions if they are not
+worth the vertices — decide per code.
 
 ---
 
