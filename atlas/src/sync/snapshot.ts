@@ -65,7 +65,7 @@ export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
       await db.photos.bulkPut(merged.photos)
 
       // Only the synced fields; device-local settings (deviceId, geoDataVersion,
-      // autoSync, driveConnected, photoUploadOnCellular, lastSyncAt) are untouched.
+      // autoSync, driveConnected, photoUploadOnCellular, mapView, lastSyncAt) are untouched.
       await settingsRepo.update({
         statMode: merged.settings.statMode,
         countryDenominator: merged.settings.countryDenominator,

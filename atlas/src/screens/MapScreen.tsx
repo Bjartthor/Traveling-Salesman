@@ -4,12 +4,24 @@ import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
 import { buildStatusIndex, metricCoverage, nextStatMode } from '@/stats/coverage'
 import { WorldMap } from '@/components/map/WorldMap'
+import { GlobeMap } from '@/components/map/GlobeMap'
 import { CoverageHeadline } from '@/components/map/CoverageHeadline'
 import { CoverageStrip } from '@/components/map/CoverageStrip'
 import { Legend } from '@/components/map/Legend'
 import { CountrySheet } from '@/components/map/CountrySheet'
+import { MapIcon } from '@/components/nav/BottomNav'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import './MapScreen.css'
+
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <circle cx="12" cy="12" r="9" />
+      <ellipse cx="12" cy="12" rx="4" ry="9" />
+      <path d="M3 12h18" />
+    </svg>
+  )
+}
 
 export function MapScreen() {
   const countries = useLiveQuery(() => db.countries.toArray())
@@ -44,24 +56,50 @@ export function MapScreen() {
     setSelectedCode((prev) => (prev === code ? null : code))
   }
 
+  const isGlobe = settings.mapView === 'globe'
+
   return (
     <div className="map-screen">
-      <CoverageHeadline
-        metric={metric}
-        mode={settings.statMode}
-        onCycle={() => void settingsRepo.update({ statMode: nextStatMode(settings.statMode) })}
-      />
-      <div className="map-screen__map-wrap">
-        <WorldMap
-          countryStatus={countryStatus}
-          subdivisionStatus={subdivisionStatus}
-          cityStatus={cityStatus}
-          selectedCode={selectedCode}
-          onSelectCountry={selectCountry}
-          onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
-          onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
-          onDeselect={() => setSelectedCode(null)}
+      <div className="map-screen__header">
+        <CoverageHeadline
+          metric={metric}
+          mode={settings.statMode}
+          onCycle={() => void settingsRepo.update({ statMode: nextStatMode(settings.statMode) })}
         />
+        <button
+          type="button"
+          className="map-screen__view-toggle"
+          onClick={() => void settingsRepo.update({ mapView: isGlobe ? 'flat' : 'globe' })}
+          aria-label={isGlobe ? 'Switch to flat map' : 'Switch to 3D globe'}
+          title={isGlobe ? 'Switch to flat map' : 'Switch to 3D globe'}
+        >
+          {isGlobe ? <MapIcon /> : <GlobeIcon />}
+        </button>
+      </div>
+      <div className="map-screen__map-wrap">
+        {isGlobe ? (
+          <GlobeMap
+            countryStatus={countryStatus}
+            subdivisionStatus={subdivisionStatus}
+            cityStatus={cityStatus}
+            selectedCode={selectedCode}
+            onSelectCountry={selectCountry}
+            onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+            onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
+            onDeselect={() => setSelectedCode(null)}
+          />
+        ) : (
+          <WorldMap
+            countryStatus={countryStatus}
+            subdivisionStatus={subdivisionStatus}
+            cityStatus={cityStatus}
+            selectedCode={selectedCode}
+            onSelectCountry={selectCountry}
+            onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+            onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
+            onDeselect={() => setSelectedCode(null)}
+          />
+        )}
         {!hasAnyEntries && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}
       </div>
       <CoverageStrip metric={metric} mode={settings.statMode} />

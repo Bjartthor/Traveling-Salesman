@@ -5,6 +5,34 @@
   flex-direction: column;
 }
 
+.map-screen__header {
+  position: relative;
+}
+
+.map-screen__view-toggle {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap-target-min);
+  height: var(--tap-target-min);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  color: var(--haze);
+}
+
+.map-screen__view-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.map-screen__view-toggle:hover {
+  color: var(--chalk);
+}
+
 .map-screen__map-wrap {
   position: relative;
   flex: 1;

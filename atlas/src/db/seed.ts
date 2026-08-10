@@ -7,6 +7,7 @@ import type { Settings, SyncState } from '@/db/types'
 const SETTINGS_ADDED_DEFAULTS = {
   driveConnected: false,
   photoUploadOnCellular: false,
+  mapView: 'flat',
 } as const satisfies Partial<Settings>
 
 const SYNCSTATE_ADDED_DEFAULTS = {

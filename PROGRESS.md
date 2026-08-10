@@ -3097,3 +3097,413 @@ just mathematically.
   diagnose this (a temporary `wheel`-event + transform-poll listener, and a `getBoundingClientRect()`/
   `getComputedStyle()` capture of a real marker) are reusable recipes for the next map-rendering report
   that can't be reproduced in-sandbox.
+
+## 3D globe view — toggle, rotate, tap-to-select (done)
+
+A self-directed feature session, not a numbered phase: the user asked for a switch to toggle between
+the existing 2D choropleth and a rotatable 3D-look globe, and to flag anything ambiguous first. Three
+scope questions were asked and confirmed before writing any code, since each was a real architectural
+fork, not a presentation detail:
+
+1. **Rendering approach** — a lightweight d3-geo orthographic projection (reusing the existing SVG/
+   d3-geo stack) vs a full WebGL 3D engine (three.js). Confirmed: lightweight.
+2. **Feature scope** — country-level status + tap-to-select only, vs full parity with admin-1
+   drill-down and city markers. Confirmed: country-level only.
+3. **Toggle placement** — an icon button on the Map screen itself vs a Settings entry. Confirmed:
+   on the Map screen.
+
+### What was built
+
+- **Settings**: `MapView = 'flat' | 'globe'` type + `Settings.mapView` field
+  ([`db/types.ts`](atlas/src/db/types.ts)), device-local — not in `SyncableSettings`/
+  `SYNCABLE_SETTING_KEYS`, same as `photoUploadOnCellular`/`driveConnected` — on the reasoning that a
+  phone worth spinning a globe on and a laptop you glance at can reasonably differ. Backfilled onto
+  existing rows via `SETTINGS_ADDED_DEFAULTS` in [`db/seed.ts`](atlas/src/db/seed.ts), the same
+  idempotent pattern every device-local field addition has used since Phase 2 — no Dexie version bump
+  needed (not indexed). [`sync/snapshot.ts`](atlas/src/sync/snapshot.ts)'s device-local-fields comment
+  extended to name it.
+- **[`globeMath.ts`](atlas/src/components/map/globeMath.ts) + `.test.ts`** (15 tests) — pure
+  drag-to-rotation math extracted for testability, same "logic lives outside the component" precedent
+  as `cityLayer.ts`. `rotateByDrag()` converts a screen-pixel drag into a `[λ,φ,γ]` rotation delta using
+  `180/π` (a drag of `scale` px sweeps one radian of arc on a sphere rendered at that scale) rather than
+  a picked/tuned constant; `clampLatitude()` stops the globe flipping over a pole, lambda is left free
+  to spin unbounded in either direction.
+- **[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx) + `.css`** — the globe itself,
+  canvas-rendered (not SVG — see Deviation 1), country-level only per the confirmed scope: status fill
+  + tap-to-select opens the same [`CountrySheet`](atlas/src/components/map/CountrySheet.tsx) `WorldMap`
+  already uses, completely untouched (it only ever took a bare `code` prop, so nothing about it knows
+  or cares which map opened it). Tapping open water or the dead space off the globe deselects.
+  Drag-to-rotate and pinch/wheel-to-zoom (bounded 1–6× fit — there's no admin-1 detail to zoom into,
+  unlike WorldMap's uncapped `scaleExtent`) via raw Pointer Events rather than `d3-zoom`, which has no
+  rotate primitive. Same instrument-panel grid backdrop treatment as WorldMap for the dead space around
+  the map — worse here, since a circle inscribed in a rectangle leaves even more of it than the flat
+  map's wide projection did.
+- **[`MapScreen.tsx`](atlas/src/screens/MapScreen.tsx)** — a new `.map-screen__header` wrapper holds
+  `CoverageHeadline` plus a 44×44 icon toggle button (a new globe glyph when flat, `BottomNav`'s
+  existing `MapIcon` — now exported — when on the globe), flipping `settings.mapView` on tap.
+  Conditionally renders `WorldMap` or `GlobeMap`; `selectedCode`/`CountrySheet` stay shared and
+  untouched, so a country selected on one view survives switching to the other.
+
+### Deviations from what was asked, and why
+
+1. **Canvas, not SVG, for the globe itself — not asked, a technical call.** WorldMap's pan/zoom is
+   cheap precisely because it's a `<g transform>`: the ~239 country paths are computed once (memoised)
+   and never touched again during a gesture. A globe can't do that — rotating changes the actual
+   projected geometry of every country on every frame, so "cheap transform, cached paths" isn't
+   available regardless of which technology draws it. Recomputing ~239 path `d` strings and writing
+   them to real SVG DOM nodes on every `pointermove` (up to 60–120/sec) pays real string-building and
+   DOM/React-reconciliation cost that SVG never had to pay when nothing was rotating; canvas's
+   `geoPath(projection, ctx)` issues drawing commands directly, no string step, no DOM nodes to diff —
+   the standard technique every reference d3 "rotating globe" example uses for exactly this reason.
+   - Trade-off, noted rather than solved: canvas has no per-country DOM node, so there's no free
+     `<title>` hover tooltip and nothing to keyboard-focus. Checked WorldMap for parity first — it has
+     no keyboard country-selection path either (mouse/touch `onClick` only), so this isn't a new
+     regression, just not an improvement either.
+   - Zoom is baked into the projection's own `.scale()` rather than a `ctx.scale()` transform, so plain
+     `ctx.lineWidth` values stay a constant on-screen width through any zoom level for free — the SVG
+     equivalent needs an explicit `vector-effect: non-scaling-stroke`; canvas gets the same result here
+     as a side effect of *how* zoom is implemented, not a special case that needed its own code.
+2. **CSS custom properties resolved to real colours via `getComputedStyle`, once, lazily — not asked,
+   forced by canvas.** `ctx.fillStyle` can't parse `var(--x)` the way the CSSOM can.
+   [`statusColor.ts`](atlas/src/components/map/statusColor.ts) stays the single source of truth for
+   *which* token belongs to which status (`resolveGlobePalette` maps over its own existing
+   `STATUS_ORDER`/`colorForStatus`, it doesn't redeclare that mapping) — the new code only adds "and
+   here's how to turn a resolved token into a paintable value."
+3. **Tap-to-select hit-testing via `projection.invert()` + `d3.geoContains()`, with a hand-rolled
+   disk-boundary check in front of it — not asked, forced by canvas having no DOM elements to hang
+   `onClick` on.** WorldMap gets hit-testing for free from the browser's own SVG hit-testing; the globe
+   has to do the spherical point-in-polygon test itself. Both are existing `d3-geo` primitives, no new
+   dependency — but see the bug fix below, this needed more care than it looked like at first.
+4. **Resize preserves rotation and zoom-relative-to-fit; it does not reset to the opening view.**
+   WorldMap resets pan to identity on every resize (its own comment: a stale transform against a
+   re-fitted projection would visibly misalign). Re-centring an orthographic globe on resize doesn't
+   have the same failure mode — only the base scale/translate need to change, not the rotation — and
+   resetting orientation on every viewport resize/orientation change would be a worse experience for
+   something you're actively spinning. `zoomRef` is a multiplier over fit-scale (same convention as
+   WorldMap's `transform.k`), so it survives a resize proportionally rather than in absolute pixels.
+5. **No momentum/inertia on release.** Matches the leaner "country-level only" scope answer in spirit —
+   direct 1:1 drag tracking that stops the instant you release, with nothing to gate behind
+   `prefers-reduced-motion` because there's no motion effect beyond the drag itself. Left as a candidate
+   polish item, not built.
+
+### Bug found and fixed during verification: tapping outside the globe didn't reliably deselect
+
+`geoOrthographic().invert()` does **not** return `null` for a screen point outside the projected disk —
+verified directly against the real projection, not assumed: a tap 5px past the rim and one 1.5 radii
+away both inverted to the *identical* coordinate as a tap exactly on the rim (clamping, not the
+null-for-invalid-input behaviour the original code assumed). `handleTap`'s `!point`/`NaN` guard
+therefore never actually fired for an out-of-disk tap; in practice it would have resolved to whatever
+real country or ocean sits at that rim longitude instead of deselecting — not a crash, a wrong result,
+the same "subtly wrong, not caught by inspection" shape of bug this project's history keeps flagging as
+the ones worth actually testing for rather than reasoning through.
+
+**Fix**: compute disk membership ourselves before ever calling `.invert()` — screen-space distance from
+the projection's own `.translate()` compared against its `.scale()` — rather than trusting the library
+to answer a question it turns out not to answer. Re-verified with the same live probe technique against
+real topology data: a tap dead-centre (rotated to Iceland) selects `IS`; a tap well inside the disk on
+open water deselects as open water; taps 5px past the rim, 1.5 radii out, and directly above the globe
+in the grid backdrop area all now correctly deselect as outside-the-disk. The `NaN`/null check stays as
+a cheap defensive fallback right at the boundary itself, though it's no longer load-bearing for the
+outside-disk case.
+
+### Left undone (correctly, out of scope for this pass)
+
+Admin-1 drill-down and city markers/labels on the globe (confirmed scope: country-level only — the flat
+map is where that detail lives; see the next-session note below about back-face hiding if this changes).
+Momentum/inertia on release. No Settings-screen entry for the toggle (confirmed: Map-screen icon only).
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**163/163**, up from 148 — 15 new `globeMath.test.ts`
+  cases) and `npm run build` all clean.
+- **This session hit the same backgrounded-tab/`ResizeObserver`-never-fires issue documented since
+  Phase 3b** — reconfirmed, not assumed, three ways: `document.hidden` was `true` from the start and
+  stayed `true` after a reload; monkey-patching `document.hidden`/`visibilityState` plus dispatching
+  synthetic events didn't help (as before); and this time a real `preview_resize` call *also* didn't
+  force delivery, unlike the mixed results earlier sessions reported. Both WorldMap's stuck
+  `viewBox="0 0 1 1"` and GlobeMap's canvas staying at its default 300×150 backing-store size confirm
+  this is the same pre-existing environment limitation affecting both map types identically, not
+  something the new component introduced.
+  - The preview tool's synthetic `preview_click` also didn't register this session (confirmed by
+    checking Dexie state immediately after — no write happened), where a plain
+    `element.dispatchEvent(new MouseEvent('click', {bubbles:true}))` reliably did. Worth trying the
+    dispatch-based approach first if a future session hits unresponsive `preview_click` clicks again.
+- **Compensated with real-data verification, one level more rigorous than reading the code**, per the
+  "city markers off-screen" postmortem's own lesson about not trusting a simplified stand-in:
+  - Dynamic-imported the real `loadWorldTopology`/`decodeLayer`/`statusColor` modules plus `d3-geo`
+    directly into the live page and reproduced `resolveGlobePalette`/`draw`/`handleTap`'s literal logic
+    (not a simplified version) against the real 239-feature world topology.
+  - Palette resolution: all four status colours plus unvisited/ocean resolved to exact hex values
+    matching `tokens.css` (`#5b7c99`/`#6f8f7a`/`#4fc08d`/`#e8a33d`/`#26343c`/`#161f25`) — confirms
+    `var(--x)` tokens are genuinely being turned into paintable colours, not passed through literally.
+  - Real canvas paint, byte-verified: rotated a real `geoOrthographic` projection to centre Iceland,
+    filled it as `visited`, read the centre pixel back via `getImageData` — `rgba(79,192,141,255)`, the
+    exact byte value of `--visited`. Proves decode → rotate → project → canvas-fill end to end, not just
+    "no exception thrown."
+  - Hit-testing, all three branches confirmed against real data: tap on Iceland (rotated to centre) →
+    selects `IS`; tap well inside the disk on open ocean → deselects as open water; taps outside the
+    disk (just past the rim, far into the dead space, and in the grid backdrop above the globe) →
+    deselect as outside-the-disk (see the bug fix above — this is exactly what caught it).
+  - Toggle button verified against the real mounted app, not just the probe: clicking
+    `.map-screen__view-toggle` correctly writes `settings.mapView` to the real Dexie table,
+    `useLiveQuery` reactivity swaps `WorldMap` for `GlobeMap` (and back) with no reload, and the
+    button's own icon/label/`aria-label` flip in lockstep (`GlobeIcon`/"Switch to 3D globe" ↔
+    `MapIcon`/"Switch to flat map"). Confirmed both directions of the round trip.
+  - The real mounted `.globe-map__canvas` carries `role="img"`, the correct `aria-label`,
+    `cursor: grab` (→ `grabbing` on `:active`), and lays out at the correct CSS size via flexbox
+    regardless of the still-blocked backing-store sizing — only the *backing store* (device-pixel canvas
+    resolution) is blocked on `ResizeObserver`, not layout.
+  - Zero console errors throughout. No horizontal overflow at 391–400px width.
+  - App left clean afterward: `settings.mapView` reset to its default (`'flat'`) after verification,
+    matching Phase 3's own precedent of resetting settings touched only for testing.
+- **Not verified live**: an actual on-device drag/pinch gesture watching the globe rotate and zoom
+  smoothly, and a literal tap dispatched through real pointer events on the real mounted canvas (blocked
+  by the same environment issue as everything else this session, and — unlike the hit-testing math or
+  the colour pipeline — frame-rate smoothness genuinely can't be probed without a live, focused render
+  loop to measure). Worth a real device check if the drag ever feels laggy; `MIN_ZOOM`/`MAX_ZOOM`/
+  `CLICK_DISTANCE`/`INITIAL_ROTATION`/`GLOBE_PADDING` (all in `GlobeMap.tsx`) are the levers, same
+  "picked constant, easy to retune" precedent as `ADMIN1_ZOOM_THRESHOLD`.
+
+### Notes for the next session
+
+- **The `geoOrthographic().invert()`-doesn't-return-null-outside-the-disk behaviour is worth
+  remembering generally**, not just for this bug: anything that inverts a screen point through an
+  orthographic projection needs its own explicit disk-membership check first (screen-space distance vs.
+  `.scale()`) — the library will not tell you a point is invalid, it clamps.
+- If a future session adds admin-1 or city detail to the globe (currently deferred, country-level only
+  by design), the back-face-hiding concern is real: `clipAngle(90)` already keeps *drawing* limited to
+  the visible hemisphere, but any new per-feature culling logic (the way `cityLayer.ts`'s `visibleRect`
+  culls for the flat map) needs to reject points on the far hemisphere too, not just off-screen ones —
+  a naive port of `selectVisibleCities` would show cities through the back of the globe.
+- `resolveGlobePalette()` resolves tokens once, lazily, on first draw and never again — correct today
+  (`tokens.css` has a single static `:root`, no light-theme override actually implemented yet despite
+  `Settings.theme` existing), but if a future session adds real light-mode CSS, this needs to also
+  re-resolve when `settings.theme` changes, or the globe will keep painting with whichever theme was
+  active on its first draw.
+- The toggle button's placement/styling (`.map-screen__header`, `.map-screen__view-toggle` in
+  `MapScreen.css`) is a first pass, not checked against a real device — the icon-button treatment
+  borrows `CountrySheet`'s close-button convention (44px target, `--haze`→`--chalk` on hover) but sits
+  over the map rather than on a solid sheet background, so it got its own `--shelf`/`--contour` card
+  treatment; worth a look on a real phone alongside the rest of this session's unconfirmed live-gesture
+  items.
+
+## Globe view — full parity with the 2D map (done)
+
+Immediate follow-up in the same session: after trying the country-level globe above, the user said *"I
+like the globe alot, but on a second thought I want the globe to have all the same abilities/functions
+as the 2d map"* — reversing the "country-level only" scope this session had confirmed just beforehand.
+The request was unambiguous, so this went straight to implementation rather than asking again; the
+first pass's shared building blocks (`CountrySheet`, the cascade/status data, matching prop shapes)
+existed largely to make exactly this expansion cheap.
+
+### What was built
+
+- **Admin-1 drill-down**, mirroring [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx) exactly:
+  a selected country's subdivisions lazy-load past `ADMIN1_ZOOM_THRESHOLD` — now **exported** from
+  WorldMap and imported into GlobeMap rather than duplicated, so the two maps can never drift onto
+  different reveal thresholds — coloured via `subdivisionStatus`, drawn through the same
+  clipAngle-aware `path()` as everything else (the far-hemisphere portion is hidden automatically, no
+  extra code needed). Ported WorldMap's gap-fill trick verbatim: once admin-1 regions are actually
+  covering the selected country, its own base fill switches to the neutral unvisited tone instead of
+  its real status, for the same reason WorldMap needed it — the world and admin-1 topology layers are
+  two independently simplified traces of the same coastline and don't align to the pixel.
+- **City markers**, also mirroring WorldMap: lazy-loaded past `CITY_MIN_SCALE`, ranked/capped/labelled
+  by the same shared pipeline (see refactor below), rendered as dot + optional mono label with a
+  stroke-halo for legibility. Simpler than WorldMap's SVG version in one respect: canvas markers need no
+  counter-scale hack (WorldMap's `--zoom-k` CSS trick exists specifically to undo its `<g
+  transform="scale(k)">` zoom mechanism, which the globe doesn't use at all — zoom is baked into the
+  projection's `.scale()`, so a plain fixed-radius `ctx.arc()` already stays a constant on-screen size).
+- **The one genuinely new mechanism this required**: hemisphere visibility for point features.
+  `clipAngle(90)` only clips *polygon/line* geometry drawn through the path generator — verified
+  directly (not assumed, see below) that a bare `projection([lon, lat])` call for a point and its exact
+  antipode collide at the *identical* screen coordinate, so nothing about the raw forward projection
+  alone can tell you which hemisphere you actually got. Added `isFrontFacing(rotation, point)` to
+  [`globeMath.ts`](atlas/src/components/map/globeMath.ts) (6 new tests) — the point currently centred by
+  a rotation is `[-rotation[0], -rotation[1]]` (verified against a live projection), and a target point
+  is visible when its great-circle distance from that centre is ≤ 90°. GlobeMap's `project` callback for
+  city selection checks this before ever calling the raw projection.
+- **Shared-code refactor**: `cityLayer.ts`'s `selectVisibleCities` no longer computes its own viewport
+  rect from a d3-zoom-shaped `{k,x,y}` transform (meaningless for a globe — there's no pan, only
+  rotate). It now takes a pre-computed `viewRect` directly from the caller: WorldMap computes it via the
+  still-exported `visibleRect(transform, ...)` exactly as before (zero behaviour change, confirmed by
+  the untouched WorldMap tests all still passing), GlobeMap just passes its own screen bounds (its
+  `project` callback already excludes anything not on the visible hemisphere, so no separate rect-based
+  culling is needed on top). This is what let both maps share one selection/ranking/capping pipeline
+  instead of GlobeMap needing its own copy.
+- **Hit-testing precedence**, matching how WorldMap's SVG paint order already implies it (topmost
+  element wins the tap): cities first (pixel-radius hit test against the markers actually drawn on the
+  last frame — there's no polygon to run `geoContains` against for a point), then admin-1 subdivisions
+  (`geoContains`, only checked when currently showing), then countries, then deselect.
+- **`GlobeMapProps` now matches `WorldMapProps`** — `subdivisionStatus`, `cityStatus`,
+  `onSelectSubdivision`, `onSelectCity` added; [`MapScreen.tsx`](atlas/src/screens/MapScreen.tsx) passes
+  the identical prop set to both.
+
+### Deviations from what was asked, and why
+
+1. **`MAX_ZOOM` uncapped (`Infinity`) — not asked, follows directly from the scope change.** The
+   previous session's `MAX_ZOOM = 6` was explicitly justified by "there's no admin-1 detail to zoom
+   into" — no longer true, so the same reasoning that led WorldMap to uncap its own `scaleExtent` now
+   applies here too.
+2. **A small new piece of React state, `settledZoom`.** Rotation/zoom otherwise live entirely in refs,
+   deliberately outside React, for gesture performance. But "should we fetch this country's admin-1
+   topology / the city index yet" is a threshold-crossing check that only needs to happen once per
+   completed gesture step (not every drag frame) and needs to compose with `selectedCode` changing — an
+   effect dependency is the natural fit for that, the same role WorldMap's own settled `transform.k`
+   state already plays for the identical two thresholds. Updated on `pointerup` (gesture fully released)
+   and on each `wheel` tick (which, like WorldMap's underlying d3-zoom, treats each wheel event as its
+   own complete gesture already) — never on `pointermove`, so dragging still never re-renders.
+3. **Admin-1 features and the loaded city index live in refs (`admin1FeaturesRef`, `mapCitiesRef`), not
+   React state, unlike WorldMap's `admin1Features`/`mapCities` state.** WorldMap needs them in state
+   because it renders JSX `<path>`/`<g>` elements straight from them. GlobeMap's canvas drawing never
+   touches JSX for this data at all — updating a ref and calling `draw()` directly after each async load
+   is both sufficient and more consistent with the rest of this component's "bypass React, work through
+   refs" design than introducing state that exists only to trigger an effect.
+4. **Canvas label rendering resolves an actual font string (`getComputedStyle` + hand-computed `rem`→px
+   math) rather than trusting CSS.** Same forcing function as the colour tokens in the first pass —
+   `ctx.font` needs a concrete size, and a raw `0.625rem` risks the browser resolving it against the
+   canvas element's own ambient font context rather than the page root, which the DOM/CSS path never has
+   to worry about.
+5. **Canvas text baseline is `'middle'`, not a replica of WorldMap's SVG alphabetic-baseline-plus-3px
+   offset.** A cosmetic, not functional, difference — canvas and SVG text metrics don't share a baseline
+   model, and centring the label vertically against the dot reads cleanly on canvas without trying to
+   reverse-engineer SVG-specific tuning that doesn't mean the same thing here.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**169/169** — unchanged from the first globe pass;
+  this expansion added rendering/hit-testing logic and one new pure helper (`isFrontFacing`, 6 tests,
+  already counted) but no other new pure modules) and `npm run build` all clean.
+- **Same environment limitation as the first pass, reconfirmed once more**: `document.hidden` actually
+  read `false` partway through this session (unlike the first pass, where it never did), so a real
+  render was attempted again — toggled to the globe, checked the canvas — still stuck at its default
+  300×150 backing store, confirming this is deeper than the `document.hidden` flag alone (a genuine
+  renderer-level throttle, matching what earlier sessions concluded). `preview_screenshot` still timed
+  out. Fell back to the same real-data probe technique as the first pass, and hit one new wrinkle this
+  time: an early probe threw `Cannot read properties of undefined (reading 'x')` from *inside*
+  `visibleRect` — a genuinely confusing error until traced to the browser's ES module cache serving a
+  **stale** `cityLayer.ts` from an earlier dynamic `import()` in this same long-lived page session,
+  predating this session's refactor of that file. Bare `import()` calls issued by hand like this bypass
+  Vite's HMR entirely, so the fix is a manual cache-buster (`import(`/src/foo.ts?t=${Date.now()}`)`) on
+  any module re-imported after editing it mid-session — worth remembering for the next probe-based
+  verification session.
+- **Real-data verification of every genuinely novel piece**, same rigor as the tap-to-select bug catch
+  in the first pass:
+  - **Hemisphere culling**, the one new mechanism, checked against real, well-known geography: rotated
+    to centre Reykjavík, loaded the real 170,486-row city index. Both a direct `isFrontFacing` check and
+    the full `selectVisibleCities` pipeline agreed exactly: Reykjavík and London (nearby) visible;
+    Wellington and Sydney (the literal opposite side of the planet) excluded. Not a coincidence of the
+    test data — these are real antipodal-ish city pairs.
+  - **Admin-1 hit-testing**: rotated to centre Munich with Germany's real 16 admin-1 regions loaded —
+    a tap dead-centre resolved to `DE.02` / "Bayern" (Bavaria), correctly the specific subdivision, not
+    just the country.
+  - **Country-level fallback**: a tap on Paris (rotated into view, well outside any of Germany's admin-1
+    shapes) correctly fell through the admin-1 check and resolved to `FR`, confirming a tap on a
+    *different* country while another's admin-1 is showing still selects the new one.
+  - **City-over-admin1-over-country precedence**: a synthetic marker 0.9px from a tap point was
+    correctly chosen; the same marker 112px away (outside the 22px hit radius) was correctly missed and
+    would fall through to the layers beneath it.
+  - **Label font**: resolved `--text-2xs`/`--font-mono` by hand into `"10px 'IBM Plex Mono',
+    ui-monospace, monospace"` and fed it to a real `CanvasRenderingContext2D.font` setter — the browser
+    accepted and correctly echoed back the same size and family (re-quoted, not substituted), confirming
+    it's a valid, correctly-parsed canvas font declaration rather than a silent fallback to some default.
+  - Not independently re-verified this round: the admin-1 gap-fill fill-colour swap and the city dot/
+    label fill colours, both byte-level in the first pass for country fills. Reasoned rather than
+    re-proven: both reuse the exact same `fillFor`/`palette`/`ctx.fill()` mechanism already
+    byte-verified against real pixel readback, just fed different feature geometry through the same
+    `path()` call already proven correct for country polygons.
+  - Toggle round-trip (flat → globe → flat) re-confirmed against the live mounted app after all of the
+    above, with the new, larger prop set wired through — no console errors, no crash.
+- App left clean afterward: `settings.mapView` reset to `'flat'`.
+
+### Left undone
+
+Nothing from the request — admin-1 and city markers now work identically in spirit on both maps.
+Momentum/inertia on release is still not built (not part of either scope conversation). The same
+not-verified-live items as the first pass remain open (an actual on-device drag/pinch/tap gesture) —
+this session added real-data proof for the new hit-testing/culling *logic*, not a live frame-rate check,
+which still needs a real device or a non-backgrounded browser tab.
+
+### Notes for the next session
+
+- **`ADMIN1_ZOOM_THRESHOLD` is now a cross-component import** (`GlobeMap.tsx` imports it from
+  `WorldMap.tsx`). A deliberate, minimal choice over introducing a shared-constants file for one value —
+  worth revisiting if a third consumer ever needs it.
+- **The stale-module-cache lesson above is worth restating**: any future probe-based verification
+  session that re-imports a file it (or an earlier session) already dynamically imported once in the
+  same long-lived tab needs a cache-busting query param, or it'll silently test old code and produce
+  confusing errors that look like a real bug in the new code.
+- If admin-1/city detail ever needs to work *simultaneously* with a much wider zoomed-out view (it
+  currently doesn't need to — the reveal thresholds are identical to WorldMap's), remember cities are
+  the one layer that needed the hand-rolled hemisphere check; any new point-based layer added later
+  (as opposed to polygons, which `clipAngle` already handles) will need the same treatment.
+
+## Bug fix: globe wheel/pinch zoom always zoomed toward the centre, not the cursor
+
+Reported by the user testing on a computer, immediately after the full-parity session above shipped:
+scrolling to zoom in always zoomed toward the middle of the globe, regardless of where the cursor was —
+asked explicitly to fix it so zooming at, say, the top-right corner actually zooms in on that corner, on
+both computer (wheel) and phone (pinch).
+
+**Root cause**: `onWheel`/the pinch branch only ever changed `zoomRef.current`, and the projection's
+`.translate()` was fixed at the container centre by the resize effect and never touched again. Since
+scale change is applied around whatever the projection's translate point is, zooming necessarily always
+appeared to happen around the container centre — there was no "zoom toward a point" behaviour at all,
+just "zoom, centred."
+
+**Fix** [`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx): the standard "zoom toward cursor/pinch"
+technique every map or photo viewer uses — a new `translateRef`, no longer pinned to centre, and a
+`zoomAt(localX, localY, targetZoom)` helper that solves for the translate value which keeps the screen
+point `(localX, localY)` fixed as scale changes: `translate' = anchor + k·(translate − anchor)` where
+`k` is the ratio of new to old zoom. `draw()` now applies `translateRef.current` every frame (previously
+only ever set once, in the resize effect). Wired into both gesture paths — `onWheel` anchors at the
+cursor position, the pinch branch anchors at the midpoint between the two touch points (a new
+`pointerMidpoint()`, alongside the existing `pointerDistance()`). Rotation (drag) is untouched — this is
+purely a scale/translate concern.
+
+One deliberate invariant added on top of the raw formula: **zooming all the way back out to `MIN_ZOOM`
+always recentres**, regardless of how much translate has drifted from off-centre zooming at higher zoom
+levels. Without this, repeatedly zooming in/out anchored at different points could leave the globe
+permanently off-centre even at minimum zoom — WorldMap gets the equivalent guarantee for free from
+`translateExtent` clamping its own transform back to `(0,0)` at `scale 1`; the globe has no such
+built-in clamp, so this is done by hand (`if (clamped <= MIN_ZOOM) translateRef.current = [container
+centre]`).
+
+**Caught a bug in my own verification, not the fix, worth recording**: the first live-data check of this
+formula showed real drift (~120–150px) and looked like the fix was wrong. Traced it back to the test
+itself, not the code — it used `.invert()` to find "the point currently under an anchor at (350, 100)",
+but that screen point was actually *outside* the visible disk at the starting zoom level (whole-globe
+fit), which triggers the exact `.invert()`-clamps-to-the-rim behaviour discovered and documented earlier
+this session — the "point" the test then tracked through subsequent zoom steps was never real to begin
+with, so of course re-projecting it didn't land back where expected. This is unrelated to the shipped
+`zoomAt` code, which never calls `.invert()` at all (it's a pure screen-space affine update, well-defined
+regardless of whether the anchor happens to sit over real globe content or the empty dead space around
+it). Rewrote the check to track a known, genuinely-visible lon/lat point end to end instead — see
+Verified below.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**169/169**, unchanged — this fix touches only
+  gesture-handling logic, no new pure/testable module) all clean.
+- **Real-data proof of the actual invariant**, corrected per the false start above: tracked a genuine,
+  currently-visible lon/lat point's screen position through a 1×→4×→10× zoom sequence, re-anchoring at
+  that same point's *current* screen position at each step (exactly what a continuous scroll gesture
+  does). Drift after both steps: `[0, -5.68×10⁻¹⁴]` — floating-point noise, not a real discrepancy.
+  Separately re-confirmed the MIN_ZOOM recentre invariant: zooming back down to exactly `1` always
+  produces `translate = [width/2, height/2]` regardless of prior off-centre drift.
+- Re-ran the live mounted app: toggled to the globe, dispatched a real `wheel` event (via
+  `canvas.dispatchEvent(new WheelEvent(...))`, `deltaY: -200`) at a point 85%/15% across the canvas
+  (a genuine top-right-corner position, matching the user's own example) — no console errors, no crash.
+  The same standing `ResizeObserver`-in-hidden-tab limitation (reconfirmed once more this session) means
+  the canvas never got a real backing-store size in this environment, so `zoomAt`'s own `baseScaleRef.current
+  === 0` guard made this particular dispatched event a no-op internally — still useful as confirmation
+  that firing the real listener path in an "not fully laid out yet" state doesn't throw or produce NaN
+  garbage, but the actual visual "does it zoom toward the corner on screen" effect could not be watched
+  directly and rests on the algebraic proof above instead.
+- App left clean afterward: `settings.mapView` reset to `'flat'`.
+
+### Left undone
+
+Not confirmed on a real phone/computer with an actual scroll wheel or pinch gesture — the algebraic proof
+is solid (the formula is the well-known, standard one, and drift measured at 10⁻¹⁴ across a real
+projection) but nothing in this sandboxed session could watch pixels move in response to a real gesture.
+Worth a quick real-world check now that it's shipped.

@@ -28,7 +28,7 @@ export function BottomNav() {
   )
 }
 
-function MapIcon() {
+export function MapIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
       <path d="M9 4 4 6v14l5-2 6 2 5-2V4l-5 2-6-2Z" strokeLinecap="round" />

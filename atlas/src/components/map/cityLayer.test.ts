@@ -18,7 +18,8 @@ function mkCity(overrides: Partial<MapCity> & { refId: string }): MapCity {
 // how the projection works, only that it maps to a screen-space point.
 const identityProject = (lon: number, lat: number): [number, number] => [lon, lat]
 
-const FULL_VIEWPORT = { transform: { k: 1, x: 0, y: 0 }, viewportWidth: 1000, viewportHeight: 1000 }
+const FULL_VIEWPORT = { viewRect: visibleRect({ k: 1, x: 0, y: 0 }, 1000, 1000) }
+const EMPTY_VIEWPORT = { viewRect: { x0: 0, y0: 0, x1: 0, y1: 0 } }
 
 describe('selectVisibleCities — scale gating', () => {
   it('shows nothing below CITY_MIN_SCALE, even for an obviously-eligible capital', () => {
@@ -39,9 +40,7 @@ describe('selectVisibleCities — scale gating', () => {
       cities: [capital],
       cityStatus: new Map(),
       scale: 24,
-      transform: { k: 1, x: 0, y: 0 },
-      viewportWidth: 0,
-      viewportHeight: 0,
+      ...EMPTY_VIEWPORT,
       project: identityProject,
     })
     expect(result).toHaveLength(0)

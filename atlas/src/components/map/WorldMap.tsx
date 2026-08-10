@@ -8,7 +8,7 @@ import { loadMapCities, type MapCity } from '@/geo/mapCities'
 import { logError } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
-import { CITY_MIN_SCALE, selectVisibleCities } from '@/components/map/cityLayer'
+import { CITY_MIN_SCALE, selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
 import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -45,7 +45,9 @@ function getPaths(
 // country's admin-1 regions load and draw on top of it. Chosen so a
 // mid-sized country (e.g. Germany) has grown large enough on screen for
 // its subdivisions to read as individual shapes rather than a smear.
-const ADMIN1_ZOOM_THRESHOLD = 4
+// Exported so GlobeMap can reveal admin-1 at the same relative zoom level
+// rather than maintaining its own, driftable copy of this constant.
+export const ADMIN1_ZOOM_THRESHOLD = 4
 
 interface Size {
   width: number
@@ -273,9 +275,7 @@ export function WorldMap({
             cities: mapCities,
             cityStatus,
             scale: transform.k,
-            transform,
-            viewportWidth: size.width,
-            viewportHeight: size.height,
+            viewRect: visibleRect(transform, size.width, size.height),
             project: (lon, lat) => projection([lon, lat]),
           })
         : [],

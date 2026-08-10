@@ -1,6 +1,10 @@
-// Picks which cities the world map shows at the current zoom/pan, and how
-// (dot only vs dot+label). Pure and unit-tested — same "logic lives outside
-// the component" precedent as @/domain/countrySheetLayout.
+// Picks which cities the map shows at the current zoom, and how (dot only vs
+// dot+label). Pure and unit-tested — same "logic lives outside the
+// component" precedent as @/domain/countrySheetLayout. Shared by both
+// WorldMap and GlobeMap: neither the population/ranking/cap logic nor the
+// scale gating cares which projection is drawing the map, only
+// selectVisibleCities' viewRect/project params are projection-specific (see
+// their doc comments below).
 //
 // Design: below CITY_MIN_SCALE nothing shows at all — cities are strictly a
 // zoomed-in feature, same spirit as the existing ADMIN1_ZOOM_THRESHOLD. Above
@@ -11,7 +15,7 @@
 // visited village never waits behind some unrelated country's population
 // cutoff. Candidates are then culled to the current viewport, ranked (your
 // entries first, then capitals, then population) and capped, so a dense
-// region at high zoom can never flood the SVG with thousands of dots.
+// region at high zoom can never flood the map with thousands of dots.
 
 import type { Status } from '@/db/types'
 import type { MapCity } from '@/geo/mapCities'
@@ -89,19 +93,24 @@ export interface SelectVisibleCitiesParams {
   cities: readonly MapCity[]
   cityStatus: ReadonlyMap<string, Status>
   scale: number
-  transform: ZoomTransform
-  viewportWidth: number
-  viewportHeight: number
-  /** The map's base (unzoomed) geo projection — same one used for country paths. */
+  // The caller computes this however suits its own projection model — a flat
+  // map inverts a d3-zoom transform (see visibleRect below), a globe just
+  // uses its own screen bounds, since project() below already excludes
+  // anything not on the visible hemisphere. Keeping this projection-agnostic
+  // is what lets both WorldMap and GlobeMap share this one selection/ranking
+  // pipeline instead of each needing their own copy.
+  viewRect: ViewportRect
+  /** Projects a point to screen space, or null to exclude it outright — a
+   *  flat map has nothing to exclude this way, but a globe uses it to drop
+   *  anything on the far side (see @/components/map/globeMath isFrontFacing). */
   project: (lon: number, lat: number) => [number, number] | null
 }
 
 export function selectVisibleCities(params: SelectVisibleCitiesParams): CityMarker[] {
-  const { cities, cityStatus, scale, transform, viewportWidth, viewportHeight, project } = params
-  if (scale < CITY_MIN_SCALE || viewportWidth === 0 || viewportHeight === 0) return []
+  const { cities, cityStatus, scale, viewRect, project } = params
+  if (scale < CITY_MIN_SCALE || viewRect.x1 <= viewRect.x0 || viewRect.y1 <= viewRect.y0) return []
 
   const floor = populationFloor(scale)
-  const rect = visibleRect(transform, viewportWidth, viewportHeight)
 
   const candidates: { city: MapCity; status: Status | null; x: number; y: number; pri: number }[] = []
   for (const city of cities) {
@@ -110,7 +119,7 @@ export function selectVisibleCities(params: SelectVisibleCitiesParams): CityMark
     const projected = project(city.lon, city.lat)
     if (!projected) continue
     const [x, y] = projected
-    if (x < rect.x0 || x > rect.x1 || y < rect.y0 || y > rect.y1) continue
+    if (x < viewRect.x0 || x > viewRect.x1 || y < viewRect.y0 || y > viewRect.y1) continue
     candidates.push({ city, status, x, y, pri: priority(status !== null, city.isCapital) })
   }
 
