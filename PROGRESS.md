@@ -4100,3 +4100,51 @@ whoever picks this up next.
 6. The separately-noted `MAX_CITY_MARKERS`/`MAX_CITY_LABELS`/zoom-threshold constants throughout this file
    are, as documented at each step, empirical starting points — expect to retune them the first time real
    usage (not just Iceland) puts pressure on them.
+
+## Crash diagnostics — durable heap/memory instrumentation (done)
+
+Intermittent Chrome "Aw snap!" crashes were reported, correlated with a Google Drive sync pull. The sync
+path itself ([`src/sync/*`](atlas/src/sync)) is robust and fully tested; no deterministic crash was found,
+and the photo path (a common OOM vector — but its object-URLs are correctly revoked anyway) was ruled out
+by the user. The leading hypothesis is a **renderer out-of-memory**: a large steady-state JS heap (the
+in-memory indexes over the ~170k-row `cities` table — map, search, nearest-city — plus never-evicted
+topology caches, now including the per-country `countryDetail` files) plus a sync pull's transient
+main-thread spike (parse the remote doc, snapshot the local tables, merge, canonicalize). A renderer OOM
+kills the tab with no catchable JS error, so neither the [`ErrorBoundary`](atlas/src/debug/ErrorBoundary.tsx)
+nor the [`unhandledrejection` handler](atlas/src/debug/globalHandlers.ts) ever sees it — the only trace it
+can leave is a record of the heap climbing beforehand. That is what this adds.
+
+- [`src/debug/memory.ts`](atlas/src/debug/memory.ts) — `readHeap()`/`heapSummary()` over Chromium's
+  non-standard `performance.memory` (the engine that shows the crash page), degrading to `null`/`''`
+  anywhere the API is absent, so callers never have to guard.
+- [`src/debug/memoryWatch.ts`](atlas/src/debug/memoryWatch.ts) — samples heap on a 15 s timer and on
+  return-to-foreground, writing a breadcrumb **only** when heap pressure crosses 70/85/93%
+  (edge-triggered). A healthy session logs essentially nothing; a session walking into an OOM leaves a
+  clear rising trail as its final entries. Mounted from `main.tsx` next to `installGlobalErrorLogging`.
+- [`src/sync/sync.ts`](atlas/src/sync/sync.ts) — every `sync:` breadcrumb now carries the heap summary
+  and per-table payload sizes (the remote doc's byte size comes free from the Drive metadata `findFile`
+  already fetches). Also computes `canonicalize(merged)` once instead of letting `snapshotsEqual`
+  re-serialise the merged snapshot for both the local- and remote-changed checks — trims the pull's peak
+  main-thread allocation. Behaviour-identical (all 168 tests still pass).
+
+Everything lands in the existing device-only debug log (**Settings → Debug log**). After a crash: reload,
+copy the log, read the tail. A renderer OOM shows as the log *stopping* after a `sync:`/`memory:` line with
+**no `ERROR` entry** and heap % climbing in the lines before the gap; a JS exception instead leaves an
+`ERROR` entry (different fix). Crash is reported on a **phone**, whose heap ceiling is far lower than the
+4 GB seen on desktop, which makes the OOM hypothesis more likely.
+
+### Verified
+
+`npx tsc -b`, `npx eslint .`, `npx vitest run` (168/168), and `npm run build` all clean. Ran the production
+build in a real browser and confirmed the baseline breadcrumb writes:
+`memory: baseline :: heap 54MB/59MB · limit 4096MB · 1%`, with heap visibly spiking to ~80 MB during the
+170k-city seed and falling back after — i.e. the watchdog tracks real movement. Grepped the built bundle
+to confirm the breadcrumb strings survive minification. **Not verified:** the live *sync* breadcrumbs need
+Google Drive OAuth, not reachable from the sandbox — they rest on the tests plus the bundle grep.
+
+### Still open
+
+The instrumentation confirms nothing on its own — it makes the *next* crash readable. Once a real-device
+debug log is captured, the last breadcrumb localizes the phase and the heap trend confirms or refutes OOM,
+at which point the targeted fix follows: move the merge/canonicalize off the main thread, evict topology
+caches, or bound the in-memory city indexes.

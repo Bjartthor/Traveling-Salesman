@@ -5,11 +5,13 @@ import '@/styles/base.css'
 import { seedDatabase } from '@/db/seed'
 import { registerUpdatePrompt } from '@/pwa/registerUpdatePrompt'
 import { installGlobalErrorLogging } from '@/debug/globalHandlers'
+import { installMemoryWatch } from '@/debug/memoryWatch'
 import { ErrorBoundary } from '@/debug/ErrorBoundary'
 import App from './App.tsx'
 
 registerUpdatePrompt()
 installGlobalErrorLogging()
+installMemoryWatch()
 
 seedDatabase().then(() => {
   createRoot(document.getElementById('root')!).render(

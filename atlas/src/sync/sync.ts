@@ -8,12 +8,29 @@ import { logError, logInfo } from '@/debug/log'
 import { AuthError, describeAuthError, getAccessToken, isConfigured } from '@/sync/auth'
 import { DriveError, DriveUnavailableError, findFile, uploadJson, downloadJson } from '@/sync/drive'
 import { applyMergedSnapshot, buildLocalSnapshot } from '@/sync/snapshot'
-import { mergeSnapshots, snapshotsEqual } from '@/sync/merge'
+import { canonicalize, mergeSnapshots } from '@/sync/merge'
 import { pendingPhotoCounts, syncPhotos } from '@/sync/photos'
 import { SYNC_SCHEMA_VERSION, type AtlasDoc, type SyncSnapshot } from '@/sync/types'
 import { useSyncStore } from '@/sync/syncStore'
+import { heapSummary } from '@/debug/memory'
 
 const DATA_FILE = 'atlas-data.json'
+
+// Every sync breadcrumb carries the current heap summary (and, where useful, the
+// payload size that phase just handled). A sync is a periodic main-thread memory
+// spike — download + parse the remote doc, snapshot the local tables, merge,
+// serialise — so if the intermittent "Aw snap!" is a renderer OOM, this is the
+// trail that shows the heap climbing across the phases right before the log
+// stops. See @/debug/memoryWatch for the between-syncs watchdog.
+function withHeap(detail?: string): string | undefined {
+  const parts = [detail, heapSummary()].filter(Boolean)
+  return parts.length > 0 ? parts.join(' · ') : undefined
+}
+
+/** Compact per-table counts for a snapshot, for a breadcrumb's detail. */
+function snapshotSizes(s: SyncSnapshot): string {
+  return `entries=${s.entries.length} trips=${s.trips.length} tripEntries=${s.tripEntries.length} photos=${s.photos.length}`
+}
 
 export type SyncOutcome = 'ok' | 'not-connected' | 'not-configured' | 'offline' | 'auth' | 'error'
 
@@ -68,14 +85,24 @@ async function runSync(): Promise<SyncResult> {
   }
 
   store.setSyncing()
-  void logInfo('sync: started')
+  void logInfo('sync: started', withHeap())
   try {
     await getAccessToken() // may prompt/refresh; throws AuthError on failure
 
     // 1. Pull.
     const remoteFile = await findFile(DATA_FILE)
     const remoteDoc = remoteFile ? await downloadJson<AtlasDoc>(remoteFile.id) : null
-    void logInfo('sync: pulled')
+    // `remoteFile.size` is the Drive file's byte size, already fetched by
+    // findFile's metadata query — a free, allocation-free measure of exactly the
+    // payload downloadJson just parsed (the pull's single largest allocation).
+    void logInfo(
+      'sync: pulled',
+      withHeap(
+        remoteDoc
+          ? `${remoteFile?.size ?? '?'}B · rev=${remoteDoc.revision} · ${snapshotSizes(remoteDoc.data)}`
+          : 'no remote file',
+      ),
+    )
     if (remoteDoc && remoteDoc.schema > SYNC_SCHEMA_VERSION) {
       store.setError('This copy of Atlas is older than the data in your Drive. Update the app, then sync again.')
       return { outcome: 'error', pushed: false, pulled: false, message: 'remote schema newer' }
@@ -98,24 +125,31 @@ async function runSync(): Promise<SyncResult> {
 
     // 3. Photo pass first, so new/cleared driveFileIds ride along in the doc.
     await syncPhotos()
-    void logInfo('sync: photos done')
+    void logInfo('sync: photos done', withHeap())
 
     // 4. Merge (photo metadata is now current in the local snapshot).
     const local = await buildLocalSnapshot()
     const merged: SyncSnapshot = remoteSnapshot
       ? mergeSnapshots({ local, remote: remoteSnapshot, settingsBase: bookkeeping.lastSyncedSettings })
       : local
-    void logInfo('sync: merged')
+    void logInfo('sync: merged', withHeap(snapshotSizes(merged)))
+
+    // canonicalize(merged) is the largest string a sync builds; compute it once
+    // and compare strings for both the "did local change?" and "did remote
+    // change?" checks below, instead of snapshotsEqual re-serialising `merged`
+    // twice (two full stringifies of the same, possibly large, object) — trims
+    // the pull's peak main-thread allocation.
+    const mergedCanon = canonicalize(merged)
 
     // 5. Write locally only if the merge actually changed local state.
-    if (!snapshotsEqual(merged, local)) {
+    if (mergedCanon !== canonicalize(local)) {
       await applyMergedSnapshot(merged)
-      void logInfo('sync: applied merge locally')
+      void logInfo('sync: applied merge locally', withHeap())
     }
 
     // 6. Push only if the remote is missing or differs — keeps re-syncing an
     //    unchanged payload from bumping the revision forever (idempotence).
-    const remoteChanged = remoteSnapshot === null || !snapshotsEqual(merged, remoteSnapshot)
+    const remoteChanged = remoteSnapshot === null || mergedCanon !== canonicalize(remoteSnapshot)
     let pushed = false
     let newRemoteRevision = remoteDoc?.revision ?? 0
     if (remoteChanged) {
@@ -128,7 +162,7 @@ async function runSync(): Promise<SyncResult> {
       }
       await uploadJson(DATA_FILE, doc, remoteFile?.id)
       pushed = true
-      void logInfo('sync: pushed')
+      void logInfo('sync: pushed', withHeap(`rev=${newRemoteRevision}`))
     }
 
     // 7. Bookkeeping. finalRevision includes bumps from applyMergedSnapshot's
@@ -147,7 +181,7 @@ async function runSync(): Promise<SyncResult> {
 
     queued = false
     store.setIdle()
-    void logInfo('sync: ok')
+    void logInfo('sync: ok', withHeap())
     return { outcome: 'ok', pushed, pulled: remoteSnapshot !== null }
   } catch (e) {
     if (e instanceof AuthError) {
