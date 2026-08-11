@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { geoContains, geoOrthographic, geoPath, type GeoProjection, type GeoSphere } from 'd3-geo'
 import type { Status } from '@/db/types'
-import { loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
+import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
 import { logError } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
@@ -54,7 +54,6 @@ interface GlobePalette {
   grid: string
   strokeDefault: string
   strokeSelected: string
-  cityDot: string
   labelText: string
   labelFont: string
 }
@@ -83,7 +82,6 @@ function resolveGlobePalette(): GlobePalette {
     grid: resolve('var(--contour)'),
     strokeDefault: resolve('var(--abyss)'),
     strokeSelected: resolve('var(--chalk)'),
-    cityDot: resolve('var(--haze)'),
     labelText: resolve('var(--chalk)'),
     labelFont: `${Math.round(labelRem * rootFontSizePx)}px ${resolve('var(--font-mono)')}`,
   }
@@ -143,6 +141,7 @@ export function GlobeMap({
   const paletteRef = useRef<GlobePalette | null>(null)
   const featuresRef = useRef<MapFeature[]>([])
   const admin1FeaturesRef = useRef<MapFeature[]>([])
+  const countryDetailFeatureRef = useRef<MapFeature | null>(null)
   const mapCitiesRef = useRef<readonly MapCity[]>([])
   const cityMarkersRef = useRef<CityMarker[]>([]) // cached from the last draw, reused for hit-testing
   const countryStatusRef = useRef(countryStatus)
@@ -260,7 +259,24 @@ export function GlobeMap({
     }
     if (selectedFeature) {
       ctx.beginPath()
-      path(selectedFeature.feature)
+      // Prefer the higher-resolution per-country outline once it's loaded
+      // (see the country-detail effect below, WorldMap's identical trick) —
+      // but only while admin-1 isn't showing. Admin-1 is a completely
+      // different Natural Earth dataset tracing the same coastline
+      // independently, at whatever detail it happens to have for this
+      // country's subdivisions — for some regions (confirmed directly:
+      // Iceland's Reykjavík/Capital Region has only 81/56 raw points versus
+      // ~3,000 for the country-level coastline there) that's drastically
+      // coarser no matter how it's simplified. Drawing the sharper country
+      // outline underneath admin-1 anyway turned the old, barely-visible
+      // simplification gaps into an obvious mismatch (caught live, see
+      // PROGRESS.md) — colour fills visibly stopping short of, or cutting
+      // across, real coastal features the sharper line shows. Falling back
+      // to the coarse `selectedFeature` here once admin-1 shows means only
+      // one traced coastline is ever drawn at a time — admin-1's own edges
+      // are the coastline whenever admin-1 is what's actually on screen.
+      const detailFeature = countryDetailFeatureRef.current
+      path((detailFeature && !showingAdmin1 ? detailFeature : selectedFeature).feature)
       // Same gap-fill trick WorldMap uses: the world layer and the admin-1
       // layer are two independently simplified traces of the same coastline
       // and don't align to the pixel, so once admin-1 regions are actually
@@ -312,7 +328,7 @@ export function GlobeMap({
       for (const m of markers) {
         ctx.beginPath()
         ctx.arc(m.x, m.y, m.isCapital ? 4.5 : 3, 0, Math.PI * 2)
-        ctx.fillStyle = m.status ? fillFor(m.status, palette) : palette.cityDot
+        ctx.fillStyle = fillFor(m.status, palette)
         ctx.fill()
         ctx.strokeStyle = palette.strokeDefault
         ctx.lineWidth = 1
@@ -376,6 +392,30 @@ export function GlobeMap({
     loadCountryTopology(selectedCode).then((topo) => {
       if (cancelled) return
       admin1FeaturesRef.current = topo ? decodeLayer(topo, 'admin1', 'id') : []
+      draw()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCode, settledZoom, draw])
+
+  // --- country detail: a higher-resolution outline for the selected country,
+  // same reveal condition and same "cleared eagerly" rationale as admin-1
+  // above. See WorldMap's identical effect for the full explanation of why
+  // this exists — world.topo.json simplifies every country hard enough to
+  // keep the whole world under one shared budget, which reads as visibly
+  // blocky once zoomed in on just one of them. ---
+  useEffect(() => {
+    if (!selectedCode || settledZoom < ADMIN1_ZOOM_THRESHOLD) {
+      countryDetailFeatureRef.current = null
+      draw()
+      return
+    }
+    let cancelled = false
+    loadCountryDetailTopology(selectedCode).then((topo) => {
+      if (cancelled) return
+      const features = topo ? decodeLayer(topo, 'countries', 'code') : []
+      countryDetailFeatureRef.current = features.find((f) => f.id === selectedCode) ?? null
       draw()
     })
     return () => {

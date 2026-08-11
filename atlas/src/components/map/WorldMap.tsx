@@ -3,7 +3,7 @@ import { geoNaturalEarth1, geoPath, type GeoSphere } from 'd3-geo'
 import { select } from 'd3-selection'
 import { zoom as d3zoom, zoomIdentity, type D3ZoomEvent } from 'd3-zoom'
 import type { Status } from '@/db/types'
-import { loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
+import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
 import { logError } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
@@ -78,6 +78,15 @@ export function WorldMap({
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const gRef = useRef<SVGGElement>(null)
+  // rAF-throttling for the live 'zoom' handler below: pointer/wheel events
+  // (especially trackpad wheel deltas) can fire faster than the display can
+  // paint, and every tick rewrites --zoom-k, which cascades a style
+  // recalc through every rendered city marker. Coalescing to one DOM write
+  // per animation frame caps that cost at the paint rate instead of the
+  // input rate, with no visible difference — the on-screen result is
+  // identical, just computed at most once per frame instead of once per event.
+  const pendingZoomTransformRef = useRef<{ k: number; x: number; y: number; toString: () => string } | null>(null)
+  const zoomRafIdRef = useRef<number | null>(null)
 
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
@@ -90,6 +99,7 @@ export function WorldMap({
   // frame of a gesture.
   const [transform, setTransform] = useState({ k: 1, x: 0, y: 0 })
   const [admin1Features, setAdmin1Features] = useState<MapFeature[]>([])
+  const [countryDetailFeature, setCountryDetailFeature] = useState<MapFeature | null>(null)
   const [mapCities, setMapCities] = useState<readonly MapCity[]>([])
 
   // --- container size (drives the projection fit; never changes on pan/zoom) ---
@@ -192,13 +202,20 @@ export function WorldMap({
     ]
     zoomBehavior.extent(extent).translateExtent(extent)
     zoomBehavior.on('zoom', (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
-      gEl.setAttribute('transform', event.transform.toString())
-      // City markers counter-scale against this custom property (WorldMap.css)
-      // so their dot/label size stays constant on screen through the gesture,
-      // instead of growing without bound — zoom has no upper cap (see
-      // ADMIN1_ZOOM_THRESHOLD above), so a marker sized in local units alone
-      // would eventually swallow the whole viewport.
-      gEl.style.setProperty('--zoom-k', String(event.transform.k))
+      pendingZoomTransformRef.current = event.transform
+      if (zoomRafIdRef.current !== null) return
+      zoomRafIdRef.current = requestAnimationFrame(() => {
+        zoomRafIdRef.current = null
+        const t = pendingZoomTransformRef.current
+        if (!t) return
+        gEl.setAttribute('transform', t.toString())
+        // City markers counter-scale against this custom property (WorldMap.css)
+        // so their dot/label size stays constant on screen through the gesture,
+        // instead of growing without bound — zoom has no upper cap (see
+        // ADMIN1_ZOOM_THRESHOLD above), so a marker sized in local units alone
+        // would eventually swallow the whole viewport.
+        gEl.style.setProperty('--zoom-k', String(t.k))
+      })
     })
     zoomBehavior.on('end', (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
       setTransform({ k: event.transform.k, x: event.transform.x, y: event.transform.y })
@@ -212,6 +229,9 @@ export function WorldMap({
 
     return () => {
       selection.on('.zoom', null)
+      if (zoomRafIdRef.current !== null) cancelAnimationFrame(zoomRafIdRef.current)
+      zoomRafIdRef.current = null
+      pendingZoomTransformRef.current = null
     }
     // Re-binds on resize to keep pan constrained to the current viewport; also
     // resets to identity, since a stale transform against a re-fitted
@@ -240,6 +260,40 @@ export function WorldMap({
   const admin1Paths = useMemo(
     () => (pathGen && selectedCode ? getPaths(`admin1:${selectedCode}`, pathGen, admin1Features, size.width, size.height) : []),
     [pathGen, admin1Features, selectedCode, size.width, size.height],
+  )
+
+  // --- country detail: a higher-resolution outline for the selected country
+  // only, same reveal condition as admin-1 above. world.topo.json has to
+  // simplify every country hard enough to keep the whole world under one
+  // shared byte budget (Iceland keeps ~14% of its real points there) — fine
+  // zoomed out, visibly blocky once you're zoomed in on one country. This
+  // swaps in a per-country file simplified against its own budget instead
+  // (tools/build-geo.mjs's buildCountryDetail), painted on top of the coarse
+  // shape it's replacing so there's no flash of missing content while it
+  // loads. Purely a rendering upgrade — selection/hit-testing/status all
+  // still key off the country code, never this shape. ---
+  useEffect(() => {
+    if (!selectedCode || !overThreshold) {
+      setCountryDetailFeature(null)
+      return
+    }
+    let cancelled = false
+    loadCountryDetailTopology(selectedCode).then((topo) => {
+      if (cancelled) return
+      const features = topo ? decodeLayer(topo, 'countries', 'code') : []
+      setCountryDetailFeature(features.find((f) => f.id === selectedCode) ?? null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCode, overThreshold])
+
+  const countryDetailPath = useMemo(
+    () =>
+      pathGen && countryDetailFeature
+        ? getPaths(`countryDetail:${countryDetailFeature.id}`, pathGen, [countryDetailFeature], size.width, size.height)[0]
+        : undefined,
+    [pathGen, countryDetailFeature, size.width, size.height],
   )
 
   // --- city layer: loaded lazily (the ~170k-row index costs real time to
@@ -336,6 +390,42 @@ export function WorldMap({
               <title>{p.name}</title>
             </path>
           ))}
+          {countryDetailPath && !showingAdmin1 && (
+            // Painted directly on top of the coarse path for this same
+            // country above — same fill/stroke rules, just sharper geometry.
+            // Nothing needs to be removed from orderedCountryPaths for this:
+            // an opaque fill on top fully replaces what's visually shown
+            // wherever the two shapes differ, and there's no gap while this
+            // loads since the coarse path is still there underneath.
+            //
+            // Deliberately hidden once admin-1 is showing (`!showingAdmin1`
+            // above), not just gap-filled: admin-1 is built from a
+            // completely different Natural Earth dataset that traces the
+            // same coastline independently, at whatever detail that dataset
+            // happens to have for this particular country's subdivisions —
+            // for some regions (confirmed directly: Iceland's Reykjavík/
+            // Capital Region has only 81/56 raw points, versus the ~3,000
+            // the country-level coastline has there) that's drastically
+            // coarser, no matter how gently it's simplified. Layering a much
+            // sharper competing coastline on top of that turned the old,
+            // barely-visible simplification gaps into an obvious mismatch —
+            // colour fills visibly stopping short of or cutting across real
+            // coastal features the sharper line shows (caught live, see
+            // PROGRESS.md). Showing only one traced coastline at a time
+            // avoids that entirely: admin-1's own edges are the coastline
+            // whenever admin-1 is what's actually drawn.
+            <path
+              d={countryDetailPath.d}
+              className="world-map__country world-map__country--selected"
+              style={{ fill: colorForStatus(countryStatus.get(countryDetailPath.id)) }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onSelectCountry(countryDetailPath.id)
+              }}
+            >
+              <title>{countryDetailPath.name}</title>
+            </path>
+          )}
           {admin1Paths.length > 0 && (
             <g className="world-map__admin1">
               {admin1Paths.map((p) => (
@@ -379,7 +469,7 @@ export function WorldMap({
                     <circle
                       className="world-map__city-dot"
                       r={c.isCapital ? 4.5 : 3}
-                      style={{ fill: c.status ? colorForStatus(c.status) : 'var(--haze)' }}
+                      style={{ fill: colorForStatus(c.status) }}
                     />
                     {c.labeled && (
                       <text className="world-map__city-label mono" x={7} y={3}>

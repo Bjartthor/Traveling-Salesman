@@ -1,49 +1,38 @@
 // Picks which cities the map shows at the current zoom, and how (dot only vs
 // dot+label). Pure and unit-tested — same "logic lives outside the
 // component" precedent as @/domain/countrySheetLayout. Shared by both
-// WorldMap and GlobeMap: neither the population/ranking/cap logic nor the
+// WorldMap and GlobeMap: neither the selection/ranking/cap logic nor the
 // scale gating cares which projection is drawing the map, only
 // selectVisibleCities' viewRect/project params are projection-specific (see
 // their doc comments below).
 //
-// Design: below CITY_MIN_SCALE nothing shows at all — cities are strictly a
+// Design: below CITY_MIN_SCALE nothing shows at all — a city dot is still a
 // zoomed-in feature, same spirit as the existing ADMIN1_ZOOM_THRESHOLD. Above
-// it, a city is a *candidate* once it clears a population floor that relaxes
-// the further you zoom in (00-PLAN.md's "first the big cities... then the
-// smaller the more you zoom in"), OR unconditionally if it's a country's
-// capital or a place already logged as an entry — so a small, obscure
-// visited village never waits behind some unrelated country's population
-// cutoff. Candidates are then culled to the current viewport, ranked (your
-// entries first, then capitals, then population) and capped, so a dense
-// region at high zoom can never flood the map with thousands of dots.
+// it, the *only* candidates are cities the user has actually logged an entry
+// for (any status — wishlist through lived). Earlier revisions of this file
+// also surfaced capitals and population-ranked cities so the map read as a
+// reference atlas even before you'd logged anything, but that produced far
+// more dots than a personal travel tracker needs and was the direct cause of
+// map lag — this is a travel *log*, not a gazetteer, so an unmarked city
+// never appears no matter how large it is. Candidates are then culled to the
+// current viewport, ranked (capitals first, then population, both just
+// tie-breakers now that every candidate already has a status) and capped —
+// the cap is a generous backstop against a pathological case (hundreds of
+// entries visible at once), not a routine limiter, since the candidate pool
+// is already bounded by how many places you've actually logged.
 
 import type { Status } from '@/db/types'
 import type { MapCity } from '@/geo/mapCities'
 
-export const CITY_MIN_SCALE = 2.5
-export const MAX_CITY_MARKERS = 200
-export const MAX_CITY_LABELS = 36
-
-// [minimum scale, population required at/above that scale]. A capital or an
-// already-logged place ignores this table entirely (see module doc above).
-// Picked constants, chosen empirically for a reasonable count on screen at
-// each step — easy to retune, same precedent as ADMIN1_ZOOM_THRESHOLD.
-export const POPULATION_TIERS: readonly (readonly [minScale: number, minPopulation: number])[] = [
-  [2.5, 2_000_000],
-  [4, 500_000],
-  [7, 150_000],
-  [11, 40_000],
-  [16, 10_000],
-  [24, 0],
-]
-
-function populationFloor(scale: number): number {
-  let floor = Infinity
-  for (const [minScale, minPopulation] of POPULATION_TIERS) {
-    if (scale >= minScale) floor = minPopulation
-  }
-  return floor
-}
+// Kept low (rather than tied to ADMIN1_ZOOM_THRESHOLD or MIN_ZOOM) purely to
+// avoid loading the ~170k-row bundled city index (see @/geo/mapCities) on
+// every map mount — the index is still needed to resolve a marked city's
+// name/lat/lon, even though most of its rows will never be shown. Once
+// loaded, a logged city appears as soon as it's on screen; there's no
+// population-driven reason left to delay it further.
+export const CITY_MIN_SCALE = 2
+export const MAX_CITY_MARKERS = 150
+export const MAX_CITY_LABELS = 60
 
 export interface ZoomTransform {
   k: number
@@ -74,8 +63,8 @@ export function visibleRect(transform: ZoomTransform, width: number, height: num
   return { x0: x0 - padX, y0: y0 - padY, x1: x1 + padX, y1: y1 + padY }
 }
 
-function priority(hasEntry: boolean, isCapital: boolean): number {
-  return (hasEntry ? 2 : 0) + (isCapital ? 1 : 0)
+function priority(isCapital: boolean): number {
+  return isCapital ? 1 : 0
 }
 
 export interface CityMarker {
@@ -85,7 +74,7 @@ export interface CityMarker {
   y: number
   population: number
   isCapital: boolean
-  status: Status | null
+  status: Status
   labeled: boolean
 }
 
@@ -110,17 +99,15 @@ export function selectVisibleCities(params: SelectVisibleCitiesParams): CityMark
   const { cities, cityStatus, scale, viewRect, project } = params
   if (scale < CITY_MIN_SCALE || viewRect.x1 <= viewRect.x0 || viewRect.y1 <= viewRect.y0) return []
 
-  const floor = populationFloor(scale)
-
-  const candidates: { city: MapCity; status: Status | null; x: number; y: number; pri: number }[] = []
+  const candidates: { city: MapCity; status: Status; x: number; y: number; pri: number }[] = []
   for (const city of cities) {
-    const status = cityStatus.get(city.refId) ?? null
-    if (city.population < floor && !city.isCapital && status === null) continue
+    const status = cityStatus.get(city.refId)
+    if (status === undefined) continue
     const projected = project(city.lon, city.lat)
     if (!projected) continue
     const [x, y] = projected
     if (x < viewRect.x0 || x > viewRect.x1 || y < viewRect.y0 || y > viewRect.y1) continue
-    candidates.push({ city, status, x, y, pri: priority(status !== null, city.isCapital) })
+    candidates.push({ city, status, x, y, pri: priority(city.isCapital) })
   }
 
   candidates.sort((a, b) => b.pri - a.pri || b.city.population - a.city.population)

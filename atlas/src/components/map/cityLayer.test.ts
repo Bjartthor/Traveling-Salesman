@@ -22,11 +22,11 @@ const FULL_VIEWPORT = { viewRect: visibleRect({ k: 1, x: 0, y: 0 }, 1000, 1000) 
 const EMPTY_VIEWPORT = { viewRect: { x0: 0, y0: 0, x1: 0, y1: 0 } }
 
 describe('selectVisibleCities — scale gating', () => {
-  it('shows nothing below CITY_MIN_SCALE, even for an obviously-eligible capital', () => {
+  it('shows nothing below CITY_MIN_SCALE, even for a marked capital', () => {
     const capital = mkCity({ refId: 'cap', population: 10_000_000, isCapital: true })
     const result = selectVisibleCities({
       cities: [capital],
-      cityStatus: new Map(),
+      cityStatus: new Map<string, Status>([['cap', 'lived']]),
       scale: CITY_MIN_SCALE - 0.01,
       ...FULL_VIEWPORT,
       project: identityProject,
@@ -38,7 +38,7 @@ describe('selectVisibleCities — scale gating', () => {
     const capital = mkCity({ refId: 'cap', population: 10_000_000, isCapital: true })
     const result = selectVisibleCities({
       cities: [capital],
-      cityStatus: new Map(),
+      cityStatus: new Map<string, Status>([['cap', 'lived']]),
       scale: 24,
       ...EMPTY_VIEWPORT,
       project: identityProject,
@@ -47,47 +47,39 @@ describe('selectVisibleCities — scale gating', () => {
   })
 })
 
-describe('selectVisibleCities — population tiers', () => {
-  it('requires a higher population at the minimum reveal scale than at a deeper zoom', () => {
-    const city = mkCity({ refId: 'mid', population: 600_000 })
-    const at = (scale: number) =>
-      selectVisibleCities({ cities: [city], cityStatus: new Map(), scale, ...FULL_VIEWPORT, project: identityProject })
-    expect(at(CITY_MIN_SCALE)).toHaveLength(0) // 600k is below the 2,000,000 floor at the minimum scale
-    expect(at(4)).toHaveLength(1) // but clears the 500,000 floor once zoomed to scale 4
-  })
-
-  it('always includes a capital regardless of population', () => {
-    const capital = mkCity({ refId: 'tiny-capital', population: 1, isCapital: true })
+describe('selectVisibleCities — only marked cities appear', () => {
+  it('excludes a city with no logged entry, however large or however capital it is', () => {
+    const megacity = mkCity({ refId: 'unmarked', population: 30_000_000, isCapital: true })
     const result = selectVisibleCities({
-      cities: [capital],
+      cities: [megacity],
       cityStatus: new Map(),
       scale: CITY_MIN_SCALE,
       ...FULL_VIEWPORT,
       project: identityProject,
     })
-    expect(result).toHaveLength(1)
+    expect(result).toHaveLength(0)
   })
 
-  it('always includes a city the user has logged as an entry, regardless of population', () => {
-    const visited = mkCity({ refId: 'tiny-village', population: 1 })
+  it('includes a tiny, non-capital city once the user has logged any status for it', () => {
+    const village = mkCity({ refId: 'tiny-village', population: 1 })
     const result = selectVisibleCities({
-      cities: [visited],
-      cityStatus: new Map<string, Status>([['tiny-village', 'lived']]),
+      cities: [village],
+      cityStatus: new Map<string, Status>([['tiny-village', 'wishlist']]),
       scale: CITY_MIN_SCALE,
       ...FULL_VIEWPORT,
       project: identityProject,
     })
     expect(result).toHaveLength(1)
-    expect(result[0]?.status).toBe('lived')
+    expect(result[0]?.status).toBe('wishlist')
   })
 })
 
 describe('selectVisibleCities — viewport culling', () => {
-  it('excludes an otherwise-eligible city outside the current viewport', () => {
-    const farAway = mkCity({ refId: 'far', population: 1, isCapital: true, lon: 5000, lat: 5000 })
+  it('excludes an otherwise-eligible marked city outside the current viewport', () => {
+    const farAway = mkCity({ refId: 'far', isCapital: true, lon: 5000, lat: 5000 })
     const result = selectVisibleCities({
       cities: [farAway],
-      cityStatus: new Map(),
+      cityStatus: new Map<string, Status>([['far', 'visited']]),
       scale: CITY_MIN_SCALE,
       ...FULL_VIEWPORT,
       project: identityProject,
@@ -97,29 +89,28 @@ describe('selectVisibleCities — viewport culling', () => {
 })
 
 describe('selectVisibleCities — cap and priority', () => {
-  it('caps the result at MAX_CITY_MARKERS, keeping entries first, then capitals, then the highest populations', () => {
-    const entryCity = mkCity({ refId: 'entry-1', population: 10 })
+  it('caps the result at MAX_CITY_MARKERS, keeping capitals first, then the highest populations', () => {
     const capitalCity = mkCity({ refId: 'capital-1', population: 20, isCapital: true })
     const plainCities = Array.from({ length: MAX_CITY_MARKERS + 10 }, (_, i) => mkCity({ refId: `plain-${i}`, population: i }))
+    const allCities = [capitalCity, ...plainCities]
     const result = selectVisibleCities({
-      cities: [entryCity, capitalCity, ...plainCities],
-      cityStatus: new Map<string, Status>([[entryCity.refId, 'visited']]),
-      scale: 24, // deepest tier (population floor 0) — isolates cap/priority from population gating
+      cities: allCities,
+      cityStatus: new Map<string, Status>(allCities.map((c) => [c.refId, 'visited'])),
+      scale: CITY_MIN_SCALE,
       ...FULL_VIEWPORT,
       project: identityProject,
     })
     expect(result).toHaveLength(MAX_CITY_MARKERS)
-    expect(result[0]?.refId).toBe('entry-1')
-    expect(result[1]?.refId).toBe('capital-1')
-    expect(result[2]?.refId).toBe(`plain-${MAX_CITY_MARKERS + 9}`) // highest-population plain city
+    expect(result[0]?.refId).toBe('capital-1')
+    expect(result[1]?.refId).toBe(`plain-${MAX_CITY_MARKERS + 9}`) // highest-population plain city
   })
 
   it('labels only the first MAX_CITY_LABELS markers of the priority-sorted result', () => {
     const cities = Array.from({ length: MAX_CITY_LABELS + 5 }, (_, i) => mkCity({ refId: `c-${i}`, population: i }))
     const result = selectVisibleCities({
       cities,
-      cityStatus: new Map(),
-      scale: 24,
+      cityStatus: new Map<string, Status>(cities.map((c) => [c.refId, 'visited'])),
+      scale: CITY_MIN_SCALE,
       ...FULL_VIEWPORT,
       project: identityProject,
     })

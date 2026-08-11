@@ -204,3 +204,22 @@ export function loadCountryTopology(code: string): Promise<TopoJson | null> {
   }
   return promise
 }
+
+const countryDetailTopoPromises = new Map<string, Promise<TopoJson | null>>()
+
+/**
+ * Lazy, higher-resolution single-country outline for one country — same
+ * Natural Earth source as world.topo.json, but simplified per country
+ * instead of against one shared whole-world budget (see
+ * tools/build-geo.mjs's buildCountryDetail). Resolves null when absent.
+ */
+export function loadCountryDetailTopology(code: string): Promise<TopoJson | null> {
+  let promise = countryDetailTopoPromises.get(code)
+  if (!promise) {
+    promise = fetch(geoUrl(`countryDetail/${code}.topo.json`))
+      .then((r) => (r.ok ? (r.json() as Promise<TopoJson>) : null))
+      .catch(() => null)
+    countryDetailTopoPromises.set(code, promise)
+  }
+  return promise
+}

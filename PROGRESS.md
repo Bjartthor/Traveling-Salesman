@@ -3506,4 +3506,597 @@ Verified below.
 Not confirmed on a real phone/computer with an actual scroll wheel or pinch gesture — the algebraic proof
 is solid (the formula is the well-known, standard one, and drift measured at 10⁻¹⁴ across a real
 projection) but nothing in this sandboxed session could watch pixels move in response to a real gesture.
+
+## Polish: city markers were too dense and the flat map got laggy once they appeared
+
+Reported by the user after living with the city layer for a while: too many cities on screen at once
+(the reveal hierarchy needed retuning), and the flat `WorldMap` got noticeably laggy once cities were
+showing. Asked clarifying questions before touching anything, since both the "how many is right" question
+and the performance root cause were genuinely open — see answers below.
+
+**Density/hierarchy** ([`cityLayer.ts`](atlas/src/components/map/cityLayer.ts)), per the user's own worked
+example (zoom into Iceland: capital only → then Kópavogur/Garðabær-tier towns → then everything, capped
+around 20–30 on screen ever):
+- `CITY_MIN_SCALE` 2.5 → **3.5** — delays the whole city layer (capitals included) a bit later into the
+  zoom, per explicit ask ("keep capitals always visible but make them appear a bit later").
+- `MAX_CITY_MARKERS` 200 → **25**, `MAX_CITY_LABELS` 36 → **20** — the user was explicit: never more than
+  20–30 cities on screen at once. This is the real backstop; population tiers alone can't guarantee an
+  exact per-country count (density varies too much country to country), but combined with the existing
+  viewport culling, capping globally is equivalent to "top ~25 in view" whenever the view is roughly one
+  country, which is the realistic case this matters for.
+- `POPULATION_TIERS` rescaled to `[3.5, 2M] → [5, 500k] → [7, 150k] → [10, 40k] → [14, 10k] → [20, 0]` —
+  shifted later and slightly compressed versus the old table, so the "top handful of a country's biggest
+  cities" tier lands earlier than full granularity, matching the requested capital → top-N → everything
+  progression.
+- Kept the existing design (unchanged): a capital or an already-logged entry always qualifies as a
+  candidate regardless of population — confirmed wanted in the clarifying round, just later in the zoom
+  (see `CITY_MIN_SCALE` above).
+- [`cityLayer.test.ts`](atlas/src/components/map/cityLayer.test.ts): one test hardcoded the old tier
+  table's scale-4 checkpoint (`500,000` floor used to kick in at scale 4) — updated to scale 5, matching
+  the new table. No other test depended on exact tier/cap numbers.
+
+**Performance** ([`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx)): the flat map's live zoom
+handler writes `gEl.setAttribute('transform', ...)` and `gEl.style.setProperty('--zoom-k', ...)` directly
+to the DOM on every `'zoom'` tick — deliberately outside React for drag/pinch smoothness (see the comment
+above it), but the raw tick rate is the input event rate (wheel/pointermove), not the paint rate, and a
+fast trackpad or mouse can fire wheel deltas well above 60/sec. Every tick's `--zoom-k` write cascades a
+style recalc through every currently-rendered `.world-map__city` marker (each counter-scales against it —
+see `WorldMap.css`), so with markers on screen this was doing more DOM work per second than the browser
+could ever paint. User explicitly asked for this to be fixed too, not just the marker count reduction.
+
+**Fix**: rAF-throttled the handler. A new `pendingZoomTransformRef` stores the latest transform from every
+raw `'zoom'` tick; a `zoomRafIdRef` guard ensures at most one `requestAnimationFrame` is in flight at a
+time, and the scheduled callback always reads whatever the *latest* pending transform is (never a stale
+one) before doing the actual `setAttribute`/`setProperty` writes and clearing the in-flight flag. Net
+effect: DOM writes are capped at one per painted frame regardless of how many raw events arrive between
+frames, with **no visual change** — same transform, same counter-scale, just coalesced. Cleanup cancels
+any in-flight rAF and clears both refs, so a resize-triggered re-bind or unmount can't leave a stray
+callback trying to write to a stale `gEl`.
+
+Considered and rejected: only updating `--zoom-k` at gesture `'end'` instead of continuously. That would
+have been a bigger win per-frame, but markers are sized in local (pre-zoom) SVG units and the ancestor
+`<g>`'s scale transform is what makes them balloon visually as `k` grows without the live counter-scale —
+deferring the counter-scale to gesture-end would reintroduce that ballooning for the whole gesture, a
+regression the original mechanism exists specifically to prevent. rAF-throttling gets the perf win with
+zero visual trade-off instead.
+
+`GlobeMap.tsx` needed no equivalent change — its canvas redraw is already funneled through its own
+`scheduleDraw()`/`requestAnimationFrame` pattern (confirmed by reading it, not assumed), so it was never
+doing more than one draw per frame to begin with. It picks up the new density/hierarchy constants for free
+since both maps share `cityLayer.ts`.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**169/169**, one test's hardcoded checkpoint updated to
+  match the retuned tier table, no new tests needed — no new pure logic, just constant/handler changes)
+  all clean.
+- **Real-data proof of the actual density/hierarchy change**, run against the live 170,486-row bundled
+  city index via a cache-busted dynamic import (`import('/src/geo/mapCities.ts?t=...')`, per the
+  stale-module-cache lesson from the earlier globe session) and the real `selectVisibleCities` pipeline,
+  viewport fixed to Iceland's bounding box:
+  - Scale 3.5 (first reveal) and scale 7: **only Reykjavík** — exactly "only the capital is shown" from
+    the user's own example.
+  - Scale 14: **8 cities** — Reykjavík, Kópavogur, Hafnarfjörður, Reykjanesbær, Akureyri, Keflavík,
+    Mosfellsbær, Garðabær — a direct hit on the user's own named examples (Kópavogur, Garðabær) at
+    exactly the tier meant to represent "top cities in the country."
+  - Scale 20 (whole country in view): capped at exactly **25** results, first 20 labelled, last 5 not —
+    the `MAX_CITY_MARKERS`/`MAX_CITY_LABELS` backstop working as designed even though far more than 25
+    Icelandic settlements clear the scale-20 population floor of 0.
+  - Noticed in passing, not caused by this change and not fixed here: "Borgarnes" appears twice in that
+    last result, back-to-back, identical population — looks like a pre-existing duplicate in the bundled
+    city data (possibly a bundled + online-cached duplicate) rather than anything in the selection logic.
+    Worth a look if it turns out to be more than a one-off.
+- **The rAF-throttle logic was code-reviewed, not exercised live** — attempted a real dispatched-`WheelEvent`
+  burst-of-6 test (matching a fast trackpad between two frames) with a `MutationObserver` on the `<g>`'s
+  `transform` attribute to count actual DOM writes, but hit the same standing `ResizeObserver`-in-hidden-tab
+  limitation this repo's sessions keep running into: `size.width`/`size.height` never leave their initial
+  `{0,0}` state because the `ResizeObserver` callback that would set them never fires while this sandbox's
+  tab is backgrounded, so the zoom-binding effect's own `size.width === 0` guard bails out before ever
+  calling `selection.call(zoomBehavior)` — there is no `'zoom'` listener attached at all to dispatch events
+  at. Confirmed this diagnosis directly (`rafCallCount` stayed `0` across a 6-event burst) rather than
+  assuming it. Fell back to reasoning about the code directly: it's the standard "coalesce to one
+  `requestAnimationFrame` per burst, always read the latest pending value" pattern, and `tsc`/`eslint`
+  confirm it type-checks and has no unused-ref or stale-closure issues.
+- App state left clean: only read-only probes this session (`loadMapCities()`, the pure
+  `selectVisibleCities()`), no Dexie writes, no settings changes.
+
+### Left undone
+
+The rAF-throttle's actual frame-rate impact is not confirmed on a real device — same class of gap as the
+two prior globe sessions (both hit the identical `ResizeObserver`-in-hidden-tab wall). Worth a real-device
+check next time someone's on a phone or a computer with a trackpad: pinch/scroll-zoom the flat map with
+cities showing and see whether it now feels smooth. The Iceland-specific population/scale numbers above are
+empirical, same as the rest of `POPULATION_TIERS` — reasonable starting points, not laws of nature, and
+worth retuning again if a much bigger or much smaller country reveals the tiers feel off at some other
+scale.
 Worth a quick real-world check now that it's shipped.
+
+## Polish, round two: city markers still weren't right — switched to "marked cities only"
+
+The density/hierarchy retuning above wasn't enough — user reported it "still isn't as good as I want it to
+be" and asked for a much simpler rule instead: **only show cities that have actually been marked** (any
+status — wishlist through lived), nothing population- or capital-driven at all.
+
+**[`cityLayer.ts`](atlas/src/components/map/cityLayer.ts)** — this removes an entire subsystem rather than
+retuning it:
+- Deleted `POPULATION_TIERS` and `populationFloor()` outright, and the "unconditional if capital" branch of
+  the old inclusion check. The only inclusion test now is `cityStatus.get(city.refId) !== undefined` — a
+  city with no logged entry never appears, regardless of size or capital status.
+- `CITY_MIN_SCALE` 3.5 → **2**: the old value was raised specifically to delay the capitals-always-show
+  clutter; that reason is gone entirely now, so it's back down near its original value. Kept *some*
+  nonzero gate rather than removing it, because it still serves a different, still-real purpose: it's what
+  delays the lazy-load of the ~170k-row bundled city index (see `@/geo/mapCities`) until the user actually
+  starts zooming into the map, rather than paying that cost on every mount.
+- `MAX_CITY_MARKERS` 25 → **150**, `MAX_CITY_LABELS` 20 → **60**: with population-driven candidates gone,
+  the candidate pool is now inherently bounded by how many places the user has actually logged — for any
+  realistic amount of travel history that's well under the old tight cap. The cap is now a generous
+  backstop against a pathological case (hundreds of entries visible in one view), not a routine limiter,
+  so tightening it further would only ever cost the user their own marked pins for no clutter benefit.
+- `priority()` simplified from `(hasEntry, isCapital)` to just `isCapital` — `hasEntry` was the *only*
+  inclusion criterion now, so keeping it as a separate ranking dimension on top of that was redundant;
+  capital status is the only thing left to break ties among cities that are all already marked.
+- `CityMarker.status` tightened from `Status | null` to `Status` — every marker returned by
+  `selectVisibleCities` now provably has a real status by construction (it's the filter condition), so the
+  type now reflects that invariant instead of allowing a case that can't happen.
+
+**Call-site cleanup**, both now dead code following the type tightening above:
+- [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx): `c.status ? colorForStatus(c.status) :
+  'var(--haze)'` → `colorForStatus(c.status)`. The `'var(--haze)'` fallback existed for the
+  no-status-yet case, which can no longer occur.
+- [`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx): same shape, `m.status ? fillFor(m.status,
+  palette) : palette.cityDot` → `fillFor(m.status, palette)`. Also removed the now-fully-unused
+  `cityDot` field from `GlobePalette` (both the interface and its `resolveGlobePalette()` assignment) —
+  it had no other reader, so leaving it in would've been a dead token resolved out of CSS every draw for
+  nothing.
+
+[`cityLayer.test.ts`](atlas/src/components/map/cityLayer.test.ts): rewrote the population-tier describe
+block into an "only marked cities appear" block (excludes a 30M-population marked-nowhere capital;
+includes a population-1 unmarked-as-capital village once it has *any* logged status). Cap/priority and
+viewport-culling tests updated so every candidate city carries a status in `cityStatus` (previously some
+relied on the population/capital branches to qualify without one — that path no longer exists). Net one
+fewer test than before (168 vs. 169) from merging what used to be two separate "capital" / "logged entry"
+inclusion tests into one "marked" concept — nothing lost, the distinction they were testing no longer
+exists in the code.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**168/168**) all clean.
+- Manually re-read the `CityMarker.status` consumers in both map components after the type change from
+  `Status | null` to `Status` — confirmed by `tsc` passing clean (a stale null-check left behind would
+  have been a type error, not a silent bug, given the tightened type) rather than assumed.
+- Grepped the two map components and `CountrySheet.tsx` for stale comments/copy referencing the removed
+  population/capital-driven reveal behavior — none found needing an update.
+- **Could not get a live browser preview this round** — `preview_start` hit the exact same
+  `EMFILE: too many open files` inotify-exhaustion error flagged to the user earlier this session (see the
+  chat, not this file: their machine has dozens of concurrent Claude Code processes holding inotify
+  instances well past the OS's `max_user_instances` default of 128). Suggested fixes (closing the leftover
+  dev-server instance I'd started, raising `fs.inotify.max_user_instances` via sysctl) hadn't been applied
+  yet by the time this round of changes was verified. Verification therefore rests on `tsc`/`eslint`/
+  `vitest` plus direct code review, not an actual rendered map — a smaller gap than usual for this file's
+  track record, since the change is a straightforward filter tightening plus two mechanical call-site
+  simplifications, not new geometry/projection logic.
+
+### Left undone
+
+**Not visually confirmed against the live app** — see the EMFILE note above. Worth a real check once the
+inotify limit is sorted: mark a handful of cities across a couple of countries, load the map, and confirm
+(a) unmarked cities — including capitals — no longer appear at all, (b) marked ones still show, correctly
+coloured by status, once zoomed in past the new lower `CITY_MIN_SCALE`. `MAX_CITY_MARKERS`/`MAX_CITY_LABELS`
+raised to generous-backstop values are, like the rest of this file's constants, empirical guesses — fine
+unless someone's logged an unusually large number of cities packed into one small viewport, in which case
+they're trivial to retune further.
+
+## Polish, round three: country outlines look blocky once you zoom in
+
+User: "I don't like how it looks zoomed in, maybe it can be done dynamically?" — about the country
+shapes/coastlines, not the city layer. Diagnosed before writing any code, per how the last couple of rounds
+went: rendered Iceland's coastline from the real committed `world.topo.json` at the same zoom level the app
+would show (via a standalone Node script using the project's own `d3-geo`, converted to PNG with
+ImageMagick since the browser preview couldn't render — see Verified) and it was genuinely bad: a handful
+of sharp straight-line facets, obviously polygonal, nothing like a coastline.
+
+**Root cause, found by reading [`tools/build-geo.mjs`](atlas/tools/build-geo.mjs) rather than guessing**:
+`world.topo.json` is built from Natural Earth's 1:10m Admin-0 source (already the detailed dataset — the
+`00-PLAN.md` §6 table saying "1:50m" is stale/aspirational, not what the pipeline actually fetches), but
+`buildWorldTopo` simplifies it against one shared byte budget for the whole world (900 KB target, `-simplify
+variable` keeping 25% of points per country by default, 5% for the handful of huge/complex countries in
+`WORLD_SIMPLIFY_DETAILED_EXCEPTIONS`). Measured directly: Iceland's raw source has 3,117 points; only 447
+survive into `world.topo.json` — about 14%. Fine for a whole-world silhouette; visibly faceted once the app
+lets you zoom in arbitrarily close on one country (`MAX_ZOOM` is uncapped, per the globe session earlier in
+this file). Confirmed the fix would actually help *before* building it: re-rendered the same Iceland
+close-up straight from the raw, already-locally-cached NE source (`tools/.cache/ne_10m_admin_0_countries.geojson`,
+13 MB, no network fetch needed) and it looked genuinely like a coastline — fjords, inlets, real texture — at
+the identical zoom and centre point.
+
+**The fix, matching the user's own "dynamically" framing and mirroring a pattern the codebase already has**:
+admin-1 already lazy-loads a separate, per-country, higher-detail file once you've selected a country and
+zoomed in past `ADMIN1_ZOOM_THRESHOLD` — country outlines now get the identical treatment.
+
+- [`tools/build-geo.mjs`](atlas/tools/build-geo.mjs): new `buildCountryDetail(neByA2)`, writing
+  `public/geo/countryDetail/<CC>.topo.json` — one file per country, same raw NE 1:10m source and the same
+  `neByA2` grouping `buildWorldTopo` already builds (reused, not recomputed), but simplified against a
+  150 KB *per-file* budget instead of one 900 KB *whole-world* budget, starting from 65% and only backing
+  off (same iterative back-off loop `buildAdmin1` already uses) for the handful of countries complex enough
+  to still bust it. Ran the real pipeline end to end (`npm run build:geo`, fully offline — every source was
+  already cached from the last real run): 239 files, 2.7 MB total, largest is Canada at 140 KB. Iceland's
+  file alone: 2,030 points (vs. 447 in `world.topo.json`) at 20 KB.
+  - **Reverted two incidental, unrelated changes from that same build run** before committing anything:
+    re-running the full pipeline regenerates every artefact, and `cities.json.gz` / `subdivisions.json` both
+    came out different from what's currently committed. Checked both before touching anything: `cities.json.gz`'s
+    decompressed bytes were byte-identical (only the gzip header's embedded timestamp differed — not a real
+    change); `subdivisions.json` had genuine small coordinate drift in a handful of rows (e.g. Anguilla
+    admin-1 rows moved from `18.224,-63.065` to `18.2301,-63.0592`), almost certainly from a dependency
+    version difference in this environment versus whenever that file was last generated — unrelated to this
+    task, so `git checkout --` on both rather than folding unrelated drift into this change.
+- [`src/geo/loader.ts`](atlas/src/geo/loader.ts): `loadCountryDetailTopology(code)`, byte-for-byte the same
+  shape as the existing `loadCountryTopology` (memoised per code, resolves `null` on a missing/failed
+  fetch) — inherits whatever caching/versioning strategy already covers `/geo/*` broadly, nothing new to
+  wire up there.
+- [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx): new `countryDetailFeature` state, loaded by an
+  effect that's a close mirror of the existing admin-1 one (same `overThreshold` gate, same cancelled-flag
+  cleanup). Rendered as one additional `<path>`, painted directly on top of the existing coarse selected-country
+  path — same `world-map__country--selected` class, same fill/stroke/gap-fill logic, same click handler,
+  just sharper `d`. Deliberately *additive*: nothing removed from the existing `orderedCountryPaths`
+  render, so there's no flash of missing geometry while the detail file is in flight — the coarse shape
+  stays visible underneath until the sharper one paints over it.
+- [`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx): identical shape, adapted to the ref-based/canvas
+  pattern this component already uses for admin-1 (`countryDetailFeatureRef`, loaded by an effect mirroring
+  the existing admin-1 one exactly, calling `draw()` on resolution). In `draw()`, the selected-country block
+  now paints `(countryDetailFeatureRef.current ?? selectedFeature).feature` instead of always
+  `selectedFeature.feature` — one-line change, everything else (status colour, gap-fill, stroke) untouched.
+  Country-level hit-testing (`geoContains` against `featuresRef.current`) deliberately left alone — it
+  doesn't need pixel-perfect coastline matching, and the coarse shape is entirely sufficient for "which
+  country did they tap."
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**168/168**, unchanged — no new pure/testable logic, this
+  is a rendering-source swap, not new selection/ranking behaviour) all clean.
+- **Diagnosed with a real rendered image before writing any fix code**, since `preview_screenshot` was
+  (once again) unable to render — wrote a standalone script using the project's own installed `d3-geo`/
+  `topojson-client`, fed it the real committed `world.topo.json`, reproduced the app's own
+  `geoNaturalEarth1().fitSize(...)` + zoom-toward-a-point math, rendered Iceland's Reykjavík-area coastline
+  at 8x and 20x zoom to SVG, converted to PNG with ImageMagick (`convert`, confirmed present), and actually
+  looked at it — genuinely a small number of sharp straight facets, not a coastline. Then re-rendered the
+  same close-up from the raw, unsimplified NE source to confirm the fix's premise *before* building it: it
+  looked like an actual coastline at the identical zoom/centre. Both images are what motivated the specific
+  numbers chosen above (150 KB per-file budget, 65% starting simplification), not guesswork.
+- **Real end-to-end runtime check of the new code path**, against the actual dev server and the actual
+  built artefact (cache-busted dynamic imports, per the stale-module-cache lesson from the first globe
+  session): called the real `loadCountryDetailTopology('IS')` — fetched `countryDetail/IS.topo.json` over
+  the real server, resolved non-null. Fed the result through the real `decodeLayer(topo, 'countries',
+  'code')` — exactly one feature, `id === 'IS'`, `name === 'Iceland'`. Fed *that* feature through the exact
+  same `geoNaturalEarth1()`/`geoPath()` combination `WorldMap.tsx` itself uses — produced a well-formed SVG
+  path string, 2,030 `L`/`M` commands, matching the point count measured directly from the topology file.
+  This proves the fetch → decode → project chain is correct end to end through the real component-facing
+  API, independent of whether the live DOM could be observed.
+- **Could not observe the live DOM/React effect wiring itself** — same standing `ResizeObserver`-in-hidden-tab
+  limitation every session touching these two map components has hit: `size.width`/`size.height` never
+  leave `{0,0}` in this sandboxed tab (confirmed again directly: the SVG's own `<g>` had no `transform`
+  attribute at all, meaning the zoom-binding effect's `size.width === 0` guard never even let it bind), so
+  there's no way here to actually zoom past `ADMIN1_ZOOM_THRESHOLD` and watch the new `<path>` appear.
+  What's verified above (the runtime data path) is everything that could be checked without that; the
+  effect wiring itself is a straightforward, close copy of the admin-1 effect immediately above it in both
+  files, which *is* already proven-live code.
+- App/build state left clean: `public/geo/countryDetail/` is new and intentional (239 files, 2.7 MB,
+  correctly un-gitignored — `atlas/.gitignore` only excludes `tools/.cache`); `cities.json.gz` and
+  `subdivisions.json` reverted to their committed versions per the note above; nothing else in `public/geo/`
+  changed (`world.topo.json`, `admin1/*`, `countries.json` came out byte-identical from the same build run,
+  confirming this addition didn't disturb anything already there).
+
+### Left undone
+
+**Not confirmed against the live, rendered app** — see the `ResizeObserver` note above; same class of gap
+as every prior session touching `WorldMap.tsx`/`GlobeMap.tsx`. Worth a real check once there's a working
+browser session (or a real device): select a country, zoom in past the admin-1 threshold, and confirm the
+coastline visibly sharpens rather than just trusting the two rendered comparison images and the runtime
+data-path check above. Also worth a glance at a genuinely complex coastline once it's easy to look at live —
+Norway or Indonesia, not just Iceland — to see whether 150 KB/65%-start is generous enough there too, or
+whether those specific countries need their own tuning the way `WORLD_SIMPLIFY_DETAILED_EXCEPTIONS` already
+carves out exceptions for `world.topo.json`.
+
+The new `public/geo/countryDetail/` files are **generated but not committed** — this session only ran
+`npm run build:geo` and wired up the app to use the output; committing is left for whenever the user
+reviews and commits the rest of this round's changes, consistent with not committing anything unless
+asked.
+
+## Bug fix: the sharper country outline made colour fills visibly stop following the coastline
+
+User tested the round above and reported: "I see changes when I click on the country but then the coloured
+in regions don't follow the same path and the graphic is not as good. I want it to be kind of similar to
+google maps." So the outline swap *was* rendering — the bug was elsewhere.
+
+**Root cause, confirmed by rendering both layers overlaid** (same script-plus-ImageMagick technique as the
+diagnosis in the round above, this time drawing `admin1/IS.topo.json`'s boundary in green on top of the new
+`countryDetail/IS.topo.json` outline in white): the two layers now visibly diverged, badly — the green
+admin-1 line cut straight across real bays and missed entire peninsulas the white detail line traced
+correctly. This was always a latent risk (the existing gap-fill comment already called world.topo.json and
+admin1 "two independently simplified traces of the same coastline" that "don't align to the pixel"), but it
+was invisible before because both layers were comparably coarse (447 vs. 573 points for Iceland — close
+enough that any gap was small and covered by the neutral-tone gap-fill trick). Pushing just the country
+outline up to 2,030 points without touching admin-1 broke that balance: now one layer traces the real
+coastline closely and the other doesn't, so the gap-fill trick just makes the *size* of the now-much-bigger
+mismatch obvious instead of hiding it — a fringe of neutral-toned "land" outside every admin-1 region's own
+cruder edge, tracing real coastal detail the colour fill doesn't reach.
+
+**Fix**: raise admin-1's own simplification budget to match, in
+[`tools/build-geo.mjs`](atlas/tools/build-geo.mjs)'s `buildAdmin1` — starting simplification `15%`/`8%`
+(small/big countries) → `65%`/`25%`, byte budget `150 KB` → `500 KB` per country. Same reasoning as
+`buildCountryDetail` above: these numbers were tuned back when this file only had to look reasonable next
+to `world.topo.json`'s own coarse country shape, not next to a genuinely detailed one. Re-ran
+`npm run build:geo`: all 240 admin-1 files changed (intentional — bigger, more detailed), largest is now
+Russia at 206 KB (was 76 KB), total 4.9 MB (was 1.8 MB) — still comfortably lazy-loaded per country, same
+order of magnitude as a single photo attachment, not something that affects initial load. Reverted the same
+incidental `cities.json.gz`/`subdivisions.json` drift as the round above (identical cause: re-running the
+full pipeline regenerates everything; checked both, unrelated, reverted).
+
+No component code changed for this fix — `WorldMap.tsx`/`GlobeMap.tsx` already just render whatever
+`admin1/<CC>.topo.json` contains; feeding them a more detailed file was the entire fix.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**168/168**, unchanged — no code changed, only build
+  output) all clean.
+- **Visual proof, before and after, same technique as the diagnosis**: rendered Iceland's admin-1 boundary
+  (green) overlaid on the country-detail outline (white) at two zoom levels (6x and 15x on the Reykjavík
+  peninsula, the same detailed/complex stretch of coastline used in the prior round's diagnosis).
+  - Before this fix: green line cut straight across multiple real bays and missed a peninsula entirely —
+    exactly what the user described as "colour doesn't follow the same path."
+  - After: at both zoom levels the two lines track each other closely along the actual coastline; the only
+    remaining green lines running through the interior are genuine internal admin-1 borders (between two
+    Icelandic regions), which is correct — those were never supposed to follow the coastline.
+  - Sent both images to the user for direct comparison rather than describing the fix in text.
+- Confirmed via `git status` that only `admin1/*.topo.json` (240 files, all intentional) and
+  `countryDetail/` changed, `cities.json.gz`/`subdivisions.json` reverted per the note above,
+  `world.topo.json`/`countries.json` untouched.
+
+### Left undone
+
+Same live-app gap as every round in this file's recent history — couldn't watch this in an actual rendered
+browser, verification rests on the rendered-overlay comparison and the fact that no component code changed
+(only the data file being loaded got bigger/more precise, through already-proven-live loading code). Also
+still worth checking a genuinely complex coastline (Norway's fjords, Indonesia's islands) live once that's
+possible — Iceland was the only country actually spot-checked for the admin-1/outline alignment fix, same
+as the round above.
+
+## Bug fix: raising admin-1's own detail wasn't enough — reverted to one coastline at a time
+
+The fix above (raise admin-1's simplification budget) turned out to be treating the wrong layer. User
+tested it and sent a screenshot: the coloured-in Capital Region still didn't follow the sharp white
+coastline at all — cutting well inside a peninsula the outline clearly showed. Diagnosed properly this time
+*before* proposing another simplification-percentage tweak, since the previous round's fix had already
+failed once.
+
+**Root cause, confirmed directly, not guessed**: checked the *raw*, pre-simplification point counts in
+`tools/.cache/ne_10m_admin_1.geojson` for the two Natural Earth features that dissolve into Iceland's
+`IS.39` ("Reykjavík" and "Höfuðborgarsvæði", merged per the existing dupe-id fixup) — **81 and 56 points**,
+combined, for that entire admin-1 region's boundary. The country-level coastline in that same area has on
+the order of 2,000+ points. No amount of raising the simplification *percentage* can fix this: there's
+no extra detail in the source to keep. Percentage-of-what-exists was never the bottleneck for this region —
+what exists is just sparse. This is a genuine Natural Earth data-quality gap between their admin-0 (country)
+and admin-1 (state/province) products for at least this one country, likely others.
+
+**A real fix would be polygon conflation** — clip or snap admin-1's boundaries to the authoritative,
+higher-detail country outline. Prototyped this with mapshaper's `-clip` (feeding the country-detail polygon
+in as a second named layer, clipping admin-1's target against it) and checked the output *before* wiring it
+into the build — good instinct, because it was badly broken: one region's clipped polygon covered the
+*entire* country (a topology error somewhere in the dissolve/clip/simplify sequence, not investigated
+further). Real conflation is a legitimate technique but not one to ship on a rushed retry after already
+getting the previous fix wrong once.
+
+**Fix actually shipped**: never draw two independently-traced coastlines for the same country at the same
+time. [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx)'s country-detail `<path>` now only renders
+when `!showingAdmin1` (previously it rendered whenever loaded, just switching its *fill* to the neutral
+gap-tone once admin-1 showed — but its sharp *stroke* kept drawing regardless, which was the actual visible
+seam: a crisp white selection-outline the coloured admin-1 fill never matched). Same change in
+[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s `draw()`: `path((detailFeature && !showingAdmin1
+? detailFeature : selectedFeature).feature)` instead of always preferring `detailFeature` when loaded.
+
+Net effect: the country-detail improvement from two rounds ago now only applies where it can't conflict
+with anything — a selected-but-not-yet-admin1-loaded country, or a country with no admin-1 data at all.
+Once admin-1 takes over, rendering falls back to exactly the pre-this-session behaviour (coarse
+`world.topo.json` outline as an invisible-ish backdrop, admin-1's own boundaries as the only visible
+coastline) — the same level of coastline/fill imprecision that existed before any of this work and was
+never complained about, rather than the much-more-jarring version this session temporarily introduced.
+
+### Verified
+
+- `npx tsc -b` (one real type error caught and fixed along the way: `countryDetailFeatureRef.current &&
+  !showingAdmin1` doesn't let TS narrow the ref's null-ness inside a later ternary branch — rewrote as
+  `const detailFeature = countryDetailFeatureRef.current; detailFeature && !showingAdmin1 ? detailFeature :
+  ...` so the narrowing happens within one expression), `npx eslint .`, `npx vitest run` (**168/168**) all
+  clean.
+- **Confirmed the root cause with real numbers before proposing a fix**: printed raw point counts for
+  `IS.39`'s two source features directly from the cached Natural Earth file (81 + 56), not inferred from
+  simplified output — ruling out "not simplified gently enough" definitively before it could lead to a
+  second failed attempt.
+- **Caught the conflation prototype's bug before it shipped**: rendered all of clipped Iceland's admin-1
+  regions in distinct semi-transparent colours over the country outline — one region filled the entire
+  1000×1000 frame solid, an obvious topology failure. Discarded the approach rather than debugging
+  mapshaper's multi-layer clip semantics under time pressure after already shipping one bad fix this
+  session.
+- **Rendered exactly what the shipped fix produces**, same overlay technique as both prior rounds: the
+  *coarse* `world.topo.json` outline (not the detail layer — matching what actually draws once admin-1
+  shows, post-fix) with Iceland's Capital Region filled green, at the same Reykjavík-peninsula 6x crop used
+  throughout this investigation. Result: fill and outline track each other along the overall peninsula
+  shape, with only the kind of small, subtle gaps the original gap-fill mechanism was always designed to
+  paper over — a real, confirmed improvement over the screenshot the user sent, not just an assumption that
+  reverting would help.
+
+### Left undone
+
+Still not confirmed in an actual live browser session — same standing limitation. The underlying Natural
+Earth admin-1 data-sparsity issue for regions like Iceland's Capital Region is **not fixed**, only no longer
+made *worse*-looking than it already was; a real fix would need either better source data for admin-1 or a
+correctly-implemented conflation pipeline, neither attempted here. Worth flagging if it comes up again.
+
+## Follow-up requested, not yet built: zoom-driven detail without selecting a country first
+
+Same message also asked for the detail-loading trigger to change from "click a country, then zoom" to
+"resolution just increases as you zoom in," matching how Google Maps and other slippy maps behave —
+whichever countries are actually in view sharpen with zoom, with no tap required. Not implemented yet.
+
+This is a materially bigger change than anything else in this session: it needs a notion of "which
+countries currently intersect the viewport" (not just "the one selected country"), fetching/rendering
+detail for potentially several of them at once as you pan, and correctly discarding ones that scroll back
+out of view — for both the flat map's rectangular viewport and the globe's rotating hemisphere. Given this
+session already shipped one regression by moving to implementation before fully checking the previous fix,
+the plan is to confirm the approach with the user before building this one, rather than repeat that
+mistake on a larger, higher-risk change.
+
+## Bug fix: reverting the country-outline mismatch swung the mismatch the other way
+
+User tested the "hide the detail outline once admin-1 shows" fix and reported it was **worse than before any
+of this session's work**, specifically: "the regions have a higher resolution than the country now." Right
+diagnosis on their part.
+
+**Root cause**: the earlier "raise admin-1's own detail" round (two rounds ago) bumped admin-1's
+simplification from `15%/8%`/`150 KB` to `65%/25%`/`500 KB`, reasoning that it needed to keep pace with the
+new, much-sharper `countryDetail` outline. Then the *next* round decided `countryDetail` and admin-1 should
+never actually be shown together at all (see above) — which quietly invalidated that reasoning, but the
+admin-1 percentage bump never got reverted alongside it. End state: whenever admin-1 shows, it's now
+compared against the *coarse* `world.topo.json` country outline (unchanged this whole time, ~447 points for
+Iceland) — but admin-1 itself got 3–4x more detailed. Confirmed live before touching anything (this file's
+now-established pattern after getting it wrong twice): rendered all of Iceland with the boosted admin-1
+boundaries over the coarse country outline — small green admin-1-boundary artifacts poking past the smooth
+white silhouette all around the coast, exactly matching "higher resolution than the country."
+
+**Fix**: reverted `buildAdmin1`'s simplification back to its original `15%/8%` starting percentage and
+`150 KB` budget in [`tools/build-geo.mjs`](atlas/tools/build-geo.mjs) — undoing that one round precisely,
+now that the premise it was based on (matching `countryDetail`'s fidelity) no longer applies to anything
+admin-1 actually gets shown next to. Re-ran `npm run build:geo`: admin-1 back to 1.78 MB total (was 4.9 MB),
+Russia back to 76 KB (was 206 KB) — byte-for-byte the same numbers as the very first build this session,
+before either detour. Reverted the same incidental `cities.json.gz`/`subdivisions.json` drift as every prior
+round in this file (identical cause, same fix).
+
+Net result of these last three rounds combined: **`WorldMap.tsx`/`GlobeMap.tsx` code is now net-changed**
+(country-detail loads and shows, but only when admin-1 isn't), while **all of `public/geo/admin1/`
+is back to byte-identical with where this session started** — the two detours cancelled out completely,
+leaving only the code-level "never show two coastlines at once" guard as this arc's actual net change.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**168/168**, unchanged — build output only) all clean.
+- **Re-rendered the same whole-Iceland overlay, before and after this specific revert**: before, small green
+  overshoot artifacts visible all around the coastline where boosted admin-1 traced detail the coarse
+  country outline doesn't have; after, none — only the legitimate internal borders between Icelandic
+  regions remain visible, no coastal artifacts.
+- Confirmed via file size that admin-1 output now exactly matches the very first build of this session
+  (same 76.4 KB for Russia, same 1,777.9 KB total) — not just "looks better" but byte-verified as a clean,
+  complete revert of that one specific change.
+
+### Left undone / to reckon with
+
+**The net practical value of the whole `countryDetail` feature is now small for most countries.** Since it
+only ever renders when admin-1 *isn't* showing, and ~240 of 250 countries have admin-1 data that loads at
+the same zoom threshold, the sharper outline is now visible mainly for the ~10 countries with no admin-1
+file at all, or briefly before admin-1's own fetch resolves elsewhere. This wasn't the original goal (a
+generally sharper coastline once zoomed in) — it's what "never compete with admin-1" costs once admin-1 is
+almost always available.
+
+This makes the user's separately-requested "sharpen as you zoom, no click needed" idea (see the entry above)
+look less like a nice-to-have and more like the actually-correct design: tying detail to *viewport zoom*
+rather than to *country selection* would show the sharper outline for whichever countries are simply in
+view — including, most of the time, before/without ever selecting one — which is arguably what the original
+"I don't like how it looks zoomed in" complaint was about in the first place (just looking at the map,
+not necessarily a drilled-into, admin-1-showing country). It would still need the same "don't compete with
+admin-1" guard for whichever country is actively selected, but every *other* visible country would get to
+use it freely.
+
+Not built this round. After shipping two regressions in a row this session from moving to implementation
+too quickly, the plan going into the next round is to confirm this redesign with the user explicitly before
+writing code, rather than a third attempt at guessing right.
+
+---
+
+## Session wrap-up — map polish (city markers, then country/admin-1 detail)
+
+User ended the session here and asked for everything logged before stopping. This ties together the whole
+arc above (five separate `##` entries, chronological) into one place, and records exact current state for
+whoever picks this up next.
+
+### What this session was, in order
+
+1. **City marker density/hierarchy + a real performance bug.** Asked clarifying questions first (density
+   preference, whether capitals should stay unconditional, whether to fix the perf root cause or just
+   reduce count) since these were genuine taste/scope calls, not obvious ones. Retuned
+   `POPULATION_TIERS`/`CITY_MIN_SCALE`/caps in [`cityLayer.ts`](atlas/src/components/map/cityLayer.ts), and
+   rAF-throttled `WorldMap.tsx`'s zoom handler (city markers were recalculating their counter-scale on every
+   raw pointer/wheel event, not just every painted frame).
+2. **Superseded by a simpler request**: "only show cities that have been marked." Ripped out the
+   population-tier/capital-unconditional system entirely — the only inclusion rule now is "has a logged
+   entry." Net simplification: less code, and the count is now inherently bounded by the user's own travel
+   history instead of needing tuned caps.
+3. **A real, unrelated infra issue surfaced along the way**: `EMFILE: too many open files` running
+   `npm run dev` locally. Diagnosed as this machine's `fs.inotify.max_user_instances` (128, the low Linux
+   default) being exhausted by ~45 concurrent Claude Code processes, not a project problem. Gave the user
+   both an immediate step (closed a leftover preview server of my own) and the permanent fix (a `sysctl`
+   command to raise the limit) — not applied by me, needs the user's `sudo`.
+4. **Country coastline detail, three rounds, two of them fixing regressions from the round before**:
+   - Round 1: diagnosed (with actual rendered-image proof, not assumption) that `world.topo.json` throws
+     away ~86% of Iceland's real coastline detail to fit a whole-world byte budget. Built a new
+     per-country `countryDetail/<CC>.topo.json` layer from the same already-cached Natural Earth source,
+     lazy-loaded like admin-1 already is. Looked great in isolation.
+   - Round 2 (user: "the coloured regions don't follow the same path"): the new sharp country outline and
+     admin-1's boundaries are two independently-traced coastlines that were never guaranteed to agree —
+     raised admin-1's own detail budget to compensate. Looked better in the one spot checked (Iceland's
+     Reykjavík peninsula).
+   - Round 3 (user, with a screenshot: still wrong): the real problem was structural, not a percentage —
+     Natural Earth's raw source for Iceland's Capital Region admin-1 boundary only has 81+56 points, so no
+     simplification setting could ever match it to a ~2,000-point coastline. Prototyped a proper fix
+     (polygon clipping) and caught it producing broken output *before* shipping it. Shipped the safer fix
+     instead: never render the sharp country outline and admin-1 at the same time — admin-1's own boundary
+     is always the coastline once admin-1 is showing.
+   - Round 4 (user: now *admin-1* looks too detailed next to the country): round 2's admin-1 budget increase
+     had no reason to exist anymore once round 3 stopped showing the two layers together, but it was never
+     reverted. Reverted it — confirmed byte-identical to this session's very first build.
+   - **Net effect of all four rounds**: `public/geo/admin1/*` ends the session byte-identical to how it
+     started (the detour fully cancelled out). The only surviving change is the new `countryDetail` layer
+     plus the "never show two coastlines at once" rule in both map components — which, honestly assessed at
+     the end, only visibly helps ~10 countries with no admin-1 data, since the other ~240 hit their admin-1
+     threshold at the same zoom and hide it again immediately.
+
+### Current file state (nothing committed — see below)
+
+- **Modified, not committed**: [`atlas/src/components/map/cityLayer.ts`](atlas/src/components/map/cityLayer.ts),
+  [`cityLayer.test.ts`](atlas/src/components/map/cityLayer.test.ts),
+  [`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx), [`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx),
+  [`atlas/src/geo/loader.ts`](atlas/src/geo/loader.ts), [`atlas/tools/build-geo.mjs`](atlas/tools/build-geo.mjs).
+- **New, untracked**: `atlas/public/geo/countryDetail/` (239 files, 3.3 MB) — generated by this session's
+  `npm run build:geo` runs, correctly excluded from `.gitignore`'s `tools/.cache` rule so it's visible to
+  `git add`.
+- **Untouched, confirmed byte-identical to session start**: `atlas/public/geo/admin1/*` (240 files),
+  `atlas/public/geo/world.topo.json`, `atlas/public/geo/countries.json`.
+- **Deliberately reverted, twice**: `atlas/public/geo/cities.json.gz`, `atlas/public/geo/subdivisions.json`
+  — every `npm run build:geo` run in this session incidentally regenerated these two with unrelated drift
+  (a gzip timestamp, and some small coordinate jitter likely from a dependency version difference in this
+  environment); checked both times, confirmed unrelated to this session's actual work, `git checkout --`'d
+  back to committed each time rather than folding drift into this change.
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (168/168) all clean as of the last edit.
+- Nothing in this session has been committed — the user did not ask for a commit, per this project's
+  standing instruction to only commit when explicitly asked.
+
+### Left for next session
+
+1. **The open design question from the end of the country-detail arc**: whether to redo the zoom-driven
+   ("no click needed") detail loading discussed above, which would make the `countryDetail` work actually
+   pay off for the ~240 countries it currently doesn't help. Was about to be discussed with the user when
+   the session ended — pick that conversation back up rather than assuming an answer.
+2. **The inotify `sysctl` fix** is still unapplied (needs the user's `sudo`) — worth checking whether
+   `npm run dev` is still flaky before assuming it's resolved.
+3. **Not fixed, only avoided**: Natural Earth's admin-1 data is genuinely sparse for at least Iceland's
+   Capital Region (and plausibly other small/less-prominent subdivisions elsewhere) — a real conflation fix
+   or better source data would still be a legitimate improvement, just not one this session got right on a
+   rushed attempt. The clipping prototype that broke is not saved anywhere; it would need rebuilding from
+   scratch if revisited.
+4. **Never confirmed live in a real browser** — every verification this session (city hierarchy, rAF
+   throttling, coastline overlays) was done via rendering the real data through the app's own code paths
+   outside the browser (standalone Node scripts using the project's own `d3-geo`/`topojson-client`, or
+   cache-busted dynamic imports against the dev server), because `preview_screenshot`/live gesture dispatch
+   hit the same `ResizeObserver`-in-hidden-tab sandbox limitation this repo's sessions keep running into.
+   Worth a real device/browser pass before trusting this further.
+5. **A spawned background task is still open**: investigate the duplicate "Borgarnes" city entry noticed
+   while testing the city-marker work (task flagged mid-session, not yet acted on).
+6. The separately-noted `MAX_CITY_MARKERS`/`MAX_CITY_LABELS`/zoom-threshold constants throughout this file
+   are, as documented at each step, empirical starting points — expect to retune them the first time real
+   usage (not just Iceland) puts pressure on them.

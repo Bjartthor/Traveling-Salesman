@@ -1,0 +1,1 @@
+{"type":"Topology","arcs":[[[200,112],[-54,-55],[-38,-57],[-108,21],[19,101],[42,53],[54,25],[54,-35],[31,-53]]],"transform":{"scale":[0.00035851999999999775,0.00022768500000001525],"translate":[7.365749999999999,43.717969]},"objects":{"countries":{"type":"GeometryCollection","geometries":[{"arcs":[[0]],"type":"Polygon","properties":{"name":"Monaco","code":"MC"}}]}}}

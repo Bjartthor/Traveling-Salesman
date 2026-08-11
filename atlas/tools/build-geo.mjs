@@ -37,6 +37,7 @@ process.chdir(ROOT)
 const CACHE = 'tools/.cache'
 const OUT = 'public/geo'
 const ADMIN1_OUT = path.join(OUT, 'admin1')
+const COUNTRY_DETAIL_OUT = path.join(OUT, 'countryDetail')
 
 const SOURCES = {
   countryInfo: {
@@ -164,6 +165,7 @@ function resolveA2(props) {
 async function main() {
   fs.mkdirSync(OUT, { recursive: true })
   fs.mkdirSync(ADMIN1_OUT, { recursive: true })
+  fs.mkdirSync(COUNTRY_DETAIL_OUT, { recursive: true })
 
   log('\n[1/6] Fetching sources')
   for (const src of Object.values(SOURCES)) await ensureCached(src)
@@ -281,12 +283,16 @@ async function main() {
   const unMemberCount = countries.filter((c) => c.unMember).length
   log(`  ${countries.length} countries  |  ${unMemberCount} UN members  |  ${countries.length - unMemberCount} non-members/territories`)
 
-  log('\n[5/6] Building topology (world + admin-1)')
+  log('\n[5/6] Building topology (world + admin-1 + per-country detail)')
   await buildWorldTopo(neByA2)
   const { subdivisions, admin1Report } = await buildAdmin1(admin1Rows, countries)
   fs.writeFileSync(path.join(OUT, 'subdivisions.json'), JSON.stringify(subdivisions))
   log(`  subdivisions.json: ${subdivisions.length} rows (${admin1Report.enriched} enriched with NE centroid/ISO, ${subdivisions.length - admin1Report.enriched} from GeoNames only)`)
   log(`  admin1 files: ${admin1Report.files} written; largest ${admin1Report.largestName} @ ${kb(admin1Report.largestBytes)}`)
+  const countryDetailReport = await buildCountryDetail(neByA2)
+  log(
+    `  countryDetail files: ${countryDetailReport.files} written, ${kb(countryDetailReport.totalBytes)} total; largest ${countryDetailReport.largestName} @ ${kb(countryDetailReport.largestBytes)}`,
+  )
 
   log('\n[6/6] Building cities.json.gz')
   const cityReport = buildCities(subdivisions)
@@ -355,6 +361,55 @@ async function buildWorldTopo(neByA2) {
     { 'input.geojson': JSON.stringify(fc) },
   )
   fs.writeFileSync(path.join(OUT, 'world.topo.json'), out['world.topo.json'])
+}
+
+// countryDetail/<CC>.topo.json: same source features as world.topo.json (NE
+// 1:10m Admin 0), but simplified per country instead of against one shared
+// whole-world budget. world.topo.json has to keep ~250 countries under
+// 900 KB combined, so most countries lose the majority of their real detail
+// (measured: Iceland kept 447 of its 3,117 raw points, ~14%) — fine for a
+// whole-world silhouette, but visibly blocky once the app zooms in on one
+// country (00-PLAN.md's per-country zoom). Each file here only has to carry
+// one country, so it can start from much gentler simplification and only
+// back off for the handful of countries complex enough (fjords, archipelagos)
+// to still bust the budget. Lazy-loaded by the app the same way admin1/ is —
+// see COUNTRY_DETAIL_ZOOM_THRESHOLD in WorldMap.tsx.
+async function buildCountryDetail(neByA2) {
+  let files = 0
+  let totalBytes = 0
+  let largestBytes = 0
+  let largestName = ''
+  for (const [a2, entry] of neByA2) {
+    const fc = {
+      type: 'FeatureCollection',
+      features: entry.features.map((f) => ({ type: 'Feature', properties: { code: a2, name: entry.props.NAME }, geometry: f.geometry })),
+    }
+    let pct = 65
+    let buf
+    for (;;) {
+      const out = await runMapshaper(
+        [
+          '-i input.geojson',
+          '-dissolve code copy-fields=name',
+          `-simplify ${pct}% keep-shapes`,
+          '-rename-layers countries',
+          '-o format=topojson out.topo.json',
+        ].join(' '),
+        { 'input.geojson': JSON.stringify(fc) },
+      )
+      buf = Buffer.from(out['out.topo.json'])
+      if (buf.length <= 150 * 1024 || pct <= 4) break
+      pct = Math.max(4, Math.round(pct * 0.7))
+    }
+    fs.writeFileSync(path.join(COUNTRY_DETAIL_OUT, `${a2}.topo.json`), buf)
+    files++
+    totalBytes += buf.length
+    if (buf.length > largestBytes) {
+      largestBytes = buf.length
+      largestName = `${a2}.topo.json`
+    }
+  }
+  return { files, totalBytes, largestBytes, largestName }
 }
 
 // admin-1: convert NE 10m shapefile to geojson once, group by country, simplify
@@ -443,7 +498,21 @@ async function buildAdmin1(admin1Rows, countries) {
     }
 
     const fc = { type: 'FeatureCollection', features: feats }
-    // Big countries need harder simplification to fit the 150 KB budget.
+    // Back to the original starting point/budget. A brief detour tried
+    // raising this to match buildCountryDetail's own fidelity, on the theory
+    // that admin-1 needed to keep pace with a much more detailed country
+    // outline — wrong turn out: the country's own outline is deliberately
+    // *never* shown at the same time as admin-1 (see WorldMap.tsx/GlobeMap.tsx
+    // — admin-1's own boundaries are always the visible coastline once admin-1
+    // is loaded, precisely because two independently-traced coastlines at
+    // mismatched fidelity look worse than either alone). What admin-1 is
+    // actually compared against once it's showing is the *coarse*
+    // `world.topo.json` outline underneath it, which never changed — raising
+    // admin-1 past that just moved the mismatch to the opposite direction
+    // (confirmed live: admin-1's boundary visibly overshot the coarse
+    // country silhouette all along the coast once boosted). Big countries
+    // still start lower since they combine many regions' borders into one
+    // file, not just one outline.
     let pct = bigCountries.has(cc) ? 8 : 15
     let buf
     for (;;) {

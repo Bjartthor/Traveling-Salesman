@@ -1,0 +1,1 @@
+{"type":"Topology","arcs":[[[0,125],[125,0],[-2,-71],[-19,-54],[-52,36],[-52,89]]],"transform":{"scale":[0.0001569119999999984,0.0002449599999999919],"translate":[-5.358387,36.1105]},"objects":{"countries":{"type":"GeometryCollection","geometries":[{"arcs":[[0]],"type":"Polygon","properties":{"name":"Gibraltar","code":"GI"}}]}}}
