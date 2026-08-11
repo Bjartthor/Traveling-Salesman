@@ -8,6 +8,7 @@
 import { db } from '@/db/schema'
 import type { City } from '@/db/types'
 import { logError, logInfo } from '@/debug/log'
+import { heapSummary } from '@/debug/memory'
 import { invalidateSearchIndex } from '@/geo/search'
 
 // Previously "read the current closest-to-zero row, use one less" — a
@@ -35,7 +36,7 @@ function randomNegativeId(): number {
 const MAX_INSERT_ATTEMPTS = 5
 
 async function insertCity(fields: Omit<City, 'geonameId' | 'searchTokens'>): Promise<City> {
-  void logInfo(`city: insert "${fields.name}" (${fields.source})`)
+  void logInfo(`city: insert "${fields.name}" (${fields.source})`, heapSummary() || undefined)
   for (let attempt = 0; ; attempt++) {
     try {
       const row: City = { ...fields, geonameId: randomNegativeId(), searchTokens: [] }

@@ -16,7 +16,7 @@
 import { logError, logInfo } from '@/debug/log'
 import { heapSummary, readHeap } from '@/debug/memory'
 
-const SAMPLE_INTERVAL_MS = 15_000
+const SAMPLE_INTERVAL_MS = 5_000
 const BASELINE_DELAY_MS = 4_000
 
 // Fractions of jsHeapSizeLimit worth flagging. Crossing one upward logs once;
@@ -24,6 +24,15 @@ const BASELINE_DELAY_MS = 4_000
 // steady state near a mark doesn't spam, but a repeated approach-and-recover
 // cycle (the classic pre-OOM sawtooth) still records every approach.
 const THRESHOLDS = [0.7, 0.85, 0.93] as const
+
+// Below the first threshold the crossings alone are too coarse to watch a leak
+// forming — a climb from 200MB toward 3GB reads as "under 70%" until the very
+// end. So also log whenever used heap has grown this much since the last logged
+// sample, measured from the most recent trough (a GC drop re-arms it). On a
+// healthy, stable heap this never fires; during a leak it lays down a
+// fine-grained, timestamped rising trace, so the next captured log shows the
+// climb rate and — lined up against the action breadcrumbs — what drives it.
+const DELTA_LOG_BYTES = 200 * 1024 * 1024
 
 let installed = false
 
@@ -37,15 +46,25 @@ export function installMemoryWatch(): void {
   installed = true
 
   let prevPressure = 0
+  let lastLoggedUsed = Infinity // low-water mark the delta trigger measures a climb from
 
   const sample = (): void => {
     const h = readHeap()
     if (!h) return // API unavailable — nothing to watch
+    const summary = heapSummary()
+    let logged = false
     for (const t of THRESHOLDS) {
       if (prevPressure < t && h.pressure >= t) {
-        void logError(`memory: heap pressure crossed ${Math.round(t * 100)}%`, heapSummary())
+        void logError(`memory: heap pressure crossed ${Math.round(t * 100)}%`, summary)
+        logged = true
       }
     }
+    if (h.used < lastLoggedUsed) lastLoggedUsed = h.used // a GC drop re-arms the delta trigger
+    if (!logged && h.used - lastLoggedUsed >= DELTA_LOG_BYTES) {
+      void logInfo('memory: climbing', summary)
+      logged = true
+    }
+    if (logged) lastLoggedUsed = h.used
     prevPressure = h.pressure
   }
 
