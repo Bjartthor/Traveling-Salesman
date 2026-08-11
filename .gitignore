@@ -1,1 +1,4 @@
 .claude/scheduled_tasks.lock
+
+# Stray dependency/cache dirs outside atlas/ (the app has its own atlas/.gitignore).
+node_modules/
