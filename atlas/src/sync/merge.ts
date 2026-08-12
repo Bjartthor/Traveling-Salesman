@@ -21,7 +21,7 @@
 // any tripEntries/photos that referenced a dropped duplicate id are re-pointed
 // to the survivor. All of that is pure and convergent, so it's testable here.
 
-import type { Entry, Photo, TripEntry } from '@/db/types'
+import type { City, Entry, Photo, TripEntry } from '@/db/types'
 import type { SyncableSettings, SyncSnapshot } from '@/sync/types'
 import { SYNCABLE_SETTING_KEYS } from '@/sync/types'
 
@@ -64,6 +64,25 @@ function mergeById<T extends Tombstoneable>(local: readonly T[], remote: readonl
     winners.set(record.id, existing ? pickWinner(existing, record) : record)
   }
   return [...winners.values()]
+}
+
+/**
+ * Union non-bundled cities by `geonameId`. Unlike the user tables these have no
+ * `updatedAt`/`deletedAt` — an 'online'/'manual' city is written once and never
+ * edited (@/geo/cityWrites), so a plain union is correct and convergent: the same
+ * synthesised id from two devices is the identical immutable row. Only on the
+ * astronomically-rare event that two *different* cities drew the same random
+ * negative id does a tie need breaking, and the smaller serialisation is picked —
+ * arbitrary but total, so both devices choose the same survivor.
+ */
+function mergeCities(local: readonly City[], remote: readonly City[]): City[] {
+  const byId = new Map<number, City>()
+  for (const city of [...local, ...remote]) {
+    const existing = byId.get(city.geonameId)
+    if (!existing) byId.set(city.geonameId, city)
+    else if (JSON.stringify(city) < JSON.stringify(existing)) byId.set(city.geonameId, city)
+  }
+  return [...byId.values()]
 }
 
 const entryKey = (kind: Entry['kind'], refId: string): string => `${kind}:${refId}`
@@ -189,9 +208,13 @@ export function mergeSnapshots({ local, remote, settingsBase }: MergeInput): Syn
       : row,
   ) as Photo[]
 
+  // `?? []` tolerates a v1 Drive doc (no `cities` field) being read by a v2
+  // client — the schema guard in sync.ts only blocks the reverse direction.
+  const cities = mergeCities(local.cities ?? [], remote.cities ?? [])
+
   const settings = mergeSettings(settingsBase, local.settings, remote.settings)
 
-  return { entries, trips, tripEntries, photos, settings }
+  return { entries, trips, tripEntries, photos, cities, settings }
 }
 
 // Exposed for the orchestrator's "did anything actually change?" check and for
@@ -203,11 +226,15 @@ export function canonicalize(snapshot: SyncSnapshot): string {
   const sortRecords = <T extends { id: string }>(rows: readonly T[]): T[] => [...rows].sort(byId)
   const settings: Record<string, unknown> = {}
   for (const key of [...SYNCABLE_SETTING_KEYS].sort()) settings[key] = snapshot.settings[key]
+  // Cities key on `geonameId`, not the string `id` every other table uses, so
+  // they sort on their own. `?? []` handles a v1 remote snapshot with no cities.
+  const cities = [...(snapshot.cities ?? [])].sort((a, b) => a.geonameId - b.geonameId)
   return JSON.stringify({
     entries: sortRecords(snapshot.entries),
     trips: sortRecords(snapshot.trips),
     tripEntries: sortRecords(snapshot.tripEntries),
     photos: sortRecords(snapshot.photos),
+    cities,
     settings,
   })
 }

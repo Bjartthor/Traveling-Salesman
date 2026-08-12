@@ -4148,3 +4148,51 @@ The instrumentation confirms nothing on its own — it makes the *next* crash re
 debug log is captured, the last breadcrumb localizes the phase and the heap trend confirms or refutes OOM,
 at which point the targeted fix follows: move the merge/canonicalize off the main thread, evict topology
 caches, or bound the in-memory city indexes.
+
+## Root cause found & fixed — online cities didn't sync, and the failure ran the heap away (done)
+
+The heap-stamped breadcrumbs caught it exactly. Setting German regions: heap flat at ~82 MB. Then a sync
+pulled 38 entries from the user's other device and **failed**:
+`ERROR sync: failed — cascade: 2 city entries have no cities row: -2787656489, -2194089822`. From that
+instant the heap ran away — 82 MB → 1.4 GB over ~90 s, climbing even in the gaps between clicks (the
+`memory: climbing` breadcrumbs) — and region taps stopped opening the sheet (the main thread was buried in
+GC). It did not always crash (the heap ceiling on that device was 2989 MB), but it made the app unusable.
+
+**Two stacked bugs:**
+
+1. **Online/manual cities never synced.** [`buildLocalSnapshot`](atlas/src/sync/snapshot.ts) carried
+   entries/trips/tripEntries/photos/settings but **not** the `cities` reference rows. An 'online' (Photon)
+   or 'manual' city creates *both* a `cities` row (device-local, negative geonameId) and an `entries` row.
+   The entry synced; the row didn't. So device B pulled device A's city *entry* with no matching row —
+   `-2787656489`/`-2194089822` are the "Skorki"/"Vik" cities added on the user's computer.
+
+2. **That dangling reference hard-failed the whole sync — and wedged the app.** `loadCascadeState`
+   ([`cascadeRepo.ts`](atlas/src/domain/cascadeRepo.ts)) threw `UnknownCityError` for *any* city entry with
+   no row. Inside `applyMergedSnapshot`'s transaction (via `rebuildDerivedEntries`) that aborted the merge,
+   failed the sync, and left the app in a state that leaked continuously. (The exact runaway loop wasn't
+   isolated — preventing the failure removes the trigger, and the earlier auth/network sync errors never
+   leaked, so the throw-inside-the-merge-transaction path is the distinguishing factor.)
+
+**The fix (make it work as intended):**
+
+- **Sync the non-bundled cities.** `SyncSnapshot` gained a `cities` field (only `source !== 'bundled'` —
+  never the 170k bundled rows). `buildLocalSnapshot` includes them, `mergeSnapshots` unions them by
+  geonameId (immutable once created, so a plain convergent union — [`merge.ts`](atlas/src/sync/merge.ts)),
+  `canonicalize` sorts them by geonameId, and `applyMergedSnapshot` writes them **before** the cascade
+  rebuild so a freshly-pulled city entry resolves. `SYNC_SCHEMA_VERSION` bumped **1 → 2**: a v1 client
+  can't produce `cities`, so letting it keep pushing would rewrite the doc *without* them and re-orphan
+  every online place — the existing `schema > SYNC_SCHEMA_VERSION` guard makes a v1 client refuse a v2 doc
+  until it updates instead. Reading a v1 doc from a v2 client is tolerated (`cities ?? []`).
+- **Never let a dangling reference crash the app again.** `loadCascadeState` now throws only for a city the
+  caller *explicitly targets* (setPlaceStatus's own refId — a genuine local bug); any *other* unresolvable
+  city entry (pulled from another device, its row a sync behind) is skipped-with-a-log for that pass and
+  derives itself once the row lands. Crucial because the merge now *persists* pulled entries, so without
+  this the throw would just move from sync to the next setPlaceStatus.
+
+**Self-healing for the already-broken data:** on deploy, both devices update to v2; the one holding the
+orphaned `cities` rows (the computer) pushes them into the doc, and the dangling entries on the phone
+resolve on the next pull. Until then the phone simply skips them instead of failing.
+
+**Verified:** `npx tsc -b`, `npx eslint .`, `npx vitest run` (196/196, +6 new city-sync/merge tests),
+`npm run build` all clean. **Not verified in-sandbox:** the end-to-end cross-device sync (needs Drive OAuth
++ two devices; the merge logic is covered by the new unit tests instead).

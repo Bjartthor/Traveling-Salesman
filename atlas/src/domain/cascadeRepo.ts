@@ -8,7 +8,7 @@
 
 import { db } from '@/db/schema'
 import { entriesRepo } from '@/db/repo'
-import { logInfo } from '@/debug/log'
+import { logError, logInfo } from '@/debug/log'
 import { heapSummary } from '@/debug/memory'
 import {
   rebuildAllDerived,
@@ -69,7 +69,29 @@ export async function loadCascadeState(extraCityRefIds: readonly string[] = []):
     }
     cities.set(refId, { refId, countryCode: row.countryCode, subdivisionId: row.subdivisionId })
   })
-  if (missing.length > 0) throw new UnknownCityError(missing)
+
+  if (missing.length > 0) {
+    // A city the caller *explicitly targets* (setPlaceStatus passes it in
+    // extraCityRefIds) with no row is a genuine local bug — stay loud, as before.
+    const missingTargets = missing.filter((refId) => extraCityRefIds.includes(refId))
+    if (missingTargets.length > 0) throw new UnknownCityError(missingTargets)
+
+    // Any *other* missing city is an entry pulled from another device whose
+    // `cities` row hasn't landed yet — rows now travel in the doc
+    // (@/sync/snapshot), but can lag a sync, or predate that fix in already-synced
+    // data. Skip just those entries this pass instead of aborting: the old hard
+    // throw failed the whole sync and ran the heap away (see PROGRESS.md), and
+    // once the merge persists such an entry locally it would then throw on every
+    // later setPlaceStatus too. They stay in the DB and derive their ancestors
+    // the moment the row arrives.
+    void logError(
+      `cascade: skipped ${missing.length} unresolvable city entr${missing.length === 1 ? 'y' : 'ies'}`,
+      missing.join(', '),
+    )
+    const missingSet = new Set(missing)
+    const kept = entries.filter((e) => !(e.kind === 'city' && missingSet.has(e.refId)))
+    return { entries: kept, places: { cities } }
+  }
 
   return { entries, places: { cities } }
 }
@@ -127,6 +149,8 @@ export async function removePlaceEntry(entryId: string): Promise<void> {
 /** Recompute every derived entry. Run after a sync merge (plan §7.3); safe any time. */
 export async function rebuildDerivedEntries(): Promise<number> {
   return db.transaction('rw', db.entries, db.cities, db.syncState, async () => {
+    // No explicit target here, so loadCascadeState tolerates any city entry whose
+    // row hasn't synced in yet rather than failing the whole merge. See its note.
     const state = await loadCascadeState()
     const mutations = rebuildAllDerived(state)
     await applyMutations(mutations)

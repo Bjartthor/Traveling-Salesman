@@ -16,11 +16,15 @@ import type { SyncSnapshot } from '@/sync/types'
  * `applyMergedSnapshot` on the one edge this trades away.
  */
 export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
-  const [entries, trips, tripEntries, photos, settings] = await Promise.all([
+  const [entries, trips, tripEntries, photos, cities, settings] = await Promise.all([
     db.entries.filter((e) => e.explicit || e.deletedAt !== null).toArray(),
     db.trips.toArray(),
     db.tripEntries.toArray(),
     db.photos.toArray(),
+    // Only the non-bundled rows (negative geonameId). Bundled cities are seeded
+    // from committed data on every device, so syncing all ~170k would bloat the
+    // doc for nothing; these are the handful an entry might dangle without.
+    db.cities.filter((c) => c.source !== 'bundled').toArray(),
     settingsRepo.get(),
   ])
   return {
@@ -28,6 +32,7 @@ export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
     trips,
     tripEntries,
     photos,
+    cities,
     settings: {
       statMode: settings?.statMode ?? 'countries',
       countryDenominator: settings?.countryDenominator ?? 'all',
@@ -54,6 +59,14 @@ export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
     'rw',
     [db.entries, db.trips, db.tripEntries, db.photos, db.settings, db.cities, db.syncState],
     async () => {
+      // Non-bundled cities first, so a freshly-pulled city entry can resolve its
+      // row when rebuildDerivedEntries runs below — otherwise the cascade throws
+      // UnknownCityError and aborts the whole merge (the cross-device bug this
+      // fixes). bulkPut, keyed by the negative geonameId, never touches a bundled
+      // row. Purely additive: nothing removes non-bundled cities here, matching
+      // how the merge only ever unions them.
+      await db.cities.bulkPut(merged.cities)
+
       await db.entries.clear()
       await db.entries.bulkAdd(merged.entries)
 

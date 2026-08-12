@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Entry, Photo, Trip, TripEntry } from '@/db/types'
+import type { City, Entry, Photo, Trip, TripEntry } from '@/db/types'
 import type { SyncableSettings, SyncSnapshot } from '@/sync/types'
 import { canonicalize, mergeSettings, mergeSnapshots, snapshotsEqual } from '@/sync/merge'
 
@@ -76,6 +76,22 @@ function photo(over: Partial<Photo> = {}): Photo {
   }
 }
 
+function city(over: Partial<City> = {}): City {
+  return {
+    geonameId: over.geonameId ?? -1,
+    name: 'Vík',
+    asciiName: 'Vik',
+    countryCode: 'IS',
+    subdivisionId: null,
+    lat: 63.4,
+    lon: -19,
+    population: 0,
+    source: 'online',
+    searchTokens: [],
+    ...over,
+  }
+}
+
 const settings = (over: Partial<SyncableSettings> = {}): SyncableSettings => ({
   statMode: 'countries',
   countryDenominator: 'all',
@@ -84,7 +100,7 @@ const settings = (over: Partial<SyncableSettings> = {}): SyncableSettings => ({
 })
 
 function snapshot(over: Partial<SyncSnapshot> = {}): SyncSnapshot {
-  return { entries: [], trips: [], tripEntries: [], photos: [], settings: settings(), ...over }
+  return { entries: [], trips: [], tripEntries: [], photos: [], cities: [], settings: settings(), ...over }
 }
 
 const merge = (local: SyncSnapshot, remote: SyncSnapshot, settingsBase: SyncableSettings | null = null) =>
@@ -314,5 +330,56 @@ describe('purity', () => {
 
     expect(canonicalize(local)).toBe(localCopy)
     expect(canonicalize(remote)).toBe(remoteCopy)
+  })
+})
+
+// --- non-bundled (online/manual) cities travel with the doc (cross-device fix) ---
+
+describe('non-bundled city sync', () => {
+  it('a city added on one device rides along so its entry can resolve on the other', () => {
+    // Device A added an online city and logged it; the row must reach B, or B's
+    // cascade throws UnknownCityError on the dangling entry and the sync fails.
+    const local = snapshot({
+      entries: [entry({ kind: 'city', refId: '-42' })],
+      cities: [city({ geonameId: -42 })],
+    })
+    const merged = merge(local, snapshot())
+
+    expect(merged.cities.map((c) => c.geonameId)).toEqual([-42])
+  })
+
+  it('two devices add different online cities → both survive', () => {
+    const a = snapshot({ cities: [city({ geonameId: -1, name: 'Vík' })] })
+    const b = snapshot({ cities: [city({ geonameId: -2, name: 'Skorki' })] })
+
+    expect(merge(a, b).cities.map((c) => c.geonameId).sort((x, y) => x - y)).toEqual([-2, -1])
+  })
+
+  it('the same city from both sides collapses to one row', () => {
+    const shared = city({ geonameId: -7 })
+    const merged = merge(snapshot({ cities: [shared] }), snapshot({ cities: [{ ...shared }] }))
+
+    expect(merged.cities).toHaveLength(1)
+  })
+
+  it('city merging is convergent and stable across a re-merge', () => {
+    const a = snapshot({ cities: [city({ geonameId: -1 })] })
+    const b = snapshot({ cities: [city({ geonameId: -2 })] })
+    const ab = merge(a, b)
+    const ba = merge(b, a)
+
+    expect(canonicalize(ab)).toBe(canonicalize(ba)) // order-independent
+    expect(snapshotsEqual(merge(ab, ab, ab.settings), ab)).toBe(true) // idempotent
+  })
+
+  it('canonicalize distinguishes snapshots that differ only in cities', () => {
+    expect(snapshotsEqual(snapshot({ cities: [city()] }), snapshot())).toBe(false)
+  })
+
+  it('tolerates a v1 remote snapshot with no cities field', () => {
+    const legacyRemote = { ...snapshot(), cities: undefined } as unknown as SyncSnapshot
+    const local = snapshot({ cities: [city({ geonameId: -5 })] })
+
+    expect(merge(local, legacyRemote).cities.map((c) => c.geonameId)).toEqual([-5])
   })
 })
