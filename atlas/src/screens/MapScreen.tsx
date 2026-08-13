@@ -56,6 +56,17 @@ export function MapScreen() {
     setSelectedCode((prev) => (prev === code ? null : code))
   }
 
+  // Admin-1 topology ids aren't always in the GeoNames CC.NN namespace
+  // `db.subdivisions` is keyed by (Natural Earth falls back to its own
+  // adm1_code or a bare ISO-3166-2 code when it has no GeoNames
+  // cross-reference for that region — see PROGRESS.md) — when that lookup
+  // misses, resolvePlaceInfo has no name to show. The map already decoded a
+  // real name for whatever it just drew, so pass it through as a fallback
+  // rather than let the sheet open with a blank title.
+  function selectSubdivision(id: string, name: string) {
+    openPlaceSheet({ kind: 'subdivision', refId: id, fallbackName: name, fallbackCountryCode: selectedCode ?? undefined })
+  }
+
   const isGlobe = settings.mapView === 'globe'
 
   return (
@@ -84,7 +95,7 @@ export function MapScreen() {
             cityStatus={cityStatus}
             selectedCode={selectedCode}
             onSelectCountry={selectCountry}
-            onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+            onSelectSubdivision={selectSubdivision}
             onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
             onDeselect={() => setSelectedCode(null)}
           />
@@ -95,7 +106,7 @@ export function MapScreen() {
             cityStatus={cityStatus}
             selectedCode={selectedCode}
             onSelectCountry={selectCountry}
-            onSelectSubdivision={(id) => openPlaceSheet({ kind: 'subdivision', refId: id })}
+            onSelectSubdivision={selectSubdivision}
             onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
             onDeselect={() => setSelectedCode(null)}
           />

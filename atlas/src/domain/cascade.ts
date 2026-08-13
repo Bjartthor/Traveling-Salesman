@@ -70,6 +70,14 @@ export interface CascadeState {
 export interface PlaceRef {
   kind: EntryKind
   refId: string
+  /**
+   * Best-effort name/country to show if `refId` turns out not to be in its
+   * own lookup table (@/domain/placeInfo) — only ever populated for a
+   * subdivision id sourced from admin-1 map topology, whose id namespace
+   * doesn't always match the GeoNames one `db.subdivisions` is keyed by.
+   */
+  fallbackName?: string
+  fallbackCountryCode?: string
 }
 
 export interface SetStatusRequest extends PlaceRef {

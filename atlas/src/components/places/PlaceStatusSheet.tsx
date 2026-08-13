@@ -46,13 +46,17 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   const [info, setInfo] = useState<PlaceInfo | null>(null)
   useEffect(() => {
     let cancelled = false
-    void resolvePlaceInfo(place.kind, place.refId).then((r) => {
+    const fallback =
+      place.fallbackName && place.fallbackCountryCode
+        ? { name: place.fallbackName, countryCode: place.fallbackCountryCode }
+        : undefined
+    void resolvePlaceInfo(place.kind, place.refId, fallback).then((r) => {
       if (!cancelled) setInfo(r)
     })
     return () => {
       cancelled = true
     }
-  }, [place.kind, place.refId])
+  }, [place.kind, place.refId, place.fallbackName, place.fallbackCountryCode])
 
   const data = useLiveQuery(async (): Promise<SheetData> => {
     const row = await db.entries.where('[kind+refId]').equals([place.kind, place.refId]).first()

@@ -60,7 +60,7 @@ interface WorldMapProps {
   cityStatus: ReadonlyMap<string, Status>
   selectedCode: string | null
   onSelectCountry: (code: string) => void
-  onSelectSubdivision: (subdivisionId: string) => void
+  onSelectSubdivision: (subdivisionId: string, name: string) => void
   onSelectCity: (refId: string) => void
   onDeselect: () => void
 }
@@ -436,7 +436,7 @@ export function WorldMap({
                   style={{ fill: colorForStatus(subdivisionStatus.get(p.id)) }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    onSelectSubdivision(p.id)
+                    onSelectSubdivision(p.id, p.name)
                   }}
                 >
                   <title>{p.name}</title>

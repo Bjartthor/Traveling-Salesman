@@ -4264,3 +4264,248 @@ all green, deployed to GitHub Pages.
 **Also resolved this session, closing out an item from "Left for next session" above:** the user
 applied the `fs.inotify.max_user_instances` sysctl fix themselves (128 → 1024), so the `EMFILE`
 `npm run dev` flakiness noted earlier should no longer recur.
+
+## Bug fix: globe region selection — silent misses on tap, blank names on the sheet (done)
+
+Reported by the user: selecting regions on the globe "doesn't work for every region," names
+sometimes don't come through, and tapping some regions does nothing — while the flat map "works
+perfectly." Treated the two symptoms (blank name vs. no response at all) as probably two different
+bugs rather than hunting for one root cause, since they don't obviously share a mechanism. That
+turned out right: one is a GlobeMap-only hit-testing bug, the other is a pre-existing data-layer
+gap that affects both maps equally but is severe enough (see the numbers below) that the user was
+always going to run into it eventually, and apparently did so via the globe first.
+
+### Bug 1 — GlobeMap's tap hit-test could disagree with its own rendering
+
+**Root cause, measured, not assumed.** [`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s
+`handleTap` inverted the tapped screen point to a lon/lat coordinate and ran d3-geo's `geoContains`
+against each feature's polygon independently — a completely separate code path from `draw()`, which
+paints those same features to the canvas. For the *selected* country, once zoomed in past
+`ADMIN1_ZOOM_THRESHOLD`, `draw()` swaps to a higher-resolution per-country outline
+(`countryDetailFeatureRef`, see the earlier "higher-fidelity coastlines" session) for the visible
+shape — but `handleTap` kept testing taps against the coarser world-topology shape underneath it.
+Two different polygons; only one was ever actually on screen. WorldMap has no equivalent bug: its
+hit-testing *is* the rendered SVG `<path>`'s own `onClick`, so whatever's drawn is by definition
+what gets clicked. A canvas has no such guarantee for free.
+
+Measured the gap directly against the real bundled Iceland topology rather than guessing: walked
+every vertex of the higher-resolution `countryDetail` polygon for `IS` and checked each one against
+the coarse world-topology polygon with `geoContains` — **824 of 2,030 vertices (40.6%) fall outside
+the coarse shape**. Rasterized both polygons at a real projection/zoom centred on one such
+divergent stretch of coastline and sampled pixels solidly inside the detail shape but outside the
+coarse one: **5 of 6 real tap points landing on visibly-rendered Icelandic coastline would have
+been silently rejected** by the old check (falls through to `onDeselectRef.current()` —
+indistinguishable from "nothing happens").
+
+Before concluding this was the mechanism, first ruled out a broader "geoContains just disagrees
+with the canvas renderer sometimes" theory (winding order, holes, antimeridian) — rasterized ~20
+countries (including archipelagos, Lesotho-as-a-hole-in-South-Africa, antimeridian-adjacent Fiji)
+plus their admin-1 subdivisions and compared every solidly-interior pixel against `geoContains` on
+whatever feature actually rendered there: mismatch rate was ~0 everywhere except this one specific,
+structural coarse/detail split. Worth remembering if a similar report ever comes up again —
+`geoContains` itself is trustworthy against this project's real topology; the bug was a
+render/hit-test *shape* mismatch, not the point-in-polygon math.
+
+**Fix**: replaced the analytical `geoContains` check (for countries and admin-1 — city
+hit-testing, a simple pixel-radius check against the last-drawn markers, was never geometry-based
+and left untouched) with an offscreen "pick buffer": a throwaway canvas painted with one flat,
+unique colour per feature, in the *exact same shapes and paint order* `draw()` itself just used —
+including preferring `countryDetailFeatureRef` for the selected country under the identical
+condition `draw()` checks, and admin-1 painted on top of countries, matching draw order elsewhere.
+Reading back the single tapped pixel and decoding its colour to a feature id makes the render/
+hit-test mismatch structurally impossible: whatever is on screen is, by construction, what gets
+tapped — the same guarantee WorldMap already gets for free from the DOM. This is the standard
+"colour/GPU picking" technique for canvas hit-testing. Built lazily inside `handleTap` itself (one
+throwaway canvas, reused across taps via a closure variable) rather than maintained per-frame —
+hit-testing is only ever needed at the moment of a tap, so this adds zero cost to the drag/zoom
+gesture path, unlike the persistent visible canvas.
+
+### Bug 2 — admin-1 ids often aren't in the GeoNames namespace `db.subdivisions` uses, so the place sheet showed a blank title
+
+**Root cause** (predates this session and affects WorldMap too — the user just hadn't hit it there
+yet). Each per-country admin-1 topology file's feature `id` is assigned at build time as
+`p.gn_a1_code || p.iso_3166_2 || p.adm1_code` ([`tools/build-geo.mjs:436`](tools/build-geo.mjs)).
+Only the `gn_a1_code` branch lands in the GeoNames `CC.NN` namespace that `subdivisions.json` (and
+therefore `db.subdivisions`) is keyed by — when Natural Earth has no GeoNames cross-reference for a
+region, its id falls back to a foreign namespace that never appears in `db.subdivisions`. Tapping
+such a region (either map) correctly calls `onSelectSubdivision(id)`, and status-setting works fine
+(entries are keyed directly by this same id, no foreign-key dependency on `db.subdivisions`) — but
+[`resolvePlaceInfo`](atlas/src/domain/placeInfo.ts) → `db.subdivisions.get(id)` misses, returns
+`null`, and `PlaceStatusSheet` renders `<h2>…</h2>` with a blank flag and breadcrumb.
+
+**Measured the real scope**, not just the one report: walked every bundled admin-1 topology and
+checked its ids against `db.subdivisions`. **1,239 of 4,447 admin-1 regions worldwide (27.9%) are
+orphaned this way, across 100 countries** — several are *completely* affected (United Kingdom
+199/199, Uganda 112/112, Italy 110/110, Ireland 34/34, Kosovo 30/30, Malawi 28/28, Sri Lanka 25/25,
+Serbia 25/25, Burkina Faso 45/45, and more). A much bigger gap than the single report suggested.
+
+**Fix**: rather than touch the build pipeline or reseed committed geo data — a much larger, riskier
+change than this report warrants — added an optional `fallback` parameter to `resolvePlaceInfo`
+([`src/domain/placeInfo.ts`](atlas/src/domain/placeInfo.ts)) and optional `fallbackName`/
+`fallbackCountryCode` fields to `PlaceRef` ([`src/domain/cascade.ts`](atlas/src/domain/cascade.ts) —
+harmless additions every other caller simply doesn't set). Both `WorldMap` and `GlobeMap` already
+decode a real `name` for every feature they draw (`decodeLayer`) — `onSelectSubdivision`'s signature
+grew from `(subdivisionId) => void` to `(subdivisionId, name) => void` on both, and
+[`MapScreen.tsx`](atlas/src/screens/MapScreen.tsx)'s new `selectSubdivision` helper forwards that
+name plus the already-known `selectedCode` as the fallback. When `db.subdivisions` misses,
+`resolvePlaceInfo` now falls back to that name/country (and still looks up the country's own name
+for the breadcrumb, so the fallback path reaches full parity with the normal one) instead of
+returning `null`. Fixed for both maps at once, since the underlying data gap is identical on both.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**196/196** — this session's actual baseline;
+  `PROGRESS.md`'s previous "219/219" figure did not reproduce even on a clean `git stash` of this
+  session's changes, so that was a stale/mismeasured figure from an earlier point, not a regression
+  introduced here) all clean. No new pure/testable module — both fixes are either an interaction
+  handler or a thin data-fallback path.
+- **Same standing environment limitation every prior globe session has hit, reconfirmed once
+  more, with a new wrinkle**: `document.hidden` read `false` this session (unlike most prior globe
+  sessions) and a real `preview_screenshot`/DOM check of the *flat* map worked cleanly after a
+  reload. But the globe canvas's backing store still stuck at its default 300×150 even though
+  `canvas.getBoundingClientRect()` reported a correct, real, laid-out size (505×675) — meaning
+  `size` (the React state fed by `ResizeObserver`) never updated, so `projectionRef.current` never
+  initializes and `handleTap`'s first line (`if (!proj) return`) makes a real dispatched tap a
+  guaranteed no-op regardless of any fix. Confirmed this is layout-vs-backing-store, not
+  layout-not-happening, ruling out a simpler explanation before falling back to logic-level
+  verification. `preview_click` on the flat/globe toggle button also silently failed to register
+  (confirmed by reading `settings.mapView` back from Dexie afterward showing no change); a raw
+  `element.dispatchEvent(new MouseEvent('click', {bubbles:true}))` worked, matching the exact
+  workaround the previous globe session recorded.
+- **Compensated with real-data verification**, same standard this project's map work has held
+  throughout:
+  - Bug 1: the 824/2,030-vertex and 5/6-tap-point figures above are computed directly against the
+    real bundled `IS` world and country-detail topologies via the actual `loadWorldTopology`/
+    `loadCountryDetailTopology` loaders, not synthetic geometry. The "old vs. new" comparison ran
+    the literal old `geoContains`-against-coarse-shape check side by side with the new pick-buffer
+    paint-and-readback logic (transcribed faithfully from the shipped code) against the same real
+    gap coordinates in the same probe.
+  - Bug 2: found a real orphaned id in the bundled data (`AE.` / "Neutral Zone" in the UAE's
+    admin-1 topology) and called the actual, imported `resolvePlaceInfo` with and without the new
+    fallback — confirmed `null` without it, confirmed
+    `{name: "Neutral Zone", countryCode: "AE", breadcrumb: ["United Arab Emirates"]}` with it.
+  - All of the above ran against the real shipped code (dynamic-imported from the live dev server
+    via cache-busted `?t=` URLs, per the stale-module-cache lesson from the first globe session),
+    not a simplified stand-in.
+- **Not verified live**: an actual on-device tap on the globe, watching a region highlight and the
+  sheet open with the right name — blocked by the `ResizeObserver` issue above, the same gap every
+  globe session to date has recorded. Both fixes are real-data-proven at the logic level (see
+  above), not felt on a real screen yet.
+
+### Left undone / worth a look next session
+
+- Bug 2's fix is a **display-layer** patch, not a data one — `db.subdivisions` itself still has no
+  row for those 1,239 regions, so anything else that ever keys off that table for one of them
+  (nothing currently does, beyond display) would still miss. A proper fix would cross-reference
+  Natural Earth's `iso_3166_2`/`adm1_code` fallback against GeoNames at build time in
+  `tools/build-geo.mjs` — the same class of fix the previous session already applied to city→
+  subdivision resolution (`nearestAdmin1Id`/`SUBDIVISION_SNAP_KM`). Not attempted here since it
+  means regenerating and re-committing geo data, a bigger and riskier change than this report
+  called for.
+- Real on-device confirmation that taps now land correctly and feel responsive — blocked in this
+  sandbox the same way every prior globe-interaction session has been blocked.
+
+## Globe zoom now turns to face what you're zooming into, instead of just magnifying it at an angle (done)
+
+Reported immediately after the tap/name fixes above shipped: "if I zoom in on a country in the
+right top corner... then when I am zoomed in on that country it isn't seen on an angle rather it
+is seen like it is vertical" — zooming toward an off-centre point (the earlier "wheel/pinch zoom
+always zoomed toward the centre" fix) kept it pinned to the same screen position while scaling up,
+but never turned the sphere to face it, so it stayed visibly foreshortened the whole time, just
+bigger. Went straight to implementation — the ask was unambiguous, a direct continuation of the
+zoom-toward-cursor feature two sessions ago.
+
+**Why scale alone can't fix this**: an orthographic projection foreshortens everything away from
+its own centre — the same reason the limb of a real globe or planet looks "on a slant" no matter
+how much you magnify it. Only *rotating* the sphere to bring a point toward the projection's centre
+makes it render face-on; zoom level has nothing to do with it.
+
+### What was built
+
+- **[`rotationTowardPoint(rotation, target, t)`](atlas/src/components/map/globeMath.ts)`** — new
+  pure helper (6 tests), same "logic lives outside the component" precedent as the rest of this
+  file. Uses `d3.geoInterpolate` to slide `t` of the way along the great circle from the currently-
+  centred point toward `target`, preserving roll. Confirmed directly from `d3-geo`'s own source
+  (not assumed) that `geoInterpolate` degrades to a constant when the two points already coincide,
+  so re-zooming on an already-centred point is a safe no-op, not a divide-by-zero.
+- **[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s `zoomAt`** rewritten around rotation
+  instead of translate. On every zoom-*in* tick it rotates a fraction of the remaining great-circle
+  distance toward a target point — `t = 1 - oldZoom/newZoom`, so a doubling always rotates the same
+  fraction of what's left regardless of the zoom level it starts from, and a sustained scroll/pinch
+  converges smoothly rather than snapping straight to centred on the first tick. Zooming out is
+  untouched (scale only, no rotation) — foreshortening at the edges is the normal, expected look of
+  being zoomed out.
+- **The zoom target is locked once per zoom-in sequence, not re-sampled every tick** — this was the
+  one piece that needed a real second pass (see the bug caught during verification below).
+  `zoomTarget`/`zoomTargetAnchor` (plain closure variables, same "gesture state doesn't need to be
+  React-visible" precedent as `drag`/`pinchStart`) hold the locked lon/lat and the screen position it
+  was captured at. A new zoom-in re-samples only when there's no current lock, the anchor has
+  drifted more than `ZOOM_TARGET_DRIFT_PX` (32px, generous enough for natural cursor/pinch-midpoint
+  jitter) from where the lock was taken, or a manual drag-rotate happened in between (which changes
+  `rotationRef.current` without going through `zoomAt` at all, silently invalidating any promise the
+  lock made). Zooming back out clears the lock outright, so the next zoom-in anywhere starts fresh.
+- **Simplification that fell out of this for free**: since turning to face a point is now this
+  component's entire mechanism for "zoom toward a point," `translateRef` (the off-centre screen
+  offset the previous session's fix introduced) is gone entirely — `draw()` now always centres the
+  projection in its container as a plain function of the current canvas size, recomputed fresh every
+  frame. That also deletes the old `zoomAt`'s explicit "recentre at MIN_ZOOM" special case (translate
+  can no longer drift in the first place, so there's nothing left to recentre).
+
+### Bug caught during verification, not assumed to be right the first time
+
+The first version re-sampled `proj.invert([localX, localY])` fresh on *every* tick rather than
+locking it once. Real-data check (see below) showed it converging to *something* centred, but not
+reliably the country the gesture actually started on. Root cause: a centred scale change alone —
+before rotation has caught up at all — already pulls whatever's at a fixed screen pixel toward
+whichever point is *currently* centred (the same way zooming into a photo without panning reveals
+more of what was already in the middle). Re-inverting the same pixel after every tick's scale bump
+therefore chases a target that's itself drifting toward the old centre, not the place the user
+actually pointed at. Concretely: a real corner tap that inverted to China, run through 12 simulated
+wheel ticks, ended up centring **Russia**. Locking the target once (see above) and confirming with
+the same simulation fixed it — the same corner, same 12 ticks, correctly converges on and *stays*
+on the country actually under the cursor when zooming started (Kazakhstan, in the corrected test —
+see below for why the country differed between the two checks).
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, +6 for `rotationTowardPoint`) and the
+  full app all clean.
+- **Same standing `ResizeObserver`-in-this-sandbox limitation as every globe session before this
+  one** — reconfirmed once more, with the added wrinkle that `document.hidden` flipped between
+  `false` and `true` *within this single session* (unlike most prior sessions, where it was
+  consistently one or the other throughout) — the globe canvas mounted, and the flat-map SVG
+  rendered and screenshot correctly once, but the globe canvas's backing store never got a real
+  size, so a live dispatched wheel/pinch gesture still couldn't be watched end-to-end. Fell back to
+  the same real-topology-simulation technique prior sessions used for the same reason.
+- **Real-data verification, the same standard this project's map work has held throughout** — all
+  run against the actual shipped `rotationTowardPoint`/`clampScale` and a faithful transcription of
+  the shipped `zoomAt`, against the real bundled world topology, not synthetic geometry or a
+  simplified stand-in:
+  - The bug above, caught and then confirmed fixed, as described.
+  - A realistic sustained zoom-in (20 simulated wheel ticks) at a screen point actually on the
+    visible globe at the starting zoom level: the angular offset of whatever's under the fixed
+    cursor position from the view's centre shrinks smoothly and monotonically, tick by tick, from
+    ~43° down to ~0.4° — i.e., the corner country visibly turns to face the camera as zooming
+    continues, not just grows.
+  - Zoom-in → zoom-out → zoom-in-elsewhere: confirmed the lock correctly clears on zoom-out
+    (`zoomTarget === null`) and a subsequent zoom-in at a new corner correctly converges to *that*
+    corner's actual country (Iran), not the first corner's (Kazakhstan) — ruling out a stuck/stale
+    lock.
+  - Continuing to zoom in while the cursor jumps 594px to the opposite corner (no intervening
+    zoom-out, exercising the `ZOOM_TARGET_DRIFT_PX` path specifically rather than the zoom-out-clears
+    path): confirmed the lock re-targets to whatever's actually at the new position, converging
+    there (angular offset ~15° → ~0.5° over the following ticks) rather than continuing to chase the
+    old corner.
+- **Not verified live**: an actual on-device wheel-scroll or pinch, watching the globe visibly turn
+  to face a corner country as it's zoomed — blocked by the environment limitation above, the same
+  gap every globe-interaction session to date has recorded. The convergence math itself is now
+  proven against real topology (see above), including the specific failure mode a first attempt
+  actually had, not just reasoned through.
+
+### Left undone
+
+Not confirmed on a real device with an actual scroll wheel or pinch gesture, for the reason above.
+`ZOOM_TARGET_DRIFT_PX` (32px) is a reasoned-but-picked constant, same "easy to retune" status as
+`CLICK_DISTANCE`/`CITY_HIT_RADIUS` — worth a look if a real trackpad's pinch-midpoint jitter turns
+out to exceed it (would cause spurious re-targeting mid-gesture) or if it feels too sticky (targeting
+a deliberately different nearby spot doesn't re-lock quickly enough).

@@ -13,7 +13,11 @@ export interface PlaceInfo {
   breadcrumb: string[]
 }
 
-export async function resolvePlaceInfo(kind: EntryKind, refId: string): Promise<PlaceInfo | null> {
+export async function resolvePlaceInfo(
+  kind: EntryKind,
+  refId: string,
+  fallback?: { name: string; countryCode: string },
+): Promise<PlaceInfo | null> {
   if (kind === 'country') {
     const country = await db.countries.get(refId)
     return country ? { name: country.name, countryCode: country.code, breadcrumb: [] } : null
@@ -21,7 +25,11 @@ export async function resolvePlaceInfo(kind: EntryKind, refId: string): Promise<
 
   if (kind === 'subdivision') {
     const sub = await db.subdivisions.get(refId)
-    if (!sub) return null
+    if (!sub) {
+      if (!fallback) return null
+      const country = await db.countries.get(fallback.countryCode)
+      return { name: fallback.name, countryCode: fallback.countryCode, breadcrumb: country ? [country.name] : [] }
+    }
     const country = await db.countries.get(sub.countryCode)
     return { name: sub.name, countryCode: sub.countryCode, breadcrumb: country ? [country.name] : [] }
   }

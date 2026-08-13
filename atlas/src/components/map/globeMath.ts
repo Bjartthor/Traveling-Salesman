@@ -3,7 +3,7 @@
 // live d3 projection — same "logic lives outside the component" precedent as
 // cityLayer.ts.
 
-import { geoDistance } from 'd3-geo'
+import { geoDistance, geoInterpolate } from 'd3-geo'
 
 export type Rotation = [number, number, number] // [lambda, phi, gamma] degrees
 
@@ -56,4 +56,26 @@ function centerOf(rotation: Rotation): [number, number] {
  */
 export function isFrontFacing(rotation: Rotation, point: [number, number]): boolean {
   return geoDistance(point, centerOf(rotation)) <= HALF_PI
+}
+
+/**
+ * Rotates `t` of the way along the great circle from the point currently
+ * centred toward `target`, preserving roll (gamma) — `t=0` is a no-op,
+ * `t=1` centres `target` exactly. This is what makes zooming in on an
+ * off-centre point (see GlobeMap's zoomAt) turn the globe to face that point
+ * rather than just magnifying it at whatever oblique angle it happened to be
+ * sitting at: an orthographic projection foreshortens everything away from
+ * its own centre (the same reason the edge of a real globe looks "on a
+ * slant"), and scale alone can't undo that — only rotation can, because it's
+ * the projection's centre, not its zoom level, that determines what's seen
+ * face-on.
+ *
+ * `d3.geoInterpolate` degrades to a constant (returns the start point for
+ * every t) when the two points already coincide — confirmed by reading its
+ * source, not assumed — so re-zooming in on an already-centred point is a
+ * safe no-op, not a divide-by-zero.
+ */
+export function rotationTowardPoint(rotation: Rotation, target: [number, number], t: number): Rotation {
+  const [lon, lat] = geoInterpolate(centerOf(rotation), target)(t)
+  return [-lon, -lat, rotation[2]]
 }

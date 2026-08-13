@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { clampLatitude, clampScale, isFrontFacing, rotateByDrag } from '@/components/map/globeMath'
+import { geoDistance } from 'd3-geo'
+import { clampLatitude, clampScale, isFrontFacing, rotateByDrag, rotationTowardPoint, type Rotation } from '@/components/map/globeMath'
 
 // Chosen so DEGREES_PER_RADIAN / scale === 1 exactly (IEEE-754 self-division
 // is exact), making every expected delta hand-checkable to the pixel/degree.
@@ -103,5 +104,41 @@ describe('isFrontFacing', () => {
 
   it('a point 45 degrees off centre is visible', () => {
     expect(isFrontFacing([0, 0, 0], [45, 0])).toBe(true)
+  })
+})
+
+describe('rotationTowardPoint', () => {
+  it('t=0 leaves the rotation unchanged', () => {
+    expect(rotationTowardPoint([12, -34, 5], [100, 20], 0)).toEqual([12, -34, 5])
+  })
+
+  it('t=1 centres the target exactly', () => {
+    const result = rotationTowardPoint([0, 0, 0], [40, 30], 1)
+    expect(result[0]).toBeCloseTo(-40, 9)
+    expect(result[1]).toBeCloseTo(-30, 9)
+  })
+
+  it('preserves gamma (roll) throughout', () => {
+    const result = rotationTowardPoint([0, 0, 17], [40, 30], 0.5)
+    expect(result[2]).toBe(17)
+  })
+
+  it('t=0.5 lands equidistant (great-circle) from the old and new centres', () => {
+    const rotation: Rotation = [0, 0, 0]
+    const target: [number, number] = [90, 0]
+    const result = rotationTowardPoint(rotation, target, 0.5)
+    const newCenter: [number, number] = [-result[0], -result[1]]
+    expect(geoDistance(newCenter, [0, 0])).toBeCloseTo(geoDistance(newCenter, target), 9)
+  })
+
+  it('an already-centred target is a no-op regardless of t (no divide-by-zero)', () => {
+    expect(rotationTowardPoint([0, 0, 0], [0, 0], 0.7)).toEqual([0, 0, 0])
+  })
+
+  it('a target 90 degrees from centre, t=1, lands the centre exactly on it', () => {
+    // rotate=[-lon,-lat,0] centres (lon,lat) — same convention isFrontFacing relies on.
+    const result = rotationTowardPoint([0, 0, 0], [-19.02, 64.96], 1)
+    expect(isFrontFacing(result, [-19.02, 64.96])).toBe(true)
+    expect(geoDistance([-result[0], -result[1]], [-19.02, 64.96])).toBeCloseTo(0, 9)
   })
 })
