@@ -4196,3 +4196,71 @@ resolve on the next pull. Until then the phone simply skips them instead of fail
 **Verified:** `npx tsc -b`, `npx eslint .`, `npx vitest run` (196/196, +6 new city-sync/merge tests),
 `npm run build` all clean. **Not verified in-sandbox:** the end-to-end cross-device sync (needs Drive OAuth
 + two devices; the merge logic is covered by the new unit tests instead).
+
+## Long-form date entry, chronological trip ordering, and small-town region resolution (done)
+
+Three independent polish items, all shipped and deployed in one commit
+([`96d5e8c`](https://github.com/Bjartthor/Traveling-Salesman/commit/96d5e8c)):
+
+1. **Date entry.** [`src/domain/dateFormat.ts`](atlas/src/domain/dateFormat.ts) — the single
+   Icelandic month table (`ICELANDIC_MONTHS`) plus `formatLongDate`/`parseFlexibleDate`/`todayISO`.
+   Storage stays ISO `YYYY-MM-DD` everywhere (sort/compare/Drive sync untouched); only display
+   changed. New shared [`DateField`](atlas/src/components/shared/DateField.tsx) — a text field
+   showing the long-form date, with a paired native `<input type="date">` opened via
+   `showPicker()`/`.focus()` on **click only** (not `focus`, so keyboard-tabbing in doesn't ambush
+   the user with a picker), so typing `14.3.2026` or `14 mars 2026` directly still works. Wired
+   into `PlaceStatusSheet` (already the one shared sheet for country/subdivision/city — no
+   duplication needed) and `TripForm`. New device-local `Settings.defaultDateToToday` (default
+   `true`, toggle in Settings → Preferences) gates whether a brand-new place's date pre-fills to
+   today; only applies when the place has no existing entry yet, so reopening an already-logged,
+   still-undated place doesn't suddenly get stamped with today's date.
+2. **Trip ordering.** [`src/domain/tripPlaces.ts`](atlas/src/domain/tripPlaces.ts) — a trip's
+   countries/subdivisions/cities now sort oldest-visit-first (previously alphabetical), same-date
+   ties broken by `entry.createdAt` (add order), undated entries pushed to the end and alphabetized
+   there. A group's date is the earliest found anywhere in its own subtree (own row folded with
+   every child's own earliest date), computed once per node and reused for the tie-break —
+   mirrors the existing `recency`/`maxRecency` pattern in `placesList.ts` but ascending instead of
+   descending, and *not* applied there (the full Places-tab list stays alphabetical, per the ask).
+3. **Small-town region resolution — root cause found, not assumed.** Reported bug: adding
+   Vík í Mýrdal (Iceland, pop. ~600) never colours in Suðurland. Decoded the real bundled
+   `public/geo/admin1/IS.topo.json` and ran `d3-geo`'s `geoContains` against real coordinates before
+   writing any fix: Vík, Höfn and Grindavík all miss direct point-in-polygon containment by
+   1.7–5.3 km, while the next-nearest *wrong* region is 15–90 km away in every case (a bundled
+   control town, Selfoss, matches directly). So `resolveSubdivisionByPoint`
+   ([`src/geo/photon.ts`](atlas/src/geo/photon.ts)) already existed and was already being called —
+   it just silently lost on any coastal town whose point fell just outside the *simplified* admin-1
+   boundary (`tools/build-geo.mjs`'s per-country size budget rounds coastlines inward). Fix: on a
+   point-in-polygon miss, fall back to the nearest polygon by minimum vertex distance (provably ≥
+   true edge distance, so it can only under-, never over-, accept) within a new `SUBDIVISION_SNAP_KM`
+   (25 km — comfortably covers the observed gaps, far under every observed wrong-answer distance).
+   Extracted as a pure, tested `nearestAdmin1Id` helper. New
+   [`src/geo/regionBackfill.ts`](atlas/src/geo/regionBackfill.ts) re-resolves any already-saved city
+   (any source, not just online — a bundled row's GeoNames admin1Code can independently mismatch)
+   still missing a `subdivisionId`, then calls `rebuildDerivedEntries()` so the newly-known ancestor
+   actually gets its derived entry. Runs once per device, gated by a new device-local
+   `Settings.regionBackfillDone`, triggered from `geoStore.ts` right after `ensureReferenceData`
+   resolves (fire-and-forget, doesn't block first paint).
+
+**Verified live, not just unit-tested:** ran the actual app in a real browser session (this
+sandbox's existing local IndexedDB, not a fresh install) — searched and added Vík í Mýrdal via
+Photon, confirmed its `subdivisionId` resolved to `IS.42` and a derived subdivision entry appeared
+(Iceland's "Regions visited" went 0/8 → 1/8), confirmed the date field pre-filled with today's date
+in long form, confirmed the Settings toggle empties the field when off, and built a two-city test
+trip confirming oldest-first ordering with correct nesting under a shared subdivision. The one-time
+backfill also ran unprompted against this session's pre-existing local data and logged
+`geo: region backfill resolved 360/383 orphaned cities` — strong incidental confirmation at real
+scale, not just the three towns checked by hand.
+
+`npx tsc -b`, `npx eslint .`, `npx vitest run` (219/219, +23 new tests across `dateFormat.test.ts`,
+`photon.test.ts`, and extended `tripPlaces.test.ts`) all clean. `npm run build` fails locally in
+this sandbox with `ReferenceError: crypto is not defined` inside `vite-plugin-pwa`'s workbox step —
+confirmed this reproduces identically on unmodified `main` (`git stash` and rebuilt), and under the
+project's mandated Node 20.20.2 binary directly (not just whatever's on `PATH`), so it's a sandbox-
+local anomaly, not a regression. Confirmed harmless: pushed to `main` and the GitHub Actions
+`deploy.yml` pipeline (fresh `ubuntu-latest` runner) ran lint → test → build → deploy end-to-end
+successfully — [run 31696627739](https://github.com/Bjartthor/Traveling-Salesman/actions/runs/31696627739),
+all green, deployed to GitHub Pages.
+
+**Also resolved this session, closing out an item from "Left for next session" above:** the user
+applied the `fs.inotify.max_user_instances` sysctl fix themselves (128 → 1024), so the `EMFILE`
+`npm run dev` flakiness noted earlier should no longer recur.
