@@ -16,6 +16,7 @@ import { closeTrip, getActiveTrip, reopenTrip, softDeleteTrip, updateTrip } from
 import { listPhotosForTrip, reassignPhoto, softDeletePhoto, updateCaption } from '@/domain/photoRepo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { formatLongDate, todayISO } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { colorForStatus } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
@@ -26,10 +27,6 @@ import { PhotoGrid } from '@/components/photos/PhotoGrid'
 import { PhotoViewer, type PhotoViewerAction } from '@/components/photos/PhotoViewer'
 import { AddPhotosButton } from '@/components/photos/AddPhotosButton'
 import './TripDetail.css'
-
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
-}
 
 export function TripDetail() {
   const openTripId = useTripDetailStore((s) => s.openTripId)
@@ -145,7 +142,8 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
     <FullScreenOverlay title={trip.name} onClose={onClose}>
       <div className="trip-detail">
         <p className="trip-detail__dates mono">
-          {trip.startDate ?? '—'} – {trip.endDate ?? (trip.isActive ? 'ONGOING' : '—')}
+          {trip.startDate ? formatLongDate(trip.startDate) : '—'} –{' '}
+          {trip.endDate ? formatLongDate(trip.endDate) : trip.isActive ? 'ONGOING' : '—'}
         </p>
 
         <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cityPoints} />
@@ -260,7 +258,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
           title="Edit trip"
           submitLabel="Save"
           showEndDate
-          initial={{ name: trip.name, startDate: trip.startDate ?? todayISO(), endDate: trip.endDate ?? '' }}
+          initial={{ name: trip.name, startDate: trip.startDate ?? todayISO(), endDate: trip.endDate }}
           onClose={() => setShowEdit(false)}
           onSubmit={async (values) => {
             await updateTrip(trip.id, { name: values.name, startDate: values.startDate, endDate: values.endDate })

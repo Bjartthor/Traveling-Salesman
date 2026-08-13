@@ -99,15 +99,6 @@
   color: var(--haze);
 }
 
-.place-sheet__date-input {
-  min-height: var(--tap-target-min);
-  padding: var(--space-2) var(--space-3);
-  background: var(--abyss);
-  border: 1px solid var(--contour);
-  border-radius: var(--radius-sm);
-  color: var(--chalk);
-}
-
 .place-sheet__options {
   display: grid;
   gap: var(--space-2);

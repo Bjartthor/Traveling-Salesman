@@ -16,6 +16,7 @@ import { useCountryDetailData, type CountryDetailData } from '@/domain/useCountr
 import { countrySubdivisionsVisited } from '@/stats/coverage'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import type { PlaceRef } from '@/domain/cascade'
+import { formatLongDate } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { colorForStatus, STATUS_LABEL } from '@/components/map/statusColor'
 import { PhotoGrid } from '@/components/photos/PhotoGrid'
@@ -201,7 +202,7 @@ function CountrySheetContent({
                   >
                     <span className="country-sheet__bar" style={{ background: colorForStatus(e.status) }} aria-hidden="true" />
                     <span className="country-sheet__city-name">{city.name}</span>
-                    {e.lastVisited && <span className="country-sheet__city-date mono">{e.lastVisited}</span>}
+                    {e.lastVisited && <span className="country-sheet__city-date mono">{formatLongDate(e.lastVisited)}</span>}
                   </button>
                 </li>
               ))}

@@ -12,7 +12,7 @@
   color: var(--haze);
 }
 
-.trip-form__field input {
+.trip-form__field > input {
   min-height: var(--tap-target-min);
   padding: var(--space-2) var(--space-3);
   background: var(--abyss);

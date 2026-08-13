@@ -1,5 +1,8 @@
 import { create } from 'zustand'
+import { settingsRepo } from '@/db/repo'
 import { ensureReferenceData, type GeoLoadPhase } from '@/geo/loader'
+import { backfillCityRegions } from '@/geo/regionBackfill'
+import { logError, logInfo } from '@/debug/log'
 
 interface GeoState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -11,6 +14,25 @@ interface GeoState {
   error: string | null
   load: () => Promise<void>
   dismiss: () => void
+}
+
+/**
+ * Runs once per device, ever — a background repair, not part of the gate's
+ * loading state, so it never blocks first paint. Errors (e.g. offline, so a
+ * country's admin1 topology can't be fetched) are swallowed after logging:
+ * a failed backfill just leaves `regionBackfillDone` false, so it's retried
+ * on the next app start rather than getting stuck.
+ */
+async function runRegionBackfillOnce(): Promise<void> {
+  try {
+    const settings = await settingsRepo.get()
+    if (settings?.regionBackfillDone) return
+    const { orphaned, resolved } = await backfillCityRegions()
+    await settingsRepo.update({ regionBackfillDone: true })
+    void logInfo(`geo: region backfill resolved ${resolved}/${orphaned} orphaned cities`)
+  } catch (e) {
+    void logError('geo: region backfill failed', e instanceof Error ? e.message : String(e))
+  }
 }
 
 export const useGeoStore = create<GeoState>((set, get) => ({
@@ -32,6 +54,7 @@ export const useGeoStore = create<GeoState>((set, get) => ({
         () => set({ countriesReady: true }),
       )
       set({ status: 'ready', countriesReady: true })
+      void runRegionBackfillOnce()
     } catch (e) {
       set({ status: 'error', error: e instanceof Error ? e.message : String(e) })
     }

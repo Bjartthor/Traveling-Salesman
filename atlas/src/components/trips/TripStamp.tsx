@@ -11,6 +11,7 @@
 import type { CSSProperties } from 'react'
 import type { Status } from '@/db/types'
 import { stampInkSeed, stampRotationDeg } from '@/domain/stampSeed'
+import { formatLongDate } from '@/domain/dateFormat'
 import { CountryFlag } from '@/components/places/CountryFlag'
 import { TripRouteMap } from '@/components/trips/TripRouteMap'
 import './TripStamp.css'
@@ -47,7 +48,7 @@ export function TripStamp({
   const rotation = stampRotationDeg(tripId)
   const inkSeed = stampInkSeed(tripId)
   const filterId = `stamp-ink-${tripId}`
-  const dateRange = `${startDate ?? '—'} – ${endDate ?? 'ONGOING'}`
+  const dateRange = `${startDate ? formatLongDate(startDate) : '—'} – ${endDate ? formatLongDate(endDate) : 'ONGOING'}`
 
   return (
     <button

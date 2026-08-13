@@ -13,6 +13,7 @@ import { loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
+import { formatLongDate } from '@/domain/dateFormat'
 import { TripForm, type TripFormValues } from '@/components/trips/TripForm'
 import { TripConflictDialog } from '@/components/trips/TripConflictDialog'
 import { TripStamp } from '@/components/trips/TripStamp'
@@ -63,7 +64,7 @@ export function TripsScreen() {
           <button type="button" className="trips-screen__active-card" onClick={() => openTrip(active.id)}>
             <span className="trips-screen__active-name">{active.name}</span>
             <span className="trips-screen__active-meta mono">
-              Day {tripDurationDays(active)} · started {active.startDate ?? '—'}
+              Day {tripDurationDays(active)} · started {active.startDate ? formatLongDate(active.startDate) : '—'}
             </span>
           </button>
         ) : (

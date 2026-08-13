@@ -12,6 +12,7 @@ import { useCountryDetailData } from '@/domain/useCountryDetailData'
 import { countrySubdivisionsVisited } from '@/stats/coverage'
 import { useCountryDetailStore } from '@/domain/countryDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { formatLongDate } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { colorForStatus, STATUS_LABEL } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
@@ -127,7 +128,7 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
                   >
                     <span className="country-detail__bar" style={{ background: colorForStatus(e.status) }} aria-hidden="true" />
                     <span className="country-detail__city-name">{city.name}</span>
-                    {e.lastVisited && <span className="country-detail__city-date mono">{e.lastVisited}</span>}
+                    {e.lastVisited && <span className="country-detail__city-date mono">{formatLongDate(e.lastVisited)}</span>}
                   </button>
                 </li>
               ))}

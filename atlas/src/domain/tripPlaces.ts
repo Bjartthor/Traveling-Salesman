@@ -24,6 +24,7 @@ export interface TripPlaceRow {
   lastVisited: string | null
   lat: number | null
   lon: number | null
+  createdAt: number
 }
 
 export interface TripSubdivisionGroup {
@@ -50,7 +51,68 @@ export interface TripPlacesInput {
 }
 
 function toRow(entry: Entry, name: string, lat: number | null = null, lon: number | null = null): TripPlaceRow {
-  return { entryId: entry.id, refId: entry.refId, name, status: entry.status, lastVisited: entry.lastVisited, lat, lon }
+  return {
+    entryId: entry.id,
+    refId: entry.refId,
+    name,
+    status: entry.status,
+    lastVisited: entry.lastVisited,
+    lat,
+    lon,
+    createdAt: entry.createdAt,
+  }
+}
+
+// --- chronological ordering (oldest first) --------------------------------
+//
+// A trip's places should read like an itinerary, not an alphabetised list:
+// earliest visit date first, ties broken by the order the place was added,
+// undated places pushed to the end and alphabetised there. A group (country
+// or subdivision) has no visit date of its own unless something explicit was
+// set directly on it — so its sort date is the earliest one found anywhere
+// in its subtree (its own row, if attached directly, folded together with
+// every child's own earliest date), which is also what "the trip's country
+// list is derived from its cities" already implies structurally.
+
+interface SortInfo {
+  date: string | null
+  createdAt: number
+}
+
+function rowSortInfo(row: TripPlaceRow): SortInfo {
+  return { date: row.lastVisited, createdAt: row.createdAt }
+}
+
+/** Earliest dated entry among a node's own row (if any) and its children; `date: null` only when nothing below has one. */
+function foldSortInfo(own: SortInfo | null, children: readonly SortInfo[]): SortInfo {
+  let best: SortInfo | null = null
+  for (const c of own ? [own, ...children] : children) {
+    if (c.date === null) continue
+    if (!best || c.date < best.date! || (c.date === best.date && c.createdAt < best.createdAt)) best = c
+  }
+  return best ?? { date: null, createdAt: 0 } // createdAt is irrelevant once undated — that bucket sorts alphabetically instead
+}
+
+interface Ranked<T> {
+  item: T
+  info: SortInfo
+}
+
+/** Dated nodes first (earliest date, then earliest createdAt); undated nodes last, alphabetical among themselves. */
+function compareRanked<T extends { name: string }>(a: Ranked<T>, b: Ranked<T>): number {
+  const aDated = a.info.date !== null
+  const bDated = b.info.date !== null
+  if (aDated && bDated) {
+    if (a.info.date !== b.info.date) return a.info.date! < b.info.date! ? -1 : 1
+    if (a.info.createdAt !== b.info.createdAt) return a.info.createdAt - b.info.createdAt
+    return a.item.name.localeCompare(b.item.name)
+  }
+  if (aDated !== bDated) return aDated ? -1 : 1
+  return a.item.name.localeCompare(b.item.name)
+}
+
+function sortRanked<T extends { name: string }>(ranked: Ranked<T>[]): T[] {
+  return [...ranked].sort(compareRanked).map((r) => r.item)
 }
 
 export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
@@ -117,35 +179,39 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, city.lat, city.lon))
   }
 
-  const groups: TripCountryGroup[] = []
+  const rankedGroups: Ranked<TripCountryGroup>[] = []
   for (const bucket of buckets.values()) {
-    const subdivisionGroups: TripSubdivisionGroup[] = []
+    const subdivisionRanked: Ranked<TripSubdivisionGroup>[] = []
     let looseCities: TripPlaceRow[] = []
+    const countryChildInfos: SortInfo[] = []
 
     for (const [key, sub] of bucket.subdivisions) {
+      const cityRanked = sub.cities.map((row) => ({ item: row, info: rowSortInfo(row) }))
+      const cityRows = sortRanked(cityRanked)
+      const cityInfos = cityRanked.map((r) => r.info)
+
       if (key === '') {
-        looseCities = [...sub.cities].sort((a, b) => a.name.localeCompare(b.name))
+        looseCities = cityRows
+        countryChildInfos.push(foldSortInfo(null, cityInfos))
         continue
       }
-      subdivisionGroups.push({
-        key,
-        name: sub.subdivision?.name ?? key,
-        row: sub.row,
-        cities: [...sub.cities].sort((a, b) => a.name.localeCompare(b.name)),
-      })
+      const info = foldSortInfo(sub.row ? rowSortInfo(sub.row) : null, cityInfos)
+      subdivisionRanked.push({ item: { key, name: sub.subdivision?.name ?? key, row: sub.row, cities: cityRows }, info })
+      countryChildInfos.push(info)
     }
-    subdivisionGroups.sort((a, b) => a.name.localeCompare(b.name))
 
-    groups.push({
-      code: bucket.country.code,
-      name: bucket.country.name,
-      row: bucket.row,
-      subdivisions: subdivisionGroups,
-      looseCities,
+    rankedGroups.push({
+      item: {
+        code: bucket.country.code,
+        name: bucket.country.name,
+        row: bucket.row,
+        subdivisions: sortRanked(subdivisionRanked),
+        looseCities,
+      },
+      info: foldSortInfo(bucket.row ? rowSortInfo(bucket.row) : null, countryChildInfos),
     })
   }
-  groups.sort((a, b) => a.name.localeCompare(b.name))
-  return groups
+  return sortRanked(rankedGroups)
 }
 
 /** The trip's country code set — the stamp's grid and the "N countries" stat both need exactly this. */

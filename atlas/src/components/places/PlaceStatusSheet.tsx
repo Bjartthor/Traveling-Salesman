@@ -7,14 +7,17 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
+import { settingsRepo } from '@/db/repo'
 import type { Entry, Status, Trip } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
 import { attachEntryToTrip, detachEntryFromTrip, listTrips, tripIdsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
+import { todayISO } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { STATUS_COLOR_VAR, STATUS_DESCRIPTION, STATUS_LABEL } from '@/components/map/statusColor'
+import { DateField } from '@/components/shared/DateField'
 import './PlaceStatusSheet.css'
 
 export function PlaceStatusSheet() {
@@ -81,11 +84,21 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     }
   }
 
-  const [date, setDate] = useState('')
+  const settings = useLiveQuery(() => settingsRepo.get())
+  const [date, setDate] = useState<string | null>(null)
   const [dateTouched, setDateTouched] = useState(false)
   useEffect(() => {
-    if (!dateTouched && data?.entry?.firstVisited) setDate(data.entry.firstVisited)
-  }, [data, dateTouched])
+    if (dateTouched) return
+    if (data?.entry?.firstVisited) {
+      setDate(data.entry.firstVisited)
+    } else if (!data?.entry && settings?.defaultDateToToday) {
+      // A genuinely new place (no entry yet) — pre-fill and count it as an
+      // explicit choice, so a bare status tap does save today's date, which
+      // is the point of the "default new entries to today" preference.
+      setDate(todayISO())
+      setDateTouched(true)
+    }
+  }, [data, dateTouched, settings])
 
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -98,7 +111,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         kind: place.kind,
         refId: place.refId,
         status,
-        ...(dateTouched ? { firstVisited: date || null, lastVisited: date || null } : {}),
+        ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
       })
       onClose()
     } catch (e) {
@@ -159,18 +172,17 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
           </div>
         )}
 
-        <label className="place-sheet__date">
+        <div className="place-sheet__date">
           <span>Date (optional)</span>
-          <input
-            type="date"
-            className="place-sheet__date-input"
+          <DateField
             value={date}
-            onChange={(e) => {
-              setDate(e.target.value)
+            ariaLabel="Date"
+            onChange={(v) => {
+              setDate(v)
               setDateTouched(true)
             }}
           />
-        </label>
+        </div>
 
         <div className="place-sheet__options">
           {STATUS_ORDER.map((status) => {

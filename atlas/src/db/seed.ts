@@ -8,6 +8,8 @@ const SETTINGS_ADDED_DEFAULTS = {
   driveConnected: false,
   photoUploadOnCellular: false,
   mapView: 'flat',
+  defaultDateToToday: true,
+  regionBackfillDone: false,
 } as const satisfies Partial<Settings>
 
 const SYNCSTATE_ADDED_DEFAULTS = {

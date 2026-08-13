@@ -19,12 +19,10 @@
 // second dialog.
 
 import { useState, type FormEvent } from 'react'
+import { todayISO } from '@/domain/dateFormat'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
+import { DateField } from '@/components/shared/DateField'
 import './TripForm.css'
-
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
-}
 
 export interface TripFormValues {
   name: string
@@ -45,19 +43,23 @@ interface TripFormProps {
 export function TripForm({ title, submitLabel, showEndDate, requireEndDate, initial, onClose, onSubmit }: TripFormProps) {
   const [name, setName] = useState(initial?.name ?? '')
   const [startDate, setStartDate] = useState(initial?.startDate ?? todayISO())
-  const [endDate, setEndDate] = useState(initial?.endDate ?? '')
+  const [endDate, setEndDate] = useState<string | null>(initial?.endDate ?? null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    setPending(true)
     setError(null)
+    if (showEndDate && requireEndDate && !endDate) {
+      setError('Pick an end date.')
+      return
+    }
+    setPending(true)
     try {
       await onSubmit({
         name: name.trim() || `Trip from ${startDate}`,
         startDate,
-        endDate: showEndDate && endDate.trim() ? endDate : null,
+        endDate: showEndDate ? endDate : null,
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -80,21 +82,15 @@ export function TripForm({ title, submitLabel, showEndDate, requireEndDate, init
         </label>
 
         <div className={showEndDate ? 'trip-form__dates' : undefined}>
-          <label className="trip-form__field">
+          <div className="trip-form__field">
             <span>Start date</span>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} required />
-          </label>
+            <DateField value={startDate} ariaLabel="Start date" onChange={(v) => v && setStartDate(v)} />
+          </div>
           {showEndDate && (
-            <label className="trip-form__field">
+            <div className="trip-form__field">
               <span>End date{requireEndDate ? '' : ' (optional)'}</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                min={startDate}
-                required={requireEndDate}
-              />
-            </label>
+              <DateField value={endDate} ariaLabel="End date" min={startDate} onChange={setEndDate} />
+            </div>
           )}
         </div>
         {!showEndDate && (

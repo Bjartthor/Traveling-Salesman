@@ -1,0 +1,30 @@
+.date-field {
+  position: relative;
+}
+
+.date-field__display {
+  width: 100%;
+  min-height: var(--tap-target-min);
+  padding: var(--space-2) var(--space-3);
+  background: var(--abyss);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-sm);
+  color: var(--chalk);
+  font-size: var(--text-base);
+}
+
+.date-field__display::placeholder {
+  color: var(--haze);
+}
+
+/* Kept in the layout (not display:none) so focus/showPicker() still anchors
+   its picker sensibly; invisible and non-interactive so every tap lands on
+   the visible display field above, which opens it programmatically. */
+.date-field__native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+}

@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
+import { settingsRepo } from '@/db/repo'
 import { loadTripCountryCodesBatch } from '@/domain/tripPlacesRepo'
 import { computeTripStats, newCountriesByTrip, type TripStats } from '@/domain/tripStats'
 import { clearUploadedBlobs, photoStorageStats } from '@/domain/photoRepo'
@@ -67,6 +68,7 @@ function formatBytes(bytes: number): string {
 
 export function SettingsScreen() {
   const data = useLiveQuery(loadTripStatsData)
+  const settings = useLiveQuery(() => settingsRepo.get())
   const [showImport, setShowImport] = useState(false)
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [persistError, setPersistError] = useState<string | null>(null)
@@ -100,6 +102,21 @@ export function SettingsScreen() {
   return (
     <div className="settings-screen">
       <h1 className="settings-screen__title">You</h1>
+
+      <section className="settings-screen__section">
+        <h2 className="settings-screen__section-title">Preferences</h2>
+        <label className="settings-screen__toggle">
+          <input
+            type="checkbox"
+            checked={settings?.defaultDateToToday !== false}
+            onChange={(e) => void settingsRepo.update({ defaultDateToToday: e.target.checked })}
+          />
+          <span>
+            Default new entries to today's date
+            <span className="settings-screen__toggle-sub">Off = the date field opens empty until you pick one.</span>
+          </span>
+        </label>
+      </section>
 
       <GoogleDriveSettings />
 

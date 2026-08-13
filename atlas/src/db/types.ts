@@ -145,6 +145,17 @@ export interface Settings {
   // unlike theme this was a deliberate call (asked, confirmed): a phone worth
   // spinning a globe on and a laptop you glance at can reasonably differ.
   mapView: MapView
+  // Pre-fill the place-status sheet's date field with today's date. Device-
+  // local, same reasoning as mapView — a quick-logging phone and a slower
+  // backfill-old-trips session on a laptop can reasonably want this
+  // differently. Default true (see db/seed.ts).
+  defaultDateToToday: boolean
+  // One-time marker: has the coastal-point subdivision-resolution fix
+  // (@/geo/photon's nearestAdmin1Id fallback) been run over already-saved
+  // cities yet? Device-local like geoDataVersion — this repairs rows already
+  // in *this device's* IndexedDB, not reference data. See @/geo/cityWrites
+  // backfillCityRegions.
+  regionBackfillDone: boolean
 }
 
 // --- Debug log (device-only, never synced) ---
