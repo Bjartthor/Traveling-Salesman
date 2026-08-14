@@ -4717,3 +4717,44 @@ a sheet opening, so the backdrop's click handler now simply ignores anything fas
   specifically), and the 300ms guard only protects the backdrop, not the status buttons. Worth
   watching for a "status changed to something I didn't pick" report specifically; if one shows up, the
   same guard technique applied to `pick()`/`remove()` would be the fix.
+
+## The predicted follow-up happened: the trailing click started hitting the panel, not just the backdrop (done)
+
+Right on schedule per the "Left undone" note above: next report was "region page comes up but there
+is another tap that brings up the calendar" — at some tap positions, opening a region's place sheet
+was immediately followed by the native date picker popping open on its own. Same phantom trailing
+click as before, but this time landing inside the panel (specifically on
+[`DateField`](atlas/src/components/shared/DateField.tsx)'s display input, whose `onClick` calls
+`showPicker()`) instead of on the backdrop — the 300ms guard only covered
+`onBackdropClick`, and the panel's own `onClick={(e) => e.stopPropagation()}` deliberately stops a
+click from ever reaching the backdrop's guard once it lands anywhere inside the panel.
+
+### What was built
+
+- **[`PlaceStatusSheet.tsx`](atlas/src/components/places/PlaceStatusSheet.tsx)**: renamed
+  `SPURIOUS_BACKDROP_CLICK_GUARD_MS` to `SPURIOUS_TRAILING_CLICK_GUARD_MS` (same 300ms, now guarding
+  more than just the backdrop) and added `onClickCapture` on the `.place-sheet` panel itself. Capture
+  phase runs before the click reaches whatever's actually under it, so a click inside the panel within
+  300ms of opening is stopped (`stopPropagation` + `preventDefault`) before it ever reaches the date
+  field's `showPicker()`, a status button's `pick()`, the trip toggles, remove, or even the close
+  button — none of those are a real, deliberate interaction that fast either, same reasoning as the
+  original backdrop guard. A genuine click past 300ms is untouched and behaves exactly as before.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, unchanged) clean.
+- Live against the real running app (no component-test harness in this repo — verification here
+  follows the same live-DOM-in-browser approach as prior rounds): opened the real place sheet for
+  Iceland, dispatched a synthetic click on `.date-field__display` ~4ms after the sheet mounted (using
+  microtask-only waits rather than `setTimeout`, since this session's preview browser throttles
+  backgrounded-tab timers hard enough to blow past the guard window on its own) — `showPicker()` never
+  fired and the sheet stayed open. Same test against a status button (Wishlist): the early click was
+  swallowed, no status got committed, sheet stayed open. Then confirmed the opposite case still works:
+  waiting past 300ms (a real wall-clock wait, throttling irrelevant since it only needs to be *at
+  least* 300ms) and clicking again — `showPicker()` fired normally, and the status button's click
+  committed and closed the sheet — so the guard blocks only the phantom window, not real use.
+
+### Left undone
+
+- Not yet re-confirmed on a real device (every prior round in this bug family needed that to be sure);
+  worth asking for confirmation the same way as the backdrop fix.

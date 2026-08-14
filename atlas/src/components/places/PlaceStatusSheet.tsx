@@ -34,15 +34,20 @@ interface SheetData {
   explanation: { status: Status; becauseName: string } | null
 }
 
-// A real touchscreen tap reliably produces a `click` on this sheet's own
-// backdrop 70-77ms after it opens (confirmed via an on-device debug-log
-// capture, PROGRESS.md), even with GlobeMap's pointerdown already calling
+// A real touchscreen tap reliably produces a trailing `click` 70-77ms after
+// it opens this sheet (confirmed via an on-device debug-log capture,
+// PROGRESS.md), even with GlobeMap's pointerdown already calling
 // preventDefault() — whatever the browser mechanism is, it isn't something
-// this app's own pointer handling controls. No real, deliberate "tap
-// outside to dismiss" happens that fast, so the backdrop just refuses to
-// honour a click this soon after opening — targets the measured symptom
-// directly rather than chasing the exact browser-internal cause.
-const SPURIOUS_BACKDROP_CLICK_GUARD_MS = 300
+// this app's own pointer handling controls. Where that trailing click lands
+// depends on where the sheet's panel ends up relative to the original tap:
+// usually the backdrop, but at some scroll/zoom positions it lands on the
+// panel itself instead — e.g. on the date field, silently popping open the
+// native date picker right after the sheet opens. No real, deliberate
+// interaction with the sheet happens that fast, so both the backdrop and the
+// panel's own content refuse to honour a click this soon after opening —
+// targets the measured symptom directly rather than chasing the exact
+// browser-internal cause.
+const SPURIOUS_TRAILING_CLICK_GUARD_MS = 300
 
 function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void }) {
   const openedAtRef = useRef(0)
@@ -152,9 +157,24 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     }
   }
 
+  function withinTrailingClickGuard() {
+    return performance.now() - openedAtRef.current < SPURIOUS_TRAILING_CLICK_GUARD_MS
+  }
+
   function onBackdropClick() {
-    if (performance.now() - openedAtRef.current < SPURIOUS_BACKDROP_CLICK_GUARD_MS) return
+    if (withinTrailingClickGuard()) return
     onClose()
+  }
+
+  // Capture-phase: runs before the click reaches whatever's actually under
+  // it (the date field, a status button, ...), so swallowing it here stops
+  // that element's own onClick — e.g. DateField's showPicker() — from ever
+  // firing, not just from bubbling further.
+  function onPanelClickCapture(e: React.MouseEvent) {
+    if (withinTrailingClickGuard()) {
+      e.stopPropagation()
+      e.preventDefault()
+    }
   }
 
   return (
@@ -165,6 +185,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         aria-modal="true"
         aria-label={info?.name ?? 'Place'}
         onClick={(e) => e.stopPropagation()}
+        onClickCapture={onPanelClickCapture}
       >
         <div className="place-sheet__handle" aria-hidden="true" />
         <header className="place-sheet__header">
