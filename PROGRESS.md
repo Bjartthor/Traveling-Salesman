@@ -4646,43 +4646,74 @@ stayed open. That is exactly "lower parts work, higher parts don't, and dragging
 it work" — the *position* was real, but it was about where the tap landed relative to the sheet's own
 layout, not about anything the globe's projection or hit-testing was doing.
 
-### What was built
+### What was built (round 1 — necessary but not sufficient)
 
 - **[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s `onPointerDown`** now calls
   `e.preventDefault()` first thing — the standard, spec-documented way to opt an element out of the
   browser's touch-to-mouse-event compatibility synthesis entirely, same as calling it on `touchstart`
-  would. No trailing click means nothing left over to land on a newly-opened sheet's backdrop.
+  would. Left in place (still correct practice for a canvas-driven custom gesture handler), but see
+  below — on the user's actual phone, this alone did not stop the trailing click.
 - Not applied to `WorldMap.tsx`: its country/subdivision selection is a plain `onClick` on each SVG
   path, not a custom pointerdown/pointerup scheme running ahead of the native click — there's no
   second, later event to race against the first, so this specific failure mode doesn't apply there.
-- Removed the temporary tap-logging added to chase this — it did its job (proved hit-testing wasn't
-  the problem) and the code comment introducing it promised removal once real numbers were in hand.
+
+Reproduced and confirmed the *mechanism* directly and independently of the map (opened
+`PlaceStatusSheet` via its store, dispatched a synthetic click above vs. on the panel — closed vs.
+stayed open, matching the report) — but real on-device confirmation of the *fix* was still
+outstanding, and this session's standing sandbox canvas-sizing limitation meant a live end-to-end
+retest wasn't possible here either.
+
+### Round 2 — the real device said otherwise
+
+Shipped with the `preventDefault()` fix live, the user tried again: "didn't quite work... there is a
+very short pop up (like 1 frame)". Progress (the close was no longer instant/invisible, it was now
+visibly happening a beat later), but not fixed. Rather than guess again, instrumented every path that
+can close the sheet — backdrop click, header close button, Escape key, a status getting picked, an
+entry getting removed — each tagged with a reason and a millisecond timestamp since open, logged to
+the same on-device debug log. A real capture across Germany and Poland came back completely
+unambiguous: sheets closed by `close-button` at 600-1100ms (the user deliberately looking, then
+dismissing — the regions that "worked") and sheets closed by **`backdrop-click` at 70-77ms, almost
+every single time**, timing far too consistent to be an accidental second tap. `preventDefault()` on
+`pointerdown` had not, in fact, stopped the browser from producing that click on this real device.
+
+Rather than keep chasing exactly which browser-internal mechanism was still producing it, fixed the
+measured symptom directly: no genuine, deliberate "tap outside to dismiss" happens in under 300ms of
+a sheet opening, so the backdrop's click handler now simply ignores anything faster than that.
+
+### What was built (round 2 — the actual fix)
+
+- **[`PlaceStatusSheet.tsx`](atlas/src/components/places/PlaceStatusSheet.tsx)**: a
+  `SPURIOUS_BACKDROP_CLICK_GUARD_MS = 300` guard on the backdrop's click handler — a click within
+  300ms of the sheet mounting (tracked via a plain `openedAtRef`, no state) is ignored; anything later
+  closes normally, same as always. Doesn't touch the close button, Escape, or the status/remove
+  actions — those are deliberate taps on small, specific targets, not a broad catch-all area a phantom
+  click could land on by chance, and the real capture never showed a phantom hitting them either.
+- Removed the round-1 and round-2 diagnostic logging once the fix was confirmed — both did their job
+  (proved hit-testing was never the bug, then pinned the exact timing/source of what was) and were
+  always meant to come back out again afterward.
 
 ### Verified
 
-- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, unchanged) all clean.
-- The failure mechanism itself was reproduced and re-verified fixed **live, directly, independent of
-  the map or this sandbox's canvas-sizing limitation**: opened `PlaceStatusSheet` via its store,
-  confirmed a synthetic click above the panel's top edge closes it (hits `.place-sheet-backdrop`)
-  and a synthetic click on the panel itself does not (hits `.place-sheet`, which stops propagation) —
-  the exact split the report described. This part of the investigation needed no topology simulation
-  or device data to confirm; it's pure DOM/event behavior, reproducible directly.
-- Not independently re-confirmed against a live canvas in this sandbox — the standing
-  `ResizeObserver`-never-sizes-the-canvas limitation recurred for the rest of this session (it had
-  cooperated only intermittently even earlier in the same session) — but the fix itself
-  (`preventDefault` suppressing mouse-event synthesis) is standard browser behavior, not something
-  that needs this project's own code to behave correctly, and the failure mechanism it targets was
-  independently confirmed as above.
-- Real, on-device confirmation (the actual point of this fix) is still with the user for the next
-  report.
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, unchanged) clean after both rounds.
+- Round 2's guard was verified live and directly against the real store/DOM (same technique as
+  round 1, still not dependent on this sandbox's canvas limitation): a synthetic click ~30ms after
+  open is ignored and the sheet stays open; a later click (past the guard) still closes it normally —
+  confirmed via the debug log showing `ignored early backdrop click` then, later, a genuine
+  `close reason=backdrop-click`.
+- **Confirmed fixed on the user's real device** (Android Chrome) after round 2 shipped — region
+  selection across multiple countries works normally. This is the one that needed a real phone to
+  actually confirm, and now has that confirmation.
 
 ### Left undone
 
-- Real on-device confirmation that regions across the whole screen now open reliably.
-- The same trailing-click mechanism means a stray click can also land on one of the sheet's *status
-  buttons* rather than just the backdrop, silently recording a status the user never chose to tap —
-  noticed as a side effect of reproducing the backdrop-close behavior, not itself reported yet. The
-  `preventDefault()` fix above should already prevent this too (no trailing click at all means
-  nothing left to land on a button either), but worth watching for a "status changed to something I
-  never picked" report specifically, which would point at a second, unrelated source of the same
-  class of stray click.
+- The exact browser-internal mechanism still producing that ~70-77ms trailing click, even past
+  `preventDefault()` on `pointerdown`, was never identified — the guard fixes the symptom
+  unconditionally rather than requiring that understanding, but if a similar phantom-click pattern
+  ever shows up somewhere `preventDefault()` was expected to be sufficient, this is a data point that
+  it isn't always, at least on Android Chrome.
+- The same class of stray click could in principle land on one of the sheet's status buttons instead
+  of the backdrop, silently recording a status the user never chose — flagged as a risk in round 1,
+  never actually observed in either round's real captures (every phantom in the data hit the backdrop
+  specifically), and the 300ms guard only protects the backdrop, not the status buttons. Worth
+  watching for a "status changed to something I didn't pick" report specifically; if one shows up, the
+  same guard technique applied to `pick()`/`remove()` would be the fix.

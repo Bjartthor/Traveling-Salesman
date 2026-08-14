@@ -7,7 +7,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import { logInfo } from '@/debug/log'
 import { settingsRepo } from '@/db/repo'
 import type { Entry, Status, Trip } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
@@ -35,44 +34,29 @@ interface SheetData {
   explanation: { status: Status; becauseName: string } | null
 }
 
-// A real on-device capture (see PROGRESS.md) pinned this down precisely:
-// opening the sheet is reliably followed by a `backdrop-click` close 70-77ms
-// later, every time, even with GlobeMap's pointerdown now calling
-// preventDefault() — whatever the browser is still doing on a real
-// touchscreen to produce that click, it isn't something this app's own
-// pointer handling turned out to control. A real, deliberate "tap outside to
-// dismiss" from a human takes far longer than that to happen at all, so
-// rather than keep chasing the exact browser-internal mechanism, the
-// backdrop itself now just refuses to honour a click this soon after
-// opening — directly targets the measured symptom regardless of its cause.
+// A real touchscreen tap reliably produces a `click` on this sheet's own
+// backdrop 70-77ms after it opens (confirmed via an on-device debug-log
+// capture, PROGRESS.md), even with GlobeMap's pointerdown already calling
+// preventDefault() — whatever the browser mechanism is, it isn't something
+// this app's own pointer handling controls. No real, deliberate "tap
+// outside to dismiss" happens that fast, so the backdrop just refuses to
+// honour a click this soon after opening — targets the measured symptom
+// directly rather than chasing the exact browser-internal cause.
 const SPURIOUS_BACKDROP_CLICK_GUARD_MS = 300
 
 function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void }) {
-  // Logging kept temporarily to confirm the guard below actually catches
-  // what real devices were hitting — remove once that's confirmed.
   const openedAtRef = useRef(0)
   useEffect(() => {
     openedAtRef.current = performance.now()
-    void logInfo('sheet: open', `${place.kind}:${place.refId}`)
-    return () => {
-      void logInfo('sheet: unmount', `${place.kind}:${place.refId} after ${Math.round(performance.now() - openedAtRef.current)}ms`)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once per SheetContent instance (already remounted via key on place change), not on every onClose identity change
   }, [])
-
-  function closeWithReason(reason: string) {
-    void logInfo('sheet: close', `${place.kind}:${place.refId} reason=${reason} at ${Math.round(performance.now() - openedAtRef.current)}ms`)
-    onClose()
-  }
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeWithReason('escape-key')
+      if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- closeWithReason is a fresh function each render but stable in behaviour; re-binding every render is unnecessary churn for a temporary diagnostic
-  }, [])
+  }, [onClose])
 
   const [info, setInfo] = useState<PlaceInfo | null>(null)
   useEffect(() => {
@@ -148,7 +132,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         status,
         ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
       })
-      closeWithReason('status-picked:' + status)
+      onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setPending(false)
@@ -161,7 +145,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     setPending(true)
     try {
       await removePlaceEntry(data.entry.id)
-      closeWithReason('removed')
+      onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setPending(false)
@@ -169,12 +153,8 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   }
 
   function onBackdropClick() {
-    const ms = performance.now() - openedAtRef.current
-    if (ms < SPURIOUS_BACKDROP_CLICK_GUARD_MS) {
-      void logInfo('sheet: ignored early backdrop click', `${place.kind}:${place.refId} at ${Math.round(ms)}ms`)
-      return
-    }
-    closeWithReason('backdrop-click')
+    if (performance.now() - openedAtRef.current < SPURIOUS_BACKDROP_CLICK_GUARD_MS) return
+    onClose()
   }
 
   return (
@@ -197,12 +177,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
               <p className="place-sheet__breadcrumb">{info.breadcrumb.join(', ')}</p>
             )}
           </div>
-          <button
-            type="button"
-            className="place-sheet__close"
-            onClick={() => closeWithReason('close-button')}
-            aria-label="Close"
-          >
+          <button type="button" className="place-sheet__close" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
