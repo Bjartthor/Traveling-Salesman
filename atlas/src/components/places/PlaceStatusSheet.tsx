@@ -35,12 +35,21 @@ interface SheetData {
   explanation: { status: Status; becauseName: string } | null
 }
 
+// A real on-device capture (see PROGRESS.md) pinned this down precisely:
+// opening the sheet is reliably followed by a `backdrop-click` close 70-77ms
+// later, every time, even with GlobeMap's pointerdown now calling
+// preventDefault() — whatever the browser is still doing on a real
+// touchscreen to produce that click, it isn't something this app's own
+// pointer handling turned out to control. A real, deliberate "tap outside to
+// dismiss" from a human takes far longer than that to happen at all, so
+// rather than keep chasing the exact browser-internal mechanism, the
+// backdrop itself now just refuses to honour a click this soon after
+// opening — directly targets the measured symptom regardless of its cause.
+const SPURIOUS_BACKDROP_CLICK_GUARD_MS = 300
+
 function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void }) {
-  // Temporary: chasing a real-device report of the sheet closing itself
-  // within ~1 frame of opening, after the trailing-click fix already ruled
-  // out the backdrop as the (sole) cause — logs exactly when this instance
-  // mounts/unmounts and, tagged by call site, why onClose ever actually
-  // fires. Remove once a real capture is in hand — see PROGRESS.md.
+  // Logging kept temporarily to confirm the guard below actually catches
+  // what real devices were hitting — remove once that's confirmed.
   const openedAtRef = useRef(0)
   useEffect(() => {
     openedAtRef.current = performance.now()
@@ -159,8 +168,17 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     }
   }
 
+  function onBackdropClick() {
+    const ms = performance.now() - openedAtRef.current
+    if (ms < SPURIOUS_BACKDROP_CLICK_GUARD_MS) {
+      void logInfo('sheet: ignored early backdrop click', `${place.kind}:${place.refId} at ${Math.round(ms)}ms`)
+      return
+    }
+    closeWithReason('backdrop-click')
+  }
+
   return (
-    <div className="place-sheet-backdrop" onClick={() => closeWithReason('backdrop-click')}>
+    <div className="place-sheet-backdrop" onClick={onBackdropClick}>
       <div
         className="place-sheet"
         role="dialog"
