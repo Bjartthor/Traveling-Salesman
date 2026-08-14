@@ -3,7 +3,7 @@ import { geoOrthographic, geoPath, type GeoProjection, type GeoSphere } from 'd3
 import type { Status } from '@/db/types'
 import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
-import { logError } from '@/debug/log'
+import { logError, logInfo } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { STATUS_ORDER, colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
@@ -679,6 +679,40 @@ export function GlobeMap({
       const pixel = hitCtx.getImageData(Math.round(localX), Math.round(localY), 1, 1).data
       const pickId = (pixel[0]! << 16) | (pixel[1]! << 8) | pixel[2]!
       const pick = pickId > 0 ? picks[pickId - 1] : undefined
+
+      // Temporary: pin down a reported "taps near the top of the screen do
+      // nothing on my phone" bug that never reproduced against this
+      // project's usual real-topology simulation or in the preview sandbox.
+      // Remove once a real device's numbers are in hand — see PROGRESS.md.
+      void logInfo(
+        'globe: tap',
+        JSON.stringify({
+          clientX,
+          clientY,
+          rectTop: rect.top,
+          rectLeft: rect.left,
+          rectWidth: rect.width,
+          rectHeight: rect.height,
+          localX,
+          localY,
+          canvasClientWidth: canvas!.clientWidth,
+          canvasClientHeight: canvas!.clientHeight,
+          canvasBackingWidth: canvas!.width,
+          canvasBackingHeight: canvas!.height,
+          dpr: window.devicePixelRatio,
+          projTranslate: proj.translate(),
+          projScale: proj.scale(),
+          zoom: zoomRef.current,
+          admin1Count: admin1Features.length,
+          selectedCode,
+          pick: pick ?? null,
+          winInnerHeight: window.innerHeight,
+          docClientHeight: document.documentElement.clientHeight,
+          visualViewportHeight: window.visualViewport?.height ?? null,
+          visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+          scrollY: window.scrollY,
+        }),
+      )
 
       // Once zoomed in past the admin-1 threshold with a country already
       // selected, a tap resolving back to that country's own body (rather
