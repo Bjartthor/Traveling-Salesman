@@ -6,6 +6,7 @@ import type { Status } from '@/db/types'
 import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
 import { logError } from '@/debug/log'
+import { setRenderVitals, resetRenderVitals } from '@/debug/renderVitals'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
@@ -350,6 +351,26 @@ export function WorldMap({
   // tone every unvisited area already uses — a gap then reads as an
   // unremarkable seam instead of a phantom status.
   const showingAdmin1 = admin1Paths.length > 0
+
+  // Feed the non-heap watch (@/debug/renderVitals): unlike the globe's single
+  // canvas, the flat map's memory cost is DOM — every country, subdivision and
+  // city marker is a live SVG node, and that node count (not the JS heap) is
+  // what grows here as you drill in. canvas dims cleared so a stale globe
+  // reading can't ride along after a view switch.
+  useEffect(() => {
+    setRenderVitals({
+      view: 'flat',
+      dpr: window.devicePixelRatio || 1,
+      canvasW: undefined,
+      canvasH: undefined,
+      svgPaths: orderedCountryPaths.length + admin1Paths.length + (countryDetailPath ? 1 : 0),
+      cities: cityMarkers.length,
+      zoom: transform.k,
+    })
+  }, [orderedCountryPaths.length, admin1Paths.length, countryDetailPath, cityMarkers.length, transform.k])
+
+  // Clear vitals on unmount so a later off-map breadcrumb doesn't report stale geometry.
+  useEffect(() => () => resetRenderVitals(), [])
 
   if (loadError) {
     return (

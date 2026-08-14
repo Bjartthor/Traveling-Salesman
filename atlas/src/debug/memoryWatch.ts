@@ -15,9 +15,17 @@
 
 import { logError, logInfo } from '@/debug/log'
 import { heapSummary, readHeap } from '@/debug/memory'
+import { getRenderVitals, renderVitalsSummary } from '@/debug/renderVitals'
 
 const SAMPLE_INTERVAL_MS = 5_000
 const BASELINE_DELAY_MS = 4_000
+
+// Zoom is uncapped in both maps (WorldMap's scaleExtent([1, Infinity]),
+// GlobeMap's MAX_ZOOM = Infinity), and deep zoom is a leading suspect for the
+// non-heap crashes the heap thresholds below can't see. So flag it the same
+// edge-triggered way: crossing a mark upward logs once; zoom must fall back
+// below it (leaving the map re-arms it, resetting to 1x) before it re-logs.
+const ZOOM_MARKS = [8, 32, 128, 512] as const
 
 // Fractions of jsHeapSizeLimit worth flagging. Crossing one upward logs once;
 // pressure must fall back below a mark before crossing it again re-logs, so
@@ -47,11 +55,14 @@ export function installMemoryWatch(): void {
 
   let prevPressure = 0
   let lastLoggedUsed = Infinity // low-water mark the delta trigger measures a climb from
+  let prevZoom = 0
 
   const sample = (): void => {
     const h = readHeap()
     if (!h) return // API unavailable — nothing to watch
-    const summary = heapSummary()
+    // Heap and geometry side by side: the crash can come from either budget,
+    // and the heap number alone kept looking innocent right up to the crash.
+    const summary = [heapSummary(), renderVitalsSummary()].filter(Boolean).join(' · ')
     let logged = false
     for (const t of THRESHOLDS) {
       if (prevPressure < t && h.pressure >= t) {
@@ -66,6 +77,15 @@ export function installMemoryWatch(): void {
     }
     if (logged) lastLoggedUsed = h.used
     prevPressure = h.pressure
+
+    // Non-heap watch: leave a mark whenever the map zooms deeper than before,
+    // so a crash that correlates with deep zoom shows how far it got even
+    // though the heap never budged.
+    const zoom = getRenderVitals().zoom
+    for (const m of ZOOM_MARKS) {
+      if (prevZoom < m && zoom >= m) void logInfo(`render: zoom past ${m}x`, renderVitalsSummary())
+    }
+    prevZoom = zoom
   }
 
   // One baseline sample once the app has settled, so the log always carries a

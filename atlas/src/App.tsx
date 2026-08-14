@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { HashRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { logInfo } from '@/debug/log'
-import { heapSummary } from '@/debug/memory'
+import { breadcrumbDetail } from '@/debug/breadcrumb'
 import { GeoGate } from '@/geo/GeoGate'
 import { BottomNav } from '@/components/nav/BottomNav'
 import { MapScreen } from '@/screens/MapScreen'
@@ -20,7 +20,7 @@ import './App.css'
 function RouteLogger() {
   const location = useLocation()
   useEffect(() => {
-    void logInfo(`nav: ${location.pathname}`, heapSummary() || undefined)
+    void logInfo(`nav: ${location.pathname}`, breadcrumbDetail())
   }, [location.pathname])
   return null
 }

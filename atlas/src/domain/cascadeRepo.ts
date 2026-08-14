@@ -9,7 +9,7 @@
 import { db } from '@/db/schema'
 import { entriesRepo } from '@/db/repo'
 import { logError, logInfo } from '@/debug/log'
-import { heapSummary } from '@/debug/memory'
+import { breadcrumbDetail } from '@/debug/breadcrumb'
 import {
   rebuildAllDerived,
   removeEntry,
@@ -128,7 +128,7 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
  * the ancestors this implies) to it — see @/domain/tripRepo.autoAttachToActiveTrip.
  */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
-  void logInfo(`place: set ${request.kind}/${request.refId} → ${request.status}`, heapSummary() || undefined)
+  void logInfo(`place: set ${request.kind}/${request.refId} → ${request.status}`, breadcrumbDetail())
   await db.transaction('rw', db.entries, db.cities, db.syncState, db.trips, db.tripEntries, async () => {
     const state = await loadCascadeState(request.kind === 'city' ? [request.refId] : [])
     await applyMutations(setStatus(state, request))
@@ -139,7 +139,7 @@ export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
 
 /** Remove one entry and settle its ancestors (§5.5). */
 export async function removePlaceEntry(entryId: string): Promise<void> {
-  void logInfo(`place: remove ${entryId}`, heapSummary() || undefined)
+  void logInfo(`place: remove ${entryId}`, breadcrumbDetail())
   await db.transaction('rw', db.entries, db.cities, db.syncState, async () => {
     const state = await loadCascadeState()
     await applyMutations(removeEntry(state, entryId))

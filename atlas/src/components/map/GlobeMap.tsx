@@ -3,7 +3,8 @@ import { geoOrthographic, geoPath, type GeoProjection, type GeoSphere } from 'd3
 import type { Status } from '@/db/types'
 import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
-import { logError } from '@/debug/log'
+import { logError, logInfo } from '@/debug/log'
+import { setRenderVitals, resetRenderVitals, renderVitalsSummary } from '@/debug/renderVitals'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { STATUS_ORDER, colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
@@ -328,6 +329,12 @@ export function GlobeMap({
       project: (lon, lat) => (isFrontFacing(rotation, [lon, lat]) ? proj([lon, lat]) : null),
     })
     cityMarkersRef.current = markers
+
+    // Feed the non-heap watch (@/debug/renderVitals): the canvas backing store
+    // is device-pixel sized (width/height set in the sizing effect), so on a
+    // high-DPR phone it's a real slab of GPU memory the JS heap gauge never
+    // sees — exactly the kind of thing a low-heap "Aw snap" is made of.
+    setRenderVitals({ view: 'globe', dpr, canvasW: canvas.width, canvasH: canvas.height, svgPaths: undefined, cities: markers.length, zoom: zoomRef.current })
 
     if (markers.length > 0) {
       ctx.textAlign = 'left'
@@ -807,6 +814,36 @@ export function GlobeMap({
   useEffect(() => {
     draw()
   }, [countryStatus, subdivisionStatus, cityStatus, selectedCode, draw])
+
+  // --- canvas context loss: the GPU can drop a 2D context out from under us
+  // (driver reset, the compositor reclaiming memory under pressure) — the
+  // leading edge of the very GPU-side "Aw snap" this instrumentation is
+  // chasing, and, unlike the crash itself, a catchable event. preventDefault()
+  // opts into restoration; when it comes back the memoised palette is stale
+  // (re-resolved lazily) and the canvas is blank until we repaint. ---
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const onLost = (e: Event) => {
+      e.preventDefault()
+      void logError('globe: canvas context lost', renderVitalsSummary() || undefined)
+    }
+    const onRestored = () => {
+      paletteRef.current = null
+      void logInfo('globe: canvas context restored')
+      draw()
+    }
+    canvas.addEventListener('contextlost', onLost)
+    canvas.addEventListener('contextrestored', onRestored)
+    return () => {
+      canvas.removeEventListener('contextlost', onLost)
+      canvas.removeEventListener('contextrestored', onRestored)
+    }
+  }, [draw])
+
+  // Clear the shared render vitals when the globe unmounts, so a later
+  // off-map breadcrumb doesn't report a stale canvas/zoom (see resetRenderVitals).
+  useEffect(() => () => resetRenderVitals(), [])
 
   if (loadError) {
     return (
