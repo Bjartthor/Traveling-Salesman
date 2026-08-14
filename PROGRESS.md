@@ -4758,3 +4758,104 @@ click from ever reaching the backdrop's guard once it lands anywhere inside the 
 
 - Not yet re-confirmed on a real device (every prior round in this bug family needed that to be sure);
   worth asking for confirmation the same way as the backdrop fix.
+
+## The "Aw snap!" came back at LOW heap — instrumented the renderer's blind spot (done, deployed)
+
+The user reported the "Aw snap!" crash still happens (rarer than before) and shared two device debug
+logs. The logs disprove that this is the same bug [`868a531`](atlas/src/sync/merge.ts) fixed: that
+one was a JS-heap runaway (82MB→1.4GB); **these logs show heap never climbs** — it peaks ~120MB
+used / ~180MB total against a **2989MB** limit (~6% pressure), and the log tail is a bulk
+`place: remove` spree sitting at ~46MB right where the ring buffer ends. The heap watchdog
+([`memoryWatch.ts`](atlas/src/debug/memoryWatch.ts)) never logged `memory: climbing` or a pressure
+crossing, so the 868a531 fix is holding. This is a **different, still-open crash**.
+
+**Why heap can be low and the tab still dies:** `performance.memory.jsHeapSizeLimit` (2989MB on the
+phone) is V8's heap ceiling, not the OS/renderer RSS ceiling. On a phone Chrome reaps the renderer
+for *total* process memory — JS heap + GPU/compositor + canvas backing stores + SVG DOM + decoded
+images — far below 2989MB; or the GPU process itself crashes (also "Aw snap"). All of that is
+invisible to `performance.memory`, which only reads the JS heap. The old instrumentation was
+structurally blind to this class, which is exactly why a heap-aimed fix didn't stop it. (Ruled out
+an unbounded-DOM explosion: city markers are capped at `MAX_CITY_MARKERS = 150` in
+[`cityLayer.ts`](atlas/src/components/map/cityLayer.ts); country/admin-1 paths are bounded. Both maps
+allow **uncapped zoom** — `scaleExtent([1, Infinity])` / `MAX_ZOOM = Infinity` — the prime suspect.)
+
+### What was built (commit `4aa4de5`, pushed to main / deployed)
+
+Three signals that can see the non-heap crash:
+
+- **[`debug/crashSentinel.ts`](atlas/src/debug/crashSentinel.ts)** — a synchronous `localStorage`
+  record (`atlas:crashSentinel`) marked `phase: 'active'` while foreground, flipped to `'ended'` on
+  every orderly teardown (`visibilitychange`→hidden, `pagehide`). Only an abrupt renderer death
+  leaves it `'active'`, so the **next boot** reads it and, if it was still `'active'`, appends a
+  crash marker to the durable log. Installed in [`main.tsx`](atlas/src/main.tsx). Re-stamps heap +
+  geometry every 5s while visible, so the record reflects state ≤5s before death.
+- **[`debug/renderVitals.ts`](atlas/src/debug/renderVitals.ts)** — a global snapshot of the non-heap
+  geometry: `view` (flat/globe), `dpr`, canvas `W×H` (globe), `svgPaths` (flat), `cities`, `zoom`.
+  Fed by `GlobeMap.draw()` and a `WorldMap` effect; cleared on unmount. `renderVitalsSummary()` is
+  attached to the `place:`/`nav:`/`city:` breadcrumbs via
+  [`debug/breadcrumb.ts`](atlas/src/debug/breadcrumb.ts) `breadcrumbDetail()`.
+- **Watchdog + canvas signals** — `memoryWatch.ts` now appends the geometry to its heap breadcrumbs
+  and flags `render: zoom past 8/32/128/512x` (edge-triggered). `GlobeMap` logs
+  `globe: canvas context lost` / `restored` (the catchable leading edge of a GPU-side death; also
+  repaints on restore).
+
+**Verified:** live in-browser a simulated foreground crash was detected on reboot with full
+heap+geometry context; `tsc -b`, `eslint`, `vitest` (**202/202**) all green. Deployed via the normal
+push-to-main GitHub Actions flow.
+
+### How the NEXT session diagnoses the output (the whole point of this work)
+
+The user will paste the **Settings → Debug log** (durable IndexedDB `debugLog`, capped 300 entries,
+oldest-trimmed — so a long session shows only the tail). Read it like this:
+
+1. **Confirm it's a crash, not a reload.** Look for
+   `ERROR crash: previous session ended uncleanly (foreground)`. If present, the previous session
+   died abruptly (an Aw-snap / tab kill), *not* a normal close/reload — the sentinel only leaves
+   `'active'` when no teardown ran. If the log just *stops* with **no** crash marker and the next
+   lines are a fresh boot (`memory: baseline`, `nav: /` at ~4MB heap), that was most likely a clean
+   reload or a session where localStorage was unavailable (private mode) — not a confirmed crash.
+2. **Read the crash marker's detail line.** Format:
+   `ran ≥Xm · last heap <heapSummary> · on screen <renderVitals> · last checkpoint Ns before this boot · unclean exits so far: N`.
+   - `last heap` is the JS heap ~≤5s before death. **If it's low (single-digit %), the crash is
+     non-heap — do NOT chase the heap.** If it's high / near the limit, reconsider a heap cause.
+   - `on screen` is the geometry ~≤5s before death. This is the key new datum:
+     - `canvas W×H` (globe) — device-pixel backing store; on a dpr-3 phone a big canvas is real GPU
+       memory. Large `W×H` + low heap ⇒ suspect GPU/canvas.
+     - `N paths` (flat) — live SVG node cost; a high count is DOM/compositor memory.
+     - `zoom Nx` — **uncapped**; deep zoom is the leading suspect. Cross-check against any
+       `render: zoom past Nx` breadcrumbs.
+   - `unclean exits so far` — how often it's happening (survives across sessions).
+3. **Read the breadcrumbs immediately *before* the marker** (they belong to the crashed session; the
+   marker is written on the *next* boot so it sorts right after them). The `place:`/`nav:`/`city:`
+   lines now carry `heap … · <view> · dpr … · … · zoom …x` — so you can see what the user was doing
+   and the geometry at each step leading in.
+4. **Look for a direct GPU signal:** `globe: canvas context lost` immediately before the stop ⇒ GPU
+   context loss is the mechanism (not JS memory at all).
+
+**Reaching a conclusion / candidate fixes (only after a real capture confirms the correlation):**
+- Crashes correlate with **deep zoom** ⇒ cap it: give `MAX_ZOOM` / `scaleExtent` a finite ceiling.
+- Correlate with **large globe canvas** ⇒ cap the canvas backing store (clamp effective `dpr`, e.g.
+  `min(devicePixelRatio, 2)` in `GlobeMap`'s sizing effect).
+- Correlate with **high flat-map path/marker count** ⇒ move the flat city layer to canvas (as the
+  globe already is), or thin the layer sooner.
+- `globe: canvas context lost` recurring ⇒ reduce per-frame canvas work / size; restore path already
+  repaints.
+
+**Constraints to keep in mind:** total process RSS still can't be read directly from JS —
+`performance.measureUserAgentSpecificMemory()` needs `crossOriginIsolated` (COOP/COEP), which GitHub
+Pages can't set via headers and which would fight the cross-origin Google Fonts; not attempted. So
+the geometry proxies above are the signal. Also: the very first `nav: /` after a fresh map mount can
+be heap-only (RouteLogger's effect races the map's vitals effect on first paint) — not a bug, just
+don't read the absence of geometry on that one line as meaningful.
+
+### Left undone / important caveats
+
+- **Needs a real-device capture on the NEW build to actually diagnose.** The PWA is
+  `registerType: 'prompt'` — a deploy does *not* auto-apply on the phone; the user must accept the
+  "Update available" banner (or fully reopen) before this instrumentation is live. A log captured
+  before that update is the *old* build and won't have the sentinel. (See the earlier
+  "Atlas PWA manual update" note in memory.)
+- **No fix has been made yet** — this session only made the crash *diagnosable*. The fix waits on a
+  real capture pointing at the culprit geometry.
+- **Single-window assumption:** two simultaneous tabs share the sentinel key and could log a spurious
+  crash. Fine for the standalone phone PWA; a desktop-dev edge case only.
