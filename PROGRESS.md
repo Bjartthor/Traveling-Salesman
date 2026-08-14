@@ -4508,6 +4508,7 @@ Not confirmed on a real device with an actual scroll wheel or pinch gesture, for
 `ZOOM_TARGET_DRIFT_PX` (32px) is a reasoned-but-picked constant, same "easy to retune" status as
 `CLICK_DISTANCE`/`CITY_HIT_RADIUS` — worth a look if a real trackpad's pinch-midpoint jitter turns
 out to exceed it (would cause spurious re-targeting mid-gesture) or if it feels too sticky (targeting
+a deliberately different nearby spot doesn't re-lock quickly enough).
 
 ## Zoomed-in region taps silently deselecting the whole country on a real phone (done)
 
@@ -4609,4 +4610,79 @@ during that window is now a harmless no-op instead of a silent deselect, but it 
 no feedback that waiting a moment (rather than tapping again right away) is what's needed. Worth a
 follow-up if premature taps turn out to be common enough in practice to be worth an explicit
 loading state.
-a deliberately different nearby spot doesn't re-lock quickly enough).
+
+## A real touchscreen's own trailing click was closing the place sheet a tap had just opened (done)
+
+The deselect-race fix above didn't fully close the report — back on a real phone (Android Chrome),
+selecting a country's regions was still failing, but differently than any theory so far: "only
+bavaria, baden-württemberg, rheinland-pfalz, hesse, thuringia (lower parts) and saxony (lower parts)
+opened, the regions north of them didn't" — and separately, dragging the globe so a failing spot
+moved lower on the screen made it work. A real, clean, position-dependent split, reported after
+confirming the update banner had been accepted — not a stale build.
+
+Extensive same-session testing (full-vertical-range sweeps, near-centre grids, a two-pointer pinch
+simulation, all against real topology through a live dispatched-`PointerEvent` harness) had already
+failed to find any such correlation. Rather than keep guessing, shipped a build that logged every
+tap's full numbers — screen/local coordinates, canvas CSS vs backing-store size, the projection's
+own translate/scale, `visualViewport` vs `innerHeight` — to Atlas's existing on-device debug log
+(the same one from the OOM investigation), and asked for a real capture. It came back decisive but
+not in the expected shape: **every single logged tap resolved to the correct pick** — Niedersachsen
+and Nordrhein-Westfalen (both "regions north" the user said hadn't opened) show up in the log as
+correctly identified, `onSelectSubdivisionRef` and all. Hit-testing was never the bug, on a real
+device or otherwise — something downstream of a correct pick was undoing it.
+
+**Root cause**: real touchscreens synthesize a trailing compatibility `mousedown`/`mouseup`/`click`
+sequence after a tap, dispatched to *whatever element the browser hit-tests at that point when the
+synthesis fires* — which, by then, is not necessarily what was there when the tap started. GlobeMap
+never called `preventDefault()` on its pointer events, so this fired after every tap. A tap that
+correctly opened `PlaceStatusSheet` for a subdivision (via `onPointerUp` → `handleTap`, synchronously)
+was then immediately re-hit by that trailing click — landing on `.place-sheet-backdrop`
+(`onClick={onClose}`) if the tap's screen position was above the sheet panel's own top edge, since
+the panel only covers the bottom portion of the screen and stops propagation for anything landing on
+it. Confirmed directly, independent of the map entirely: opened the sheet via the store, then
+dispatched a real `click` (via `document.elementFromPoint`, mirroring how the browser retargets the
+synthesized event) at a point above the panel — sheet closed; at a point on the panel itself — sheet
+stayed open. That is exactly "lower parts work, higher parts don't, and dragging a spot lower makes
+it work" — the *position* was real, but it was about where the tap landed relative to the sheet's own
+layout, not about anything the globe's projection or hit-testing was doing.
+
+### What was built
+
+- **[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s `onPointerDown`** now calls
+  `e.preventDefault()` first thing — the standard, spec-documented way to opt an element out of the
+  browser's touch-to-mouse-event compatibility synthesis entirely, same as calling it on `touchstart`
+  would. No trailing click means nothing left over to land on a newly-opened sheet's backdrop.
+- Not applied to `WorldMap.tsx`: its country/subdivision selection is a plain `onClick` on each SVG
+  path, not a custom pointerdown/pointerup scheme running ahead of the native click — there's no
+  second, later event to race against the first, so this specific failure mode doesn't apply there.
+- Removed the temporary tap-logging added to chase this — it did its job (proved hit-testing wasn't
+  the problem) and the code comment introducing it promised removal once real numbers were in hand.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, unchanged) all clean.
+- The failure mechanism itself was reproduced and re-verified fixed **live, directly, independent of
+  the map or this sandbox's canvas-sizing limitation**: opened `PlaceStatusSheet` via its store,
+  confirmed a synthetic click above the panel's top edge closes it (hits `.place-sheet-backdrop`)
+  and a synthetic click on the panel itself does not (hits `.place-sheet`, which stops propagation) —
+  the exact split the report described. This part of the investigation needed no topology simulation
+  or device data to confirm; it's pure DOM/event behavior, reproducible directly.
+- Not independently re-confirmed against a live canvas in this sandbox — the standing
+  `ResizeObserver`-never-sizes-the-canvas limitation recurred for the rest of this session (it had
+  cooperated only intermittently even earlier in the same session) — but the fix itself
+  (`preventDefault` suppressing mouse-event synthesis) is standard browser behavior, not something
+  that needs this project's own code to behave correctly, and the failure mechanism it targets was
+  independently confirmed as above.
+- Real, on-device confirmation (the actual point of this fix) is still with the user for the next
+  report.
+
+### Left undone
+
+- Real on-device confirmation that regions across the whole screen now open reliably.
+- The same trailing-click mechanism means a stray click can also land on one of the sheet's *status
+  buttons* rather than just the backdrop, silently recording a status the user never chose to tap —
+  noticed as a side effect of reproducing the backdrop-close behavior, not itself reported yet. The
+  `preventDefault()` fix above should already prevent this too (no trailing click at all means
+  nothing left to land on a button either), but worth watching for a "status changed to something I
+  never picked" report specifically, which would point at a second, unrelated source of the same
+  class of stray click.

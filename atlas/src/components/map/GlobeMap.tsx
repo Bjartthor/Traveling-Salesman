@@ -3,7 +3,7 @@ import { geoOrthographic, geoPath, type GeoProjection, type GeoSphere } from 'd3
 import type { Status } from '@/db/types'
 import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
-import { logError, logInfo } from '@/debug/log'
+import { logError } from '@/debug/log'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { STATUS_ORDER, colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
@@ -680,40 +680,6 @@ export function GlobeMap({
       const pickId = (pixel[0]! << 16) | (pixel[1]! << 8) | pixel[2]!
       const pick = pickId > 0 ? picks[pickId - 1] : undefined
 
-      // Temporary: pin down a reported "taps near the top of the screen do
-      // nothing on my phone" bug that never reproduced against this
-      // project's usual real-topology simulation or in the preview sandbox.
-      // Remove once a real device's numbers are in hand — see PROGRESS.md.
-      void logInfo(
-        'globe: tap',
-        JSON.stringify({
-          clientX,
-          clientY,
-          rectTop: rect.top,
-          rectLeft: rect.left,
-          rectWidth: rect.width,
-          rectHeight: rect.height,
-          localX,
-          localY,
-          canvasClientWidth: canvas!.clientWidth,
-          canvasClientHeight: canvas!.clientHeight,
-          canvasBackingWidth: canvas!.width,
-          canvasBackingHeight: canvas!.height,
-          dpr: window.devicePixelRatio,
-          projTranslate: proj.translate(),
-          projScale: proj.scale(),
-          zoom: zoomRef.current,
-          admin1Count: admin1Features.length,
-          selectedCode,
-          pick: pick ?? null,
-          winInnerHeight: window.innerHeight,
-          docClientHeight: document.documentElement.clientHeight,
-          visualViewportHeight: window.visualViewport?.height ?? null,
-          visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
-          scrollY: window.scrollY,
-        }),
-      )
-
       // Once zoomed in past the admin-1 threshold with a country already
       // selected, a tap resolving back to that country's own body (rather
       // than a specific subdivision) almost never means "I want to back out
@@ -737,6 +703,23 @@ export function GlobeMap({
     }
 
     function onPointerDown(e: PointerEvent) {
+      // Suppresses the browser's own compatibility mousedown/mouseup/click
+      // synthesis that follows a real touch tap. Confirmed live (not assumed)
+      // this was firing *after* handleTap already ran on pointerup: a tap
+      // that correctly opened the place-status sheet for a subdivision was
+      // then immediately closed again by that trailing click, landing on
+      // whatever the DOM now had at that same screen point — the sheet's own
+      // full-screen backdrop, since PlaceStatusSheet's panel only covers the
+      // bottom portion of the screen and the backdrop's onClick handler
+      // closes it. A tap low enough on screen to land on the panel itself
+      // (which stops propagation) looked unaffected; higher up, where only
+      // the backdrop is there to catch it, every tap silently closed the
+      // sheet it had just opened — read as "region selection doesn't work up
+      // here" even though the tap itself, and the pick it made, were both
+      // already correct (confirmed against a real device's own debug log).
+      // preventDefault on pointerdown is the standard way to opt an element
+      // fully out of this synthesis, same as calling it on touchstart would.
+      e.preventDefault()
       canvas!.setPointerCapture(e.pointerId)
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (pointers.size === 1) {
