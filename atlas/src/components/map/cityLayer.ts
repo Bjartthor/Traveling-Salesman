@@ -30,7 +30,7 @@ import type { MapCity } from '@/geo/mapCities'
 // name/lat/lon, even though most of its rows will never be shown. Once
 // loaded, a logged city appears as soon as it's on screen; there's no
 // population-driven reason left to delay it further.
-export const CITY_MIN_SCALE = 2
+export const CITY_MIN_SCALE = 1.5
 export const MAX_CITY_MARKERS = 150
 export const MAX_CITY_LABELS = 60
 
