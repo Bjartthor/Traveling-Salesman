@@ -4,9 +4,10 @@
 // list of places (task 6) or correcting one on the fly never takes more than
 // one tap plus an optional date.
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
+import { logInfo } from '@/debug/log'
 import { settingsRepo } from '@/db/repo'
 import type { Entry, Status, Trip } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
@@ -35,13 +36,34 @@ interface SheetData {
 }
 
 function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void }) {
+  // Temporary: chasing a real-device report of the sheet closing itself
+  // within ~1 frame of opening, after the trailing-click fix already ruled
+  // out the backdrop as the (sole) cause — logs exactly when this instance
+  // mounts/unmounts and, tagged by call site, why onClose ever actually
+  // fires. Remove once a real capture is in hand — see PROGRESS.md.
+  const openedAtRef = useRef(0)
+  useEffect(() => {
+    openedAtRef.current = performance.now()
+    void logInfo('sheet: open', `${place.kind}:${place.refId}`)
+    return () => {
+      void logInfo('sheet: unmount', `${place.kind}:${place.refId} after ${Math.round(performance.now() - openedAtRef.current)}ms`)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once per SheetContent instance (already remounted via key on place change), not on every onClose identity change
+  }, [])
+
+  function closeWithReason(reason: string) {
+    void logInfo('sheet: close', `${place.kind}:${place.refId} reason=${reason} at ${Math.round(performance.now() - openedAtRef.current)}ms`)
+    onClose()
+  }
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') closeWithReason('escape-key')
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- closeWithReason is a fresh function each render but stable in behaviour; re-binding every render is unnecessary churn for a temporary diagnostic
+  }, [])
 
   const [info, setInfo] = useState<PlaceInfo | null>(null)
   useEffect(() => {
@@ -117,7 +139,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         status,
         ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
       })
-      onClose()
+      closeWithReason('status-picked:' + status)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setPending(false)
@@ -130,7 +152,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     setPending(true)
     try {
       await removePlaceEntry(data.entry.id)
-      onClose()
+      closeWithReason('removed')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setPending(false)
@@ -138,7 +160,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   }
 
   return (
-    <div className="place-sheet-backdrop" onClick={onClose}>
+    <div className="place-sheet-backdrop" onClick={() => closeWithReason('backdrop-click')}>
       <div
         className="place-sheet"
         role="dialog"
@@ -157,7 +179,12 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
               <p className="place-sheet__breadcrumb">{info.breadcrumb.join(', ')}</p>
             )}
           </div>
-          <button type="button" className="place-sheet__close" onClick={onClose} aria-label="Close">
+          <button
+            type="button"
+            className="place-sheet__close"
+            onClick={() => closeWithReason('close-button')}
+            aria-label="Close"
+          >
             ✕
           </button>
         </header>
