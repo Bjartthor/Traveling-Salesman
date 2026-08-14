@@ -4508,4 +4508,105 @@ Not confirmed on a real device with an actual scroll wheel or pinch gesture, for
 `ZOOM_TARGET_DRIFT_PX` (32px) is a reasoned-but-picked constant, same "easy to retune" status as
 `CLICK_DISTANCE`/`CITY_HIT_RADIUS` — worth a look if a real trackpad's pinch-midpoint jitter turns
 out to exceed it (would cause spurious re-targeting mid-gesture) or if it feels too sticky (targeting
+
+## Zoomed-in region taps silently deselecting the whole country on a real phone (done)
+
+Reported after the pick-buffer fix above shipped and went live on GitHub Pages: "it only works now
+on computer not on the phone" for selecting regions in the globe view. First checked the deploy
+itself — commit 812e0cd was on `origin/main` and its GitHub Actions run had completed successfully,
+so the fix was genuinely live; this wasn't a stale-service-worker report (Atlas's `registerType:
+'prompt'` PWA update flow was double-checked and is a real possibility for "works on computer, not
+phone" reports in general, but the user confirmed they were on the latest version).
+
+Narrowed down over several rounds of clarifying questions: **only** when zoomed into a country to
+see its admin-1 regions (never at the world view), on Android Chrome, failing on taps "not at all
+far from" centre, **every single time**.
+
+**Reproducing it**: this sandbox's standing `ResizeObserver`-never-sizes-the-canvas limitation
+didn't reproduce this session (`document.hidden` read `false`, same intermittent wrinkle noted in
+the last few globe sessions) — the globe canvas actually laid out and painted correctly under
+`preview_*`, and dispatched `PointerEvent`s (`pointerdown`/`pointerup` with real `pointerType:
+'touch'`) drove `handleTap` end-to-end for the first time in this project's history. Real
+`getImageData` reads against the live canvas (not assumed) confirmed exactly what was under each
+synthetic tap before trusting the result.
+
+First swept taps across the *entire* vertical range of the unzoomed globe (top to bottom, real land
+pixels only) — every one correctly selected the right country. Then swept a zoomed-in admin-1 view
+(Canada, then a tight grid within 70px of dead-centre on Libya) the same way — the overwhelming
+majority succeeded, with only the odd isolated miss at small admin-1 polygons no bigger than the
+sampling grid (unrelated noise, not the reported bug). Position on screen was a dead end.
+
+The actual reproduction came from timing, not geometry: zoom a country in past `ADMIN1_ZOOM_THRESHOLD`
+and tap the same spot **immediately**, with no wait for the per-country `loadCountryTopology` fetch
+to resolve (previous rounds of this same test had, without thinking about it, always waited ~1s
+after zooming "to let things settle" before tapping — exactly the gap a real mobile network fills
+with actual latency that this project's localhost dev server never has). Confirmed: the country
+sheet **closed** — the already-selected country got silently deselected — both immediately and a
+full second later (the tap had already fired and resolved before any data arrived; nothing about
+it self-heals once the fetch does complete).
+
+**Root cause**: while `admin1FeaturesRef.current` is still empty (fetch in flight), `showingAdmin1`
+is `false`, so `handleTap`'s pick-buffer paints only the selected country's own coarse/detail
+shape — a tap anywhere on that country's body resolves to `{kind:'country', id: selectedCode}`.
+That's the *same* id as the already-selected country, and `MapScreen.selectCountry`'s toggle
+(`prev === code ? null : code`) treats re-tapping an already-selected country as "back out to the
+world view." A tap meant for a region instead silently zoomed the user back out from under their
+own thumb — with no loading indicator anywhere to suggest waiting a moment would help. Fully
+explains every detail of the report: only reachable while zoomed in (the world view has no lazy
+per-country fetch to race), fails "near centre" (centre is reliably still on the country's own
+landmass, not any specific region), Android Chrome (real network latency makes the race trivial to
+hit), and "every time" (deterministic once the tap wins the race, which it almost always will on a
+real connection).
+
+**Same bug, same fix, also found in WorldMap**: the flat map shares the identical
+`MapScreen.selectCountry` toggle semantics, and its own selected-country `<path>` (and the
+higher-res `countryDetailPath` painted on top of it, same reveal condition) has an unconditional
+`onClick={() => onSelectCountry(p.id)}` with nothing guarding the "admin-1 hasn't loaded yet, or a
+tap landed in the coastline gap between the two independently-simplified layers" case either — the
+admin-1 `<g>` only intercepts the click once it actually has paths to render. Not reported yet, but
+structurally the same defect, so fixed alongside rather than left for a second report.
+
+### What was built
+
+- **[`GlobeMap.tsx`](atlas/src/components/map/GlobeMap.tsx)'s `handleTap`**: after decoding the
+  pick-buffer pixel, a pick that resolves to the country kind *and* matches `selectedCode` while
+  `zoomRef.current >= ADMIN1_ZOOM_THRESHOLD` is now treated as a miss (no-op) instead of forwarded
+  to `onSelectCountryRef`. Covers both the fetch-in-flight race and the rarer coastline-gap case
+  (a tap landing between the country's own outline and an admin-1 polygon that doesn't quite reach
+  the edge) with the same one-line rule, since both are "zoomed in and the tap didn't land on a
+  specific region" — the toggle-to-deselect gesture only makes sense at the world-view granularity,
+  before drilling into a country's regions. Tapping elsewhere (dead space, another country) still
+  deselects exactly as before; the country sheet's own close button remains the reliable way to
+  back out once zoomed in, including for the (legitimate) countries with no admin-1 file at all.
+- **[`WorldMap.tsx`](atlas/src/components/map/WorldMap.tsx)**: identical `p.id === selectedCode &&
+  overThreshold` guard added to both the plain country path's `onClick` and the `countryDetailPath`
+  overlay's (the higher-res twin painted on top while admin-1 is loading) — `overThreshold` already
+  existed as the component's own `transform.k >= ADMIN1_ZOOM_THRESHOLD`, no new state needed.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**202/202**, unchanged — this is a control-flow
+  fix with no new pure logic to unit-test) all clean.
+- **Live, on this session's cooperating sandbox** (not just simulated against real topology, for
+  once): reproduced the exact failure end-to-end against the pre-fix code (zoom a real country past
+  threshold, tap dead-centre immediately, watch the country sheet close), then re-ran the identical
+  script against the fix — the country now stays selected through the same immediate tap, and a
+  second tap at the same spot once the fetch has actually resolved correctly opens the real
+  subdivision there (confirmed by name, e.g. Libya's "Murzuq District"). Re-verified the *legitimate*
+  toggle-to-deselect still works untouched at the world-view zoom level, on both maps, so this isn't
+  a regression dressed as a fix.
+- Root-caused via real interaction, not inferred from reading the code alone: the first several
+  rounds of testing (full-vertical-range sweeps, near-centre grids, a two-pointer pinch simulation)
+  all failed to reproduce anything resembling the report — worth recording that "position on screen"
+  was a red herring the user's own phrasing pointed at, and the real variable was timing, found only
+  by removing an assumption (the settle-wait between zooming and tapping) that every earlier test,
+  including this session's own first few attempts, had been quietly making.
+
+### Left undone
+
+No loading affordance while a zoomed-in country's admin-1/detail data is still fetching — a tap
+during that window is now a harmless no-op instead of a silent deselect, but it still gives the user
+no feedback that waiting a moment (rather than tapping again right away) is what's needed. Worth a
+follow-up if premature taps turn out to be common enough in practice to be worth an explicit
+loading state.
 a deliberately different nearby spot doesn't re-lock quickly enough).

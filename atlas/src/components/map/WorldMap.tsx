@@ -384,6 +384,16 @@ export function WorldMap({
               style={{ fill: p.id === selectedCode && showingAdmin1 ? UNVISITED_COLOR_VAR : colorForStatus(countryStatus.get(p.id)) }}
               onClick={(e) => {
                 e.stopPropagation()
+                // Once zoomed in past the admin-1 threshold with this country
+                // already selected, a click landing back on its own body
+                // (rather than a specific subdivision) means admin-1 hasn't
+                // finished its lazy fetch yet, or -- rarely -- landed in a
+                // coastline gap between this path and the admin-1 overlay
+                // (see the showingAdmin1 comment above) -- not "click the
+                // already-selected country to deselect it", which only makes
+                // sense at the world-view granularity, before drilling into a
+                // country's regions. Same fix as GlobeMap's handleTap.
+                if (p.id === selectedCode && overThreshold) return
                 onSelectCountry(p.id)
               }}
             >
@@ -420,6 +430,7 @@ export function WorldMap({
               style={{ fill: colorForStatus(countryStatus.get(countryDetailPath.id)) }}
               onClick={(e) => {
                 e.stopPropagation()
+                if (overThreshold) return // see the identical guard above
                 onSelectCountry(countryDetailPath.id)
               }}
             >

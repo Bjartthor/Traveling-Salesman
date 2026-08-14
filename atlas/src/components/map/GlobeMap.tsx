@@ -680,9 +680,26 @@ export function GlobeMap({
       const pickId = (pixel[0]! << 16) | (pixel[1]! << 8) | pixel[2]!
       const pick = pickId > 0 ? picks[pickId - 1] : undefined
 
+      // Once zoomed in past the admin-1 threshold with a country already
+      // selected, a tap resolving back to that country's own body (rather
+      // than a specific subdivision) almost never means "I want to back out
+      // to the world view" — far more likely, admin-1 just hasn't finished
+      // its lazy fetch yet (confirmed directly: tapping immediately after
+      // crossing the threshold, before loadCountryTopology resolves, lands
+      // here every time on a real network, since showingAdmin1 is still
+      // false and the coarse country shape is all that's painted) or, more
+      // rarely, the tap landed in a coastline gap between the country's own
+      // outline and the independently-simplified admin-1 polygons (see the
+      // paint-order comment above). selectCountry's toggle-to-deselect only
+      // makes sense at the world-view granularity, before drilling into a
+      // country's regions — treating this as a miss instead avoids silently
+      // booting the user back out from underneath their own tap while data
+      // is still in flight.
       if (!pick) onDeselectRef.current()
       else if (pick.kind === 'subdivision') onSelectSubdivisionRef.current(pick.id, pick.name)
-      else onSelectCountryRef.current(pick.id)
+      else if (pick.id === selectedCode && zoomRef.current >= ADMIN1_ZOOM_THRESHOLD) {
+        // no-op — see comment above
+      } else onSelectCountryRef.current(pick.id)
     }
 
     function onPointerDown(e: PointerEvent) {
