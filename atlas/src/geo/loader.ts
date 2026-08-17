@@ -12,7 +12,11 @@ import { invalidateMapCityIndex } from '@/geo/mapCities'
 
 // Bump when the committed artefacts change shape/content so an app update
 // reseeds reference data without disturbing user data.
-export const GEO_DATA_VERSION = 1
+// v2: 11 island territories (Svalbard, French DOMs, Christmas/Cocos, Bonaire,
+// Bouvet, Tokelau) gained their own map shape + filled `region`, and their
+// parents' centroids no longer include the carved-off land (see tools/build-geo
+// addTerritoryShapes).
+export const GEO_DATA_VERSION = 2
 
 const base = import.meta.env.BASE_URL // './' for the GitHub Pages build
 const geoUrl = (p: string) => `${base}geo/${p}`

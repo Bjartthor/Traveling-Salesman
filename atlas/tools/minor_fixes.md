@@ -8,13 +8,16 @@ map work (Phase 3+) makes them worth the effort.
 
 ## 1. Territories with no world-map polygon at 1:10m  ⭐ (the big one)
 
-**Status:** deferred by explicit decision (see the Phase-2 session); source layer
-upgraded from 1:50m to 1:10m in a later polish pass (see PROGRESS.md), which
-resolved 2 of the original 13 for free (Gibraltar, US Minor Outlying) and also
-fixed the much bigger problem this section used to describe — 1:50m simplified at
-a flat 8% left small/detailed coastlines like Iceland's at ~19 vertices. Iceland
-is now ~450. The 11 remaining no-polygon territories below are a separate,
-smaller, genuinely deferred issue.
+**Status: RESOLVED.** All 11 territories below now get their own world-map shape
+at build time — see "How it was fixed" at the end of this section. The historical
+context is kept because it explains *why* the shapes have to be synthesised.
+
+Earlier history: the source layer was upgraded from 1:50m to 1:10m in a polish
+pass (see PROGRESS.md), which resolved 2 of the original 13 for free (Gibraltar,
+US Minor Outlying) and also fixed the much bigger problem this section used to
+describe — 1:50m simplified at a flat 8% left small/detailed coastlines like
+Iceland's at ~19 vertices (Iceland is now ~450). The 11 that remained after that
+are what this section is about.
 
 **What/why.** *Natural Earth 1:10m Admin 0 – Countries* does not draw a
 **separate** polygon for 11 GeoNames territories — it either fuses them into a
@@ -30,28 +33,32 @@ BQ Bonaire/St-Eustatius/Saba   BV Bouvet   TK Tokelau
 ```
 
 These **do** get full `countries.json` rows (territories count as their own
-entries per plan §2), so they are searchable and trackable. They simply are not
-distinct clickable landmasses on the world map. They are listed in
-`KNOWN_NO_POLYGON` in [`fixups.mjs`](fixups.mjs); the build's fail-loud validator
-treats them as expected, so anything *else* missing still fails the build.
+entries per plan §2), so they were always searchable and trackable. The problem
+was purely on the map: they were not distinct clickable landmasses, so painting
+the parent's visit status painted them too, and a tap on them selected the parent.
 
-The reverse direction is clean: every polygon in `world.topo.json` maps to a real
-country row.
+**How it was fixed.** `addTerritoryShapes()` in [`build-geo.mjs`](build-geo.mjs)
+gives each of the 11 its own `neByA2` entry *before* the validator and the
+country/topology writers run, so from that point on every one is treated like any
+other country (own world-map feature, own `countryDetail/<CC>.topo.json`, own
+computed centroid, `region` filled from `TERRITORY_REGION`). Two mechanisms, both
+driven by explicit fixup tables so nothing is silent:
 
-**How to fix later (additive, low-risk).** Graft the missing shapes from a finer
-Natural Earth layer and merge them into `world.topo.json`:
+1. **Carve** (the 8 fused ones — French DOMs, Christmas/Cocos, Svalbard+Jan
+   Mayen). The parent's (multi)polygon is exploded into single polygons and the
+   ones whose centroid falls inside a `TERRITORY_CARVE` box are *moved* to the
+   territory; the parent keeps the rest. Whole sub-polygons are reassigned, so the
+   parent literally stops containing them — no clipping, no slivers, no overlap,
+   and the shapes stay at the same fidelity as the rest of the world map. (This is
+   why a finer `ne_10m_admin_0_map_subunits` download turned out to be
+   unnecessary: the shapes are already present, just fused into the parent.)
+2. **Graft** (the 3 omitted ones — Bonaire, Bouvet, Tokelau). Copied straight from
+   the admin-1 layer the build already loads, matched by `TERRITORY_GRAFT_ADMIN1`.
 
-1. Download `ne_10m_admin_0_map_subunits` (S3, same pattern as the other sources).
-   It separates the French DOMs, etc. as individual subunits with ISO codes.
-2. For each code in `KNOWN_NO_POLYGON`, pull its subunit feature, simplify it to
-   match the world map's non-exception rate (currently `WORLD_SIMPLIFY_DEFAULT_PCT`,
-   25%), tag it `{ code, name }`, and append it to the FeatureCollection in
-   `buildWorldTopo()` before the dissolve.
-3. Remove the grafted codes from `KNOWN_NO_POLYGON`. The validator then *requires*
-   them to have a polygon, guaranteeing you did not miss any.
-
-The truly tiny/uninhabited specks (Bouvet) can stay as exceptions if they are not
-worth the vertices — decide per code.
+`KNOWN_NO_POLYGON` is now empty, so the fail-loud validator *requires* every
+GeoNames country to have a polygon — if a future NE refresh drops one of these
+shapes the build stops instead of silently regressing. The reverse direction is
+still clean: every polygon in `world.topo.json` maps to a real country row.
 
 ---
 

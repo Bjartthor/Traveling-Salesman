@@ -4859,3 +4859,50 @@ don't read the absence of geometry on that one line as meaningful.
   real capture pointing at the culprit geometry.
 - **Single-window assumption:** two simultaneous tabs share the sentinel key and could log a spurious
   crash. Fine for the standalone phone PWA; a desktop-dev edge case only.
+
+## 2026-08-17 — Real-device OOM capture arrived: deep-zoom heap runaway (NOT yet fixed)
+
+The crash-sentinel + render-vitals instrumentation above finally caught the "Aw snap" crash live. A
+user debug log captured this marker verbatim:
+
+```
+11:48:07 ERROR crash: previous session ended uncleanly (foreground)
+  ran ≥2m40s · last heap 3998MB/4017MB · limit 4096MB · 98% · on screen flat · dpr 1 · 272 paths · 1 cities · zoom 23.6x · last checkpoint 24s before this boot · unclean exits so far: 1
+```
+
+**Read against the diagnosis guide above — the likely cause:**
+- **A high-heap JS runaway, not a GPU/non-heap crash.** Heap climbed monotonically ~180 MB → ~4 GB
+  (the full 4096 MB limit) over ~2m40s, tripping the 70 / 85 / 93 % pressure alerts in order, then the
+  tab died. So for *this* instance the "low-heap variant" framing is wrong — it's a real heap leak.
+- **Leading correlate = deep zoom + sustained pan/zoom on the FLAT map** — exactly the guide's top
+  suspect. The climb tracks zoom 1x → 32.9x → 27.9x with a stream of `render: zoom past 8x/32x`
+  breadcrumbs; the crash marker is `flat · zoom 23.6x`. `dpr 1` the whole time ⇒ the globe-canvas-dpr
+  theory is **ruled out** here; path count stayed moderate (250–272) ⇒ raw SVG node count isn't it
+  either.
+- **Unbounded leak, not caching.** 4 GB dwarfs every decoded artefact combined (countryDetail 2.8 MB +
+  admin1 1.8 MB + world 0.7 MB) and heap never recovered between interactions ⇒ something allocated
+  per zoom/pan/re-render is never released.
+
+**Where to look first (for the fix session):**
+1. Flat-map zoom/pan handler + per-render path/city-layer rebuild — `WorldMap.tsx`, `cityLayer.ts`,
+   `mapCities.ts` — for structures that grow, or listeners/RAF/observers not torn down on re-render.
+2. `loadCountryTopology` / `loadCountryDetailTopology` promise Maps in `loader.ts` grow unbounded
+   (never cleared), though that alone is MBs, not GBs.
+
+**First fix to try (from the guide, now that deep zoom is the confirmed correlate):** cap the flat
+map's `scaleExtent` / `MAX_ZOOM` to a finite ceiling and re-capture. If the climb persists at capped
+zoom, the leak is in the pan/re-render path rather than zoom depth itself.
+
+**Not caused by the island-territory work in this same session** (11 new small map features, 239 → 250
+paths): 11 tiny polygons can't leak 4 GB, and the ~25 MB/s climb rate is orders of magnitude beyond
+their footprint. The user is aware and will pick up the fix later; this note is the head start.
+
+### Also this session — island territories got their own map shape + independent status
+Svalbard, French Guiana and the 9 other no-polygon territories are now carved/grafted into
+`world.topo.json` (see `tools/build-geo.mjs` `addTerritoryShapes` and `tools/minor_fixes.md §1`), so
+painting a parent no longer paints the territory. Follow-ups from real use: (a) the world-simplify
+budget was dropping tiny far-flung territory islands — Bonaire vanished from `BQ` entirely — fixed by
+building territories in a second, unsimplified topojson pass (`WORLD_SIMPLIFY_TERRITORY_KEEP`); (b)
+online (Photon) search geocodes places on these territories under the sovereign parent (Jan Mayen →
+Norway/Nordland), so `commitPhotonResult` now remaps an online city to the split territory its
+coordinates land on (`SPLIT_TERRITORY_CODES` / `resolveTerritoryByPoint` in `src/geo/photon.ts`).

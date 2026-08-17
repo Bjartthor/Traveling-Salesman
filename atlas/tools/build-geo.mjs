@@ -24,6 +24,9 @@ import {
   KNOWN_NO_POLYGON,
   TERRITORY_OF,
   TERRITORY_COORDS,
+  TERRITORY_CARVE,
+  TERRITORY_GRAFT_ADMIN1,
+  TERRITORY_REGION,
   NON_UN_SOVEREIGN,
   CONTINENT_NAMES,
 } from './fixups.mjs'
@@ -98,6 +101,21 @@ function runMapshaper(commands, input) {
   return new Promise((resolve, reject) => {
     mapshaper.applyCommands(commands, input, (err, out) => (err ? reject(err) : resolve(out)))
   })
+}
+
+// The NE 1:10m admin-1 layer, parsed once and shared. Both buildAdmin1 (for
+// subdivision shapes/enrichment) and addTerritoryShapes (for the omitted
+// territories' shapes) need it; it's a 60 MB parse, so don't do it twice.
+let neAdmin1Cache = null
+async function loadNeAdmin1() {
+  if (neAdmin1Cache) return neAdmin1Cache
+  const shp = path.join(CACHE, 'ne_10m_admin_1', 'ne_10m_admin_1_states_provinces.shp')
+  const geojsonPath = path.join(CACHE, 'ne_10m_admin_1.geojson')
+  if (!fs.existsSync(geojsonPath)) {
+    await mapshaper.runCommands(`-i "${shp}" -o format=geojson "${geojsonPath}"`)
+  }
+  neAdmin1Cache = JSON.parse(fs.readFileSync(geojsonPath, 'utf8'))
+  return neAdmin1Cache
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +209,13 @@ async function main() {
   }
   log(`  Natural Earth polygons: ${neByA2.size} countries  |  dropped by fixup: ${droppedNE.length} (${droppedNE.join(', ')})`)
 
+  // Give the no-Admin-0-polygon territories (Svalbard, the French DOMs, Christmas
+  // & Cocos, Bonaire, Bouvet, Tokelau) a real, independently-selectable shape
+  // before anything downstream reads neByA2 — see addTerritoryShapes.
+  log('\n[2b/6] Adding territory shapes (carve fused / graft omitted)')
+  await addTerritoryShapes(neByA2, gnCountries)
+  log(`  neByA2 now ${neByA2.size} countries.`)
+
   log('\n[3/6] Validating the country join (fail-loud)')
   // Every GeoNames country must have a polygon OR be an intentional exception.
   for (const a2 of gnCountries.keys()) {
@@ -271,7 +296,9 @@ async function main() {
       unMember: territoryOf === null && !NON_UN_SOVEREIGN.has(a2),
       territoryOf,
       continent: ne ? ne.props.CONTINENT : CONTINENT_NAMES[gn.continentCode] || gn.continentCode,
-      region: ne ? ne.props.SUBREGION || '' : '',
+      // Carved/grafted territories carry no NE SUBREGION (and a carved sub-polygon
+      // would inherit the parent's, which is wrong); TERRITORY_REGION supplies it.
+      region: TERRITORY_REGION[a2] || (ne ? ne.props.SUBREGION || '' : ''),
       areaKm2: gn.areaKm2,
       population: gn.population,
       capital: gn.capital || null,
@@ -321,6 +348,91 @@ async function main() {
   log('\nDone. Commit public/geo/.\n')
 }
 
+// Give the no-Admin-0-polygon territories a real, independently-selectable world-
+// map shape (tools/minor_fixes.md §1; the fixup tables live in fixups.mjs §§4,6b–d).
+// NE 1:10m "Countries" either fuses a territory into its parent's polygon or omits
+// it entirely; this makes each one its own `neByA2` entry, so from here on the
+// validator, countries.json and the topology builders treat it like any other
+// country. Two mechanisms, both driven by explicit fixups so nothing is silent:
+//
+//   • carve — for a fused territory: explode the parent into single polygons and
+//     *move* the ones whose centroid sits inside a TERRITORY_CARVE box to the
+//     territory. Exact (whole sub-polygons), so the parent stops containing them —
+//     no clipping, no slivers, no overlap.
+//   • graft — for an omitted territory: copy in the matching admin-1 feature(s).
+//
+// Adds to the shared `errors` list (checked immediately after, in main's [3/6]
+// step) if any declared territory ends up with no geometry.
+async function addTerritoryShapes(neByA2, gnCountries) {
+  const synthProps = (a2) => {
+    const gn = gnCountries.get(a2)
+    return { NAME: gn?.name || a2, CONTINENT: CONTINENT_NAMES[gn?.continentCode] || gn?.continentCode || '' }
+  }
+  const inBox = (boxes, lon, lat) => boxes.some(([w, s, e, n]) => lon >= w && lon <= e && lat >= s && lat <= n)
+  // A (Multi)Polygon feature -> array of single-Polygon geometry objects.
+  const explode = (geom) =>
+    geom.type === 'MultiPolygon' ? geom.coordinates.map((c) => ({ type: 'Polygon', coordinates: c })) : [geom]
+  // An array of Polygon-coordinate rings -> one MultiPolygon feature.
+  const asFeature = (polys) => ({ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: polys } })
+
+  // 1. Carve fused territories out of their parent.
+  for (const [parent, territories] of Object.entries(TERRITORY_CARVE)) {
+    const entry = neByA2.get(parent)
+    if (!entry) {
+      fail(`TERRITORY_CARVE: parent ${parent} has no Natural Earth polygon to carve from.`)
+      continue
+    }
+    const keep = []
+    const moved = new Map(Object.keys(territories).map((a2) => [a2, []]))
+    for (const f of entry.features) {
+      for (const poly of explode(f.geometry)) {
+        const [lon, lat] = geoCentroid(poly)
+        const a2 = Object.keys(territories).find((code) => inBox(territories[code], lon, lat))
+        ;(a2 ? moved.get(a2) : keep).push(poly.coordinates)
+      }
+    }
+    entry.features = [asFeature(keep)] // parent keeps everything not carved off
+    for (const [a2, polys] of moved) {
+      if (polys.length === 0) {
+        fail(`TERRITORY_CARVE ${a2}: no sub-polygon of ${parent} fell inside its box(es) — the fixup or NE data changed.`)
+        continue
+      }
+      neByA2.set(a2, { features: [asFeature(polys)], props: synthProps(a2) })
+      log(`  carve   ${a2} <- ${parent}  (${polys.length} sub-polygon${polys.length === 1 ? '' : 's'})`)
+    }
+  }
+
+  // 2. Graft omitted territories from the admin-1 layer.
+  const neAdmin1 = await loadNeAdmin1()
+  for (const [a2, matcher] of Object.entries(TERRITORY_GRAFT_ADMIN1)) {
+    const feats = neAdmin1.features.filter((f) => {
+      const p = f.properties
+      return (matcher.gnA1 && matcher.gnA1.includes(p.gn_a1_code)) || (matcher.names && matcher.names.includes(p.name))
+    })
+    if (feats.length === 0) {
+      fail(`TERRITORY_GRAFT_ADMIN1 ${a2}: no admin-1 feature matched — the fixup or NE data changed.`)
+      continue
+    }
+    // Normalise grafted geometry to look exactly like the carved (admin-0)
+    // shapes, which survive the shared world-topology pass while raw grafted
+    // geometry collapsed to empty (measured: BQ/BV/TK came out empty). Two
+    // differences mattered: the admin-1 layer's full float precision (~15 digits
+    // vs admin-0's ~6), and it arriving as several separate features rather than
+    // one. So round to the pipeline precision and merge into a single MultiPolygon.
+    const polys = feats.flatMap((f) => explode(roundGeometry(f.geometry)).map((p) => p.coordinates))
+    neByA2.set(a2, { features: [asFeature(polys)], props: synthProps(a2) })
+    log(`  graft   ${a2}  (${feats.length} admin-1 feature${feats.length === 1 ? '' : 's'}, ${polys.length} part${polys.length === 1 ? '' : 's'})`)
+  }
+}
+
+// Recursively round every coordinate of a GeoJSON geometry to the pipeline's
+// 4-decimal precision (round4) — used to normalise high-precision admin-1
+// geometry before it joins the world topology. See addTerritoryShapes graft step.
+function roundGeometry(geom) {
+  const roundPos = (c) => (typeof c[0] === 'number' ? [round4(c[0]), round4(c[1])] : c.map(roundPos))
+  return { type: geom.type, coordinates: roundPos(geom.coordinates) }
+}
+
 // A flat simplify percentage is a *global* Visvalingam budget: mapshaper keeps
 // the N% highest-weight points across every country combined. Weight tracks
 // effective area, so a landmass the size of Russia soaks up most of that
@@ -335,30 +447,64 @@ const WORLD_SIMPLIFY_DETAILED_EXCEPTIONS = new Set([
 const WORLD_SIMPLIFY_EXCEPTION_PCT = 0.05
 const WORLD_SIMPLIFY_DEFAULT_PCT = 0.25
 
+// The carved/grafted territories (addTerritoryShapes) are small, often multi-part,
+// and sometimes far-flung — Bonaire + St-Eustatius + Saba (BQ) span ~800 km. The
+// shared world `-simplify` is a single *global*, area-weighted Visvalingam budget,
+// so their tiny islands get near-zero weight and are culled no matter the per-feature
+// percentage — keep-shapes only rescues one or two parts (measured: BQ kept just
+// St-Eustatius, losing Bonaire, its main island; grafted shapes vanished entirely at
+// high retention). So buildWorldTopo keeps these codes OUT of the simplify pass and
+// adds them at full detail afterwards — they border no one, so there is no alignment
+// cost, and full detail for islands this small is ~2 KB. buildCountryDetail simplifies
+// per-country (not the global budget), where they keep their parts fine, but is held
+// near-lossless too for a crisp zoomed-in outline.
+const WORLD_SIMPLIFY_TERRITORY_KEEP = new Set([
+  ...Object.values(TERRITORY_CARVE).flatMap((t) => Object.keys(t)),
+  ...Object.keys(TERRITORY_GRAFT_ADMIN1),
+])
+const WORLD_SIMPLIFY_TERRITORY_DETAIL_PCT = 99
+
 // world.topo.json: dissolve to one (multi)polygon per country, simplify, keep
 // only { code, name } per feature. One shared-topology pass (so adjacent
 // countries' borders still align exactly) with a per-country simplification
 // rate via mapshaper's `-simplify variable`, rather than one flat percentage —
 // see WORLD_SIMPLIFY_DETAILED_EXCEPTIONS above for why. Target < 900 KB.
 async function buildWorldTopo(neByA2) {
-  const features = []
+  // Split off the territories (kept out of the simplify — see
+  // WORLD_SIMPLIFY_TERRITORY_KEEP) from everyone else. Territories are already one
+  // (multi)polygon per code; the rest can be several NE features per code and need
+  // the dissolve.
+  const mainFeatures = []
+  const territoryFeatures = []
   for (const [a2, entry] of neByA2) {
+    const bucket = WORLD_SIMPLIFY_TERRITORY_KEEP.has(a2) ? territoryFeatures : mainFeatures
     for (const f of entry.features) {
-      features.push({ type: 'Feature', properties: { code: a2, name: entry.props.NAME }, geometry: f.geometry })
+      bucket.push({ type: 'Feature', properties: { code: a2, name: entry.props.NAME }, geometry: f.geometry })
     }
   }
-  const fc = { type: 'FeatureCollection', features }
   const exceptionList = [...WORLD_SIMPLIFY_DETAILED_EXCEPTIONS].map((c) => `'${c}'`).join(',')
   const percentExpr = `[${exceptionList}].includes(code) ? ${WORLD_SIMPLIFY_EXCEPTION_PCT} : ${WORLD_SIMPLIFY_DEFAULT_PCT}`
-  const out = await runMapshaper(
+
+  // Pass 1: dissolve multi-piece countries and simplify the main world.
+  const simplified = await runMapshaper(
     [
-      '-i input.geojson',
+      '-i main.geojson',
       '-dissolve code copy-fields=name',
       `-simplify variable percentage="${percentExpr}" keep-shapes`,
-      '-rename-layers countries',
-      '-o format=topojson world.topo.json',
+      '-o format=geojson main.simplified.geojson',
     ].join(' '),
-    { 'input.geojson': JSON.stringify(fc) },
+    { 'main.geojson': JSON.stringify({ type: 'FeatureCollection', features: mainFeatures }) },
+  )
+
+  // Pass 2: add the territories at full detail and build the shared topology in one
+  // (unsimplified) topojson conversion, so nothing is culled.
+  const combined = {
+    type: 'FeatureCollection',
+    features: [...JSON.parse(simplified['main.simplified.geojson']).features, ...territoryFeatures],
+  }
+  const out = await runMapshaper(
+    ['-i combined.geojson', '-rename-layers countries', '-o format=topojson world.topo.json'].join(' '),
+    { 'combined.geojson': JSON.stringify(combined) },
   )
   fs.writeFileSync(path.join(OUT, 'world.topo.json'), out['world.topo.json'])
 }
@@ -384,7 +530,9 @@ async function buildCountryDetail(neByA2) {
       type: 'FeatureCollection',
       features: entry.features.map((f) => ({ type: 'Feature', properties: { code: a2, name: entry.props.NAME }, geometry: f.geometry })),
     }
-    let pct = 65
+    // Territories are held near-lossless here too (they're tiny — never near the
+    // 150 KB cap — and this is a per-country pass, not the global world budget).
+    let pct = WORLD_SIMPLIFY_TERRITORY_KEEP.has(a2) ? WORLD_SIMPLIFY_TERRITORY_DETAIL_PCT : 65
     let buf
     for (;;) {
       const out = await runMapshaper(
@@ -416,12 +564,7 @@ async function buildCountryDetail(neByA2) {
 // per country to < 150 KB, write admin1/<CC>.topo.json. Also enriches the
 // subdivisions rows with NE ISO-2 code, type, and label-point centroid.
 async function buildAdmin1(admin1Rows, countries) {
-  const shp = path.join(CACHE, 'ne_10m_admin_1', 'ne_10m_admin_1_states_provinces.shp')
-  const geojsonPath = path.join(CACHE, 'ne_10m_admin_1.geojson')
-  if (!fs.existsSync(geojsonPath)) {
-    await mapshaper.runCommands(`-i "${shp}" -o format=geojson "${geojsonPath}"`)
-  }
-  const neAdmin1 = JSON.parse(fs.readFileSync(geojsonPath, 'utf8'))
+  const neAdmin1 = await loadNeAdmin1()
 
   // enrichment lookups
   const byGnA1 = new Map() // "CC.code" -> props

@@ -51,7 +51,7 @@ small/detailed coastlines (Iceland, Norway's fjords) down to near-nothing. See "
 
 | Artefact | ~Size | Notes |
 |---|---|---|
-| `world.topo.json` | 667 KB | All countries, dissolved per ISO code. Object `countries`, props `{code,name}`. Budget < 900 KB. |
+| `world.topo.json` | 671 KB | All 250 countries/territories, dissolved per ISO code. Object `countries`, props `{code,name}`. Budget < 900 KB. |
 | `admin1/<CC>.topo.json` | ≤ 76 KB | One per country with subdivisions (240 files). Object `admin1`, props `{id,name}`. Big countries simplified harder to fit < 150 KB. Features sharing an `id` are dissolved into one before writing — see below. |
 | `countries.json` | 53 KB | 250 reference rows. |
 | `subdivisions.json` | 540 KB | 3865 rows, GeoNames-authoritative, NE-enriched. |
@@ -106,12 +106,20 @@ that. See PROGRESS.md's admin-1 id-collision bug fix for the full investigation.
   coarser 1:50m layer never separated out.
 - **`EXCLUDE_GEONAMES`** — withdrawn ISO codes GeoNames still lists: `AN`
   (Netherlands Antilles), `CS` (Serbia & Montenegro).
-- **`KNOWN_NO_POLYGON`** — 11 territories that get a country row but no separate
-  polygon even at 1:10m. Lets the validator pass while flagging anything *else*
-  missing. **This is the documented consequence of the map-source decision — see
-  `minor_fixes.md` §1 to graft the shapes in later.** (Gibraltar and the US Minor
-  Outlying Islands used to be on this list too; both gained a real polygon for
-  free when the source moved from 1:50m to 1:10m.)
+- **`KNOWN_NO_POLYGON`** — now **empty**. It used to list 11 territories that got
+  a country row but no separate world-map polygon at 1:10m (the French DOMs,
+  Christmas/Cocos and Svalbard fused into their parent; Bonaire/Bouvet/Tokelau
+  omitted). `addTerritoryShapes()` now synthesises a shape for each — see
+  `minor_fixes.md` §1 and the `TERRITORY_CARVE` / `TERRITORY_GRAFT_ADMIN1` /
+  `TERRITORY_REGION` tables — so the validator now *requires* every GeoNames
+  country to have a polygon. Add a code back here only to intentionally exempt one.
+- **`TERRITORY_CARVE`** — for territories NE fuses into a parent (`FR`/`NO`/`AU`):
+  bounding boxes that tell `addTerritoryShapes()` which of the parent's
+  sub-polygons to reassign to the territory. Fails loud if a box matches nothing.
+- **`TERRITORY_GRAFT_ADMIN1`** — for territories NE omits from Admin-0 entirely
+  (`BQ`/`BV`/`TK`): how to match their shape in the admin-1 layer instead.
+- **`TERRITORY_REGION`** — UN M49 subregion for those 11, since a carved/grafted
+  shape carries no NE `SUBREGION` to fill `countries.json`'s `region` from.
 - **`TERRITORY_OF`** — sovereign parent for the no-polygon territories (no NE
   polygon = no NE sovereignty to read) plus overrides.
 - **`TERRITORY_COORDS`** — representative lat/lon for those same territories (no

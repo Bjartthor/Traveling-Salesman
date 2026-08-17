@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Feature, GeoJsonProperties, Polygon } from 'geojson'
 import type { MapFeature } from '@/components/map/topo'
-import { nearestAdmin1Id } from '@/geo/photon'
+import { nearestAdmin1Id, territoryForPoint } from '@/geo/photon'
 
 function square(id: string, lonMin: number, latMin: number, lonMax: number, latMax: number): MapFeature {
   const feature: Feature<Polygon, GeoJsonProperties> = {
@@ -60,5 +60,34 @@ describe('nearestAdmin1Id', () => {
 
   it('returns null for an empty feature list', () => {
     expect(nearestAdmin1Id([], [0.5, 0.5])).toBeNull()
+  })
+})
+
+describe('territoryForPoint', () => {
+  // A split territory (SJ) next to a non-split country (NO) and an unrelated one (US).
+  const SJ = square('SJ', 10, 74, 12, 76) // stand-in for Svalbard
+  const NO = square('NO', 5, 58, 7, 60) // mainland Norway — NOT a split territory
+  const US = square('US', -100, 40, -98, 42)
+  const WORLD = [SJ, NO, US]
+
+  it('returns the split territory a point sits inside', () => {
+    expect(territoryForPoint(WORLD, 11, 75)).toBe('SJ')
+  })
+
+  it('ignores non-split-territory features even when the point is inside one', () => {
+    // The point is squarely inside mainland Norway's shape, but NO is not a split
+    // territory, so no remap — the caller keeps Photon's own country code.
+    expect(territoryForPoint(WORLD, 6, 59)).toBeNull()
+    expect(territoryForPoint(WORLD, -99, 41)).toBeNull()
+  })
+
+  it('snaps to a split territory just off its coast, within the snap radius', () => {
+    // ~11 km north of SJ's corner vertex (10, 76) — inside the 25 km snap. (The
+    // fallback measures distance to the nearest vertex, so stay near a corner.)
+    expect(territoryForPoint(WORLD, 10, 76.1)).toBe('SJ')
+  })
+
+  it('does not claim a point far from every split territory', () => {
+    expect(territoryForPoint(WORLD, 0, 0)).toBeNull()
   })
 })

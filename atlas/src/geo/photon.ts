@@ -14,7 +14,7 @@ import { geoContains, geoDistance } from 'd3-geo'
 import type { Geometry, Position } from 'geojson'
 import { db } from '@/db/schema'
 import type { City } from '@/db/types'
-import { loadCountryTopology } from '@/geo/loader'
+import { loadCountryTopology, loadWorldTopology } from '@/geo/loader'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { addOnlineCity } from '@/geo/cityWrites'
 
@@ -162,6 +162,35 @@ export async function resolveSubdivisionByPoint(countryCode: string, lon: number
   return nearestAdmin1Id(decodeLayer(topo, 'admin1', 'id'), [lon, lat])
 }
 
+// The 11 island territories that were split out of a sovereign parent's world-map
+// shape (tools/build-geo.mjs addTerritoryShapes / WORLD_SIMPLIFY_TERRITORY_KEEP).
+// Photon/OSM routinely geocodes a place on one of these under the *parent* — e.g.
+// Jan Mayen comes back as country NO, Nordland county — rather than the territory
+// itself, so an online city added there would colour the parent's region instead of
+// the territory. Now that each has its own map shape we put the city where the map
+// shows it. Scoped to these isolated islands ONLY: they all sit far from any
+// mainland, so a point-in-shape (plus small coastline snap) test can't mis-claim a
+// neighbouring country's place — unlike, say, Hong Kong or Macau hard against China.
+export const SPLIT_TERRITORY_CODES: ReadonlySet<string> = new Set([
+  'SJ', 'GF', 'GP', 'MQ', 'RE', 'YT', 'CC', 'CX', 'BQ', 'BV', 'TK',
+])
+
+/**
+ * The split-out territory a point lands on (or within `SUBDIVISION_SNAP_KM` of),
+ * or null. Pure over the decoded world features so it can be unit-tested against
+ * synthetic geometry; `resolveTerritoryByPoint` supplies the real ones.
+ */
+export function territoryForPoint(worldFeatures: readonly MapFeature[], lon: number, lat: number): string | null {
+  const territories = worldFeatures.filter((f) => SPLIT_TERRITORY_CODES.has(f.id))
+  return nearestAdmin1Id(territories, [lon, lat], SUBDIVISION_SNAP_KM)
+}
+
+/** Which split-out territory (if any) a lon/lat sits on, tested against the world map's own shapes. */
+export async function resolveTerritoryByPoint(lon: number, lat: number): Promise<string | null> {
+  const world = await loadWorldTopology()
+  return territoryForPoint(decodeLayer(world, 'countries', 'code'), lon, lat)
+}
+
 /**
  * Turn a picked Photon result into a durable local city: confirm we
  * recognise the country, resolve its subdivision by geometry, and write it
@@ -169,12 +198,17 @@ export async function resolveSubdivisionByPoint(countryCode: string, lon: number
  * a bundled city (04-places.md acceptance: "survives an app restart offline").
  */
 export async function commitPhotonResult(result: PhotonResult): Promise<City> {
-  const country = await db.countries.get(result.countryCode)
+  // A place Photon files under a sovereign parent (Jan Mayen -> NO/Nordland) really
+  // belongs to the split-out territory it sits on — put it there so it tracks the
+  // place the map shows. A no-op when Photon already returned the territory.
+  const territoryCode = await resolveTerritoryByPoint(result.lon, result.lat)
+  const countryCode = territoryCode ?? result.countryCode
+  const country = await db.countries.get(countryCode)
   if (!country) throw new Error(`Photon returned an unrecognised country code "${result.countryCode}"`)
-  const subdivisionId = await resolveSubdivisionByPoint(result.countryCode, result.lon, result.lat)
+  const subdivisionId = await resolveSubdivisionByPoint(countryCode, result.lon, result.lat)
   return addOnlineCity({
     name: result.name,
-    countryCode: result.countryCode,
+    countryCode,
     subdivisionId,
     lat: result.lat,
     lon: result.lon,

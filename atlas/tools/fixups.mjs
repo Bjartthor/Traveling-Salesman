@@ -64,37 +64,25 @@ export const EXCLUDE_GEONAMES = {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Territories with NO polygon in Natural Earth 1:10m "Countries"
+// 4. Territories with NO polygon of their own in NE 1:10m "Countries"
 // ---------------------------------------------------------------------------
-// These ARE current ISO countries and DO get a countries.json row (territories
-// count as their own entries per plan §2), but the 1:10m Admin-0 *Countries*
-// layer either fuses them into a parent polygon (the French DOMs into France,
-// Christmas/Cocos into Australia) or omits them even at this resolution. They
-// are therefore trackable rows without a distinct clickable landmass on the
-// world map in v1. This set tells the validator "these missing polygons are
-// expected" so it does not fail the build — anything missing that is NOT
-// listed here is a real error and stops the build.
+// The 1:10m Admin-0 *Countries* layer draws no separate polygon for a handful
+// of ISO territories: it either fuses them into a parent (the French DOMs into
+// France, Christmas/Cocos into Australia, Svalbard into Norway) or omits them
+// entirely (Bonaire, Bouvet, Tokelau). They still get a countries.json row
+// (territories count as their own entries per plan §2), but used to have no
+// distinct, clickable landmass on the world map — so painting the parent's
+// status painted them too. See tools/minor_fixes.md §1.
 //
-// >>> This is the documented consequence of the Phase-2 map-source decision.
-// >>> See tools/minor_fixes.md for how to graft these shapes in later. <<<
-//
-// Gibraltar and the US Minor Outlying Islands used to be here too — they were
-// omitted at the original 1:50m source but *do* have their own polygon at
-// 1:10m, so they graduated out of this set for free when a later polish pass
-// upgraded the map source (see PROGRESS.md).
-export const KNOWN_NO_POLYGON = new Set([
-  'GF', // French Guiana      — fused into France's polygon
-  'GP', // Guadeloupe         — fused into France's polygon
-  'MQ', // Martinique         — fused into France's polygon
-  'RE', // Réunion            — fused into France's polygon
-  'YT', // Mayotte            — fused into France's polygon
-  'BQ', // Bonaire, St Eustatius and Saba — omitted at 1:10m
-  'BV', // Bouvet Island      — omitted at 1:10m (uninhabited)
-  'CC', // Cocos (Keeling) Islands — fused into NE "Indian Ocean Ter." (AU)
-  'CX', // Christmas Island   — fused into NE "Indian Ocean Ter." (AU)
-  'SJ', // Svalbard and Jan Mayen — drawn within Norway's polygon
-  'TK', // Tokelau            — omitted at 1:10m (uninhabited by cities1000 scale)
-])
+// That is now resolved at build time: `addTerritoryShapes()` in build-geo.mjs
+// *carves* the fused ones out of their parent's (multi)polygon (TERRITORY_CARVE
+// below) and *grafts* the omitted ones from the admin-1 layer
+// (TERRITORY_GRAFT_ADMIN1), so every one of them ends up in `neByA2` with a real
+// shape. This set is therefore now EMPTY: the fail-loud validator requires every
+// GeoNames country to have a polygon, so if a future data refresh drops one of
+// these shapes the build stops instead of silently regressing. Add a code here
+// only to intentionally exempt a country from that requirement again.
+export const KNOWN_NO_POLYGON = new Set([])
 
 // ---------------------------------------------------------------------------
 // 5. Sovereign parent of a territory (territoryOf)
@@ -114,12 +102,14 @@ export const TERRITORY_OF = {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Representative coordinates for the no-polygon territories
+// 6. Representative coordinates — now only a fallback
 // ---------------------------------------------------------------------------
-// countries.lat/lon normally comes from the spherical centroid of the NE
-// polygon. The KNOWN_NO_POLYGON territories have no polygon to average, so we
-// supply well-known public coordinates here (used later for map centring and
-// labels). A2 -> [lat, lon].
+// countries.lat/lon comes from the spherical centroid of the NE polygon. These
+// were the hand-supplied coordinates for the territories back when they had no
+// polygon; now that `addTerritoryShapes()` gives every one a real shape (§§6b–d),
+// their centroid is computed like everyone else's and this table is an unused
+// fallback for the `!ne` branch. Kept as a safety net (and documentation of each
+// territory's rough location). A2 -> [lat, lon].
 export const TERRITORY_COORDS = {
   GF: [3.93, -53.13],
   GP: [16.24, -61.55],
@@ -132,6 +122,79 @@ export const TERRITORY_COORDS = {
   TK: [-9.2, -171.85],
   CC: [-12.17, 96.83],
   CX: [-10.49, 105.62],
+}
+
+// ---------------------------------------------------------------------------
+// 6b. Carving fused territories out of a parent's world-map polygon
+// ---------------------------------------------------------------------------
+// NE 1:10m "Countries" fuses these territories into their sovereign parent's
+// (multi)polygon as separate, disconnected sub-polygons (French Guiana is its
+// own landmass across the Atlantic, Svalbard is its own islands far to the
+// north, etc. — they are never geometrically joined to the metropole). So
+// `addTerritoryShapes()` in build-geo.mjs explodes the parent into individual
+// polygons and *moves* the ones whose centroid falls inside a box below into a
+// new neByA2 entry for that territory; the parent keeps the rest. This is exact
+// (whole sub-polygons reassigned — no clipping, no slivers, no overlap) and the
+// shapes stay at the same fidelity as the rest of the world map.
+//
+// Keyed by parent A2 -> { territory A2 -> [ [minLon, minLat, maxLon, maxLat], ... ] }.
+// A territory may need more than one box (Svalbard proper AND Jan Mayen). The
+// build fails loud if any listed box captures zero sub-polygons — so a future NE
+// refresh that moves a coastline can't silently drop a territory.
+export const TERRITORY_CARVE = {
+  FR: {
+    GF: [[-55, 2, -51, 6]], // French Guiana (South America)
+    GP: [[-62, 15.7, -60.8, 16.6]], // Guadeloupe + its islets
+    MQ: [[-61.3, 14.3, -60.7, 14.95]], // Martinique
+    RE: [[55.1, -21.5, 55.95, -20.8]], // Réunion (Indian Ocean)
+    YT: [[44.9, -13.1, 45.35, -12.55]], // Mayotte (Comoros archipelago)
+  },
+  NO: {
+    // Svalbard archipelago (incl. Bjørnøya at ~74.5°N) AND Jan Mayen. Mainland
+    // Norway tops out at ~71.2°N, so the 74°N floor separates cleanly; Jan
+    // Mayen sits far west of the mainland's longitudes.
+    SJ: [[8, 74, 40, 81], [-9.5, 70.5, -7, 71.5]],
+  },
+  AU: {
+    CC: [[96.5, -12.4, 97.1, -11.7]], // Cocos (Keeling) Islands
+    CX: [[105.4, -10.6, 105.9, -10.35]], // Christmas Island
+  },
+}
+
+// ---------------------------------------------------------------------------
+// 6c. Grafting omitted territories from the admin-1 layer
+// ---------------------------------------------------------------------------
+// These three have no polygon in Admin-0 *Countries* at all (not fused into a
+// parent — genuinely absent), but the Admin-1 states/provinces layer the build
+// already loads for subdivisions does carry them. `addTerritoryShapes()` copies
+// the matching admin-1 feature(s) straight into neByA2. Keyed by A2 -> matcher;
+// `gnA1` matches NE `gn_a1_code`, `names` matches NE `name` (Bonaire is three
+// separate island features). The build fails loud if a matcher hits nothing.
+export const TERRITORY_GRAFT_ADMIN1 = {
+  BQ: { names: ['Bonaire', 'St. Eustatius', 'Saba'] },
+  BV: { gnA1: ['NO.00'] }, // Bouvet Island
+  TK: { names: ['Tokelau'] },
+}
+
+// ---------------------------------------------------------------------------
+// 6d. Region (UN M49 subregion) for the no-Admin-0-polygon territories
+// ---------------------------------------------------------------------------
+// countries.json's `region` normally comes from NE's SUBREGION field, which the
+// carved/grafted territories don't carry (Admin-1 has no SUBREGION, and a carved
+// sub-polygon would wrongly inherit the parent's — French Guiana is not "Western
+// Europe"). Supply it explicitly here so the field isn't left blank. A2 -> region.
+export const TERRITORY_REGION = {
+  GF: 'South America',
+  GP: 'Caribbean',
+  MQ: 'Caribbean',
+  RE: 'Eastern Africa',
+  YT: 'Eastern Africa',
+  SJ: 'Northern Europe',
+  BQ: 'Caribbean',
+  TK: 'Polynesia',
+  CC: 'Australia and New Zealand', // Australian external territory
+  CX: 'Australia and New Zealand', // Australian external territory
+  BV: 'Seven seas (open ocean)', // sub-Antarctic, no UN subregion
 }
 
 // ---------------------------------------------------------------------------
