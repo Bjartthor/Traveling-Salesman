@@ -7,11 +7,13 @@ import { registerUpdatePrompt } from '@/pwa/registerUpdatePrompt'
 import { installGlobalErrorLogging } from '@/debug/globalHandlers'
 import { installMemoryWatch } from '@/debug/memoryWatch'
 import { installCrashSentinel } from '@/debug/crashSentinel'
+import { installScheduleWatch } from '@/debug/scheduleWatch'
 import { ErrorBoundary } from '@/debug/ErrorBoundary'
 import App from './App.tsx'
 
 registerUpdatePrompt()
 installGlobalErrorLogging()
+installScheduleWatch()
 installMemoryWatch()
 installCrashSentinel()
 

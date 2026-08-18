@@ -5058,3 +5058,43 @@ starts 0×0 so `preview_resize` to 1280×800 then shim `window.ResizeObserver` (
 and remount via `location.hash`; dev server runs Node 20 via `atlas/.claude/launch.json` (untracked local
 change pointing at the nvm v20.20.2 binary). RAF/timers throttle whenever the tab is hidden — screenshots
 force a paint and briefly un-hide it.
+
+### 2026-08-18 (later still) — census-build capture: it's UNTRACKED-JS, self-sustaining, sync-pull-triggered
+Got a crash captured on the census+phase build. Two things it settles:
+
+- **The census names the class.** Crash marker: `census dom 116 · cityIdx 170522 · topo$ 18 · paths$ 13`.
+  Across the whole ~2.5-min runaway (252 MB → 2.9 GB) `dom` stays **86-683** (it just tracks whatever
+  screen is showing — 630 on the flat map, ~90 on the globe/settings), and every map cache is bounded
+  (`cityIdx` flat 170k, `topo$` 13→18, `paths$` 11→13). So the retention is **untracked JS — not DOM, not
+  the render caches.** `used ≈ total ≈ limit` throughout ⇒ genuinely *reachable*, not floating garbage.
+- **The sync compute is innocent.** The new phase stamps show `snapshot built → merged → canonicalized`
+  all within **3 ms** — the merge is instant. The 28 s / 1.2 GB gap between `photos done` and
+  `snapshot built` is just `buildLocalSnapshot`'s DB read **queued behind an already-busy main thread**,
+  not the leak. (Under memory pressure some `logInfo` breadcrumbs drop, so don't over-read phase ordering.)
+
+**Shape of the leak (both captures agree):** ignites right after a `sync: pulled`, then a **self-sustaining
+background loop** leaks ~10-50 MB/s — it keeps climbing **while idle and across every route + the
+flat↔globe switch**, and never recovers, to OOM. So it's **view-independent** (not the map) and lives at
+the shell/sync level. Trigger reported by the user: **adding places while a sync was running** ("it went
+dim and did nothing" — the UI was blocked by the in-flight sync while they kept tapping). An earlier
+partial climb (15:08, to ~390 MB) *did* recover once the user went idle, so continued interaction is what
+carries it to death.
+
+**Still can't reproduce it** (concurrent `setPlaceStatus` fired during `applyMergedSnapshot`, with trips +
+active trip + app mounted, settled clean at ~47 MB) — a self-sustaining async loop needs a full-speed
+foreground tab; the throttled preview stalls it. Read every `syncNow` caller (all user-triggered or
+bounded — no sync loop), `SyncIndicator`/`ActiveTripBanner` (read-only), `useTweenedNumber` (cancels its
+rAF correctly) — no smoking gun.
+
+**Instrumentation added (this commit):** `src/debug/scheduleWatch.ts` patches `requestAnimationFrame` and
+`setTimeout` to count cumulative scheduling, surfaced in the census as `rafN` / `tmoN` (installed in
+`main.tsx`; wrappers only increment + pass through — verified rAF/timers still fire and the app loads).
+A self-sustaining runaway is most likely a leaked scheduling loop, so the **rate** of `rafN`/`tmoN` between
+two `memory: climbing` lines (~5 s apart) will expose it: one healthy 60 fps loop ≈ 300 rAF/5 s; many
+concurrent leaked loops ⇒ thousands. **Flat `rafN`+`tmoN` while the heap climbs ⇒ it's a promise chain or
+plain data retention → go straight to a heap snapshot.** `tsc`/`eslint`/`vitest` (206) clean.
+
+**Fastest path to the fix now (recommended to the user):** it's untracked reachable JS, so a **Chrome
+DevTools → Memory heap snapshot** taken on desktop at ~1 GB (they reproduce it readily; one prior marker
+was desktop, dpr 1) will name the retained objects by dominator/retainer directly — more decisive than any
+more on-device logging. The `rafN`/`tmoN` census is the on-device fallback if desktop repro is inconvenient.
