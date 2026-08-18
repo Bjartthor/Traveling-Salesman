@@ -9,6 +9,7 @@ import type { City, Country, Subdivision } from '@/db/types'
 import { invalidateSearchIndex } from '@/geo/search'
 import { invalidateNearestCityIndex } from '@/geo/nearestCity'
 import { invalidateMapCityIndex } from '@/geo/mapCities'
+import { registerCensusCounter } from '@/debug/census'
 
 // Bump when the committed artefacts change shape/content so an app update
 // reseeds reference data without disturbing user data.
@@ -210,6 +211,13 @@ export function loadCountryTopology(code: string): Promise<TopoJson | null> {
 }
 
 const countryDetailTopoPromises = new Map<string, Promise<TopoJson | null>>()
+
+// Census probe (@/debug/census): both maps hold one memoised fetch per country
+// code, so together they're bounded by the country count (~250). Each retained
+// promise also keeps its resolved topology alive — a plausible steady-state MB
+// cost, so a crash breadcrumb showing this near the country count is expected,
+// and showing it far larger would point at a re-keying bug.
+registerCensusCounter('topo$', () => countryTopoPromises.size + countryDetailTopoPromises.size)
 
 /**
  * Lazy, higher-resolution single-country outline for one country — same

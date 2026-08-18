@@ -7,6 +7,7 @@ import { loadCountryDetailTopology, loadCountryTopology, loadWorldTopology, type
 import { loadMapCities, type MapCity } from '@/geo/mapCities'
 import { logError } from '@/debug/log'
 import { setRenderVitals, resetRenderVitals } from '@/debug/renderVitals'
+import { registerCensusCounter } from '@/debug/census'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
@@ -26,6 +27,12 @@ const SPHERE: GeoSphere = { type: 'Sphere' }
 // device (same topology, same viewport), so caching at module scope turns a
 // remount storm into a cache hit instead of a repeated CPU/memory spike.
 const pathsCache = new Map<string, { key: string; paths: { id: string; name: string; d: string }[] }>()
+
+// Census probe (@/debug/census): this cache is keyed by cacheId and overwritten
+// per id, so it's bounded (world + one admin1/detail entry per country visited)
+// — a crash breadcrumb showing it climbing past a few hundred would be a real,
+// unexpected leak here.
+registerCensusCounter('paths$', () => pathsCache.size)
 
 function getPaths(
   cacheId: string,

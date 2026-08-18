@@ -4906,3 +4906,74 @@ building territories in a second, unsimplified topojson pass (`WORLD_SIMPLIFY_TE
 online (Photon) search geocodes places on these territories under the sovereign parent (Jan Mayen →
 Norway/Nordland), so `commitPhotonResult` now remaps an online city to the split territory its
 coordinates land on (`SPLIT_TERRITORY_CODES` / `resolveTerritoryByPoint` in `src/geo/photon.ts`).
+
+## 2026-08-18 — Ran the high-heap Aw-snap to ground: render path is NOT the leak; added a "what's growing" census (probe only, no root-cause fix)
+
+Picked up the 2026-08-17 crash above ("deep-zoom heap runaway"). Rather than take the previous
+session's "first fix to try: cap the zoom" on faith, drove **every code path** in a real browser
+(preview_eval against the live dev server, working around the sandbox's 0×0-viewport / dead-
+ResizeObserver limitation by resizing to 1280×800 then shimming `window.ResizeObserver` and remounting
+WorldMap via the hash router) and sampled `performance.memory` throughout. **Nothing leaks** — every
+path is a healthy GC sawtooth with a stable floor:
+
+- **Render / zoom / pan at every zoom level.** The decisive test: a synchronous 4000-iteration hammer of
+  `g.setAttribute('transform', scale(k))` + `--zoom-k` + **forced synchronous layout (`getBBox`)** at k
+  up to **1e23** — heap dead flat, no NaN geometry. So per-frame SVG render/layout does **not** retain
+  V8 heap at any zoom. `usedJSHeapSize` is V8-only (`@/debug/memory`), so GPU/raster isn't in those
+  numbers. **This refutes the "deep-zoom flat-map render leak" hypothesis and its "cap zoom" fix** — the
+  phone was even climbing at 4.1×, and extreme zoom provably retains nothing. Capping zoom would not have
+  helped, so it was deliberately **not** done.
+- **Selected country + admin-1 (51 US regions) + zoom oscillating 4.5↔64×**, with 290 seeded entries
+  (populated status maps): healthy sawtooth, floor stable ~44-50MB.
+- **Cascade / place-setting:** 160× `setPlaceStatus` (write → `entries` liveQuery → MapScreen +
+  WorldMap re-render): no leak.
+- **Sync body:** `buildLocalSnapshot` + `mergeSnapshots` + 3× `canonicalize` + `applyMergedSnapshot`
+  (clear + re-add 320 entries + `rebuildDerivedEntries`) driven ~80×: heap settles back to ~57MB.
+  (Aside: `applyMergedSnapshot` is O(entries)-**slow** — >1.2s per call at 320 entries — a jank/perf
+  concern worth a separate look, not a leak.)
+- **Nav / remount storm** (Map↔Places 120×): with an instance-tracked shim, live ResizeObserver count
+  oscillates 0↔1 (observers ARE disconnected), DOM node count does not grow, heap climb is ~0.2MB/remount
+  and noisy — orders of magnitude too small for a GB-scale runaway (~20k remounts needed).
+- Static sweep: no unbounded module-level collection; every `addEventListener` is cleaned up or
+  `{once:true}`; no manual `liveQuery().subscribe()`; no recurring `console.*(object)` (rules out
+  DevTools-console retention); `auth.ts` memoises its GIS token client; `drive.ts` is plain fetch/json.
+
+**Couldn't replicate (leading remaining suspects):** the real Google Drive sync against a live remote
+doc over a real network (needs OAuth — the sync *body* is clean, but the real fetch/Response path and a
+long multi-sync session weren't reproducible), and much longer sessions. Both crash captures coincided
+with live sync. Also unexercised: real touch gestures (but the desktop marker crashed on mouse/wheel, so
+not touch-specific) and the active-trip autoAttach path.
+
+**What was actually built — a census probe (the user chose "add a 'what's growing' probe, then
+re-capture"):** the existing instrumentation logs heap *total* + on-screen geometry but never a DOM-node
+count or the size of the JS caches — exactly the discriminator we lacked. New
+[`src/debug/census.ts`](atlas/src/debug/census.ts): a synchronous, O(1) `censusSummary()` →
+`dom <N> · cityIdx <N> · topo$ <N> · paths$ <N>`, where `dom` is `getElementsByTagName('*').length`
+(the key tell: climbs with the heap ⇒ a DOM leak; flat while the heap runs away ⇒ pure-JS retention) and
+the rest are module caches that self-register via `registerCensusCounter` (WorldMap `pathsCache`, loader
+`countryTopo`/`countryDetail` promise maps, mapCities index length — all bounded by design, so one
+climbing unexpectedly is the smoking gun). Appended to the `memory: climbing` / pressure breadcrumbs
+(`memoryWatch.ts`) and to the crash-sentinel record + its "previous session ended uncleanly" marker
+(`crashSentinel.ts`), so both the trail and the final marker carry it. Decoupled (the watchdog never
+imports map/geo code — modules register themselves), guarded for the Node test env (`document` touched
+only inside the function).
+
+**Verified:** `npx tsc -b`, `npx eslint .`, `npx vitest run` (**206/206**) all clean. Live in-browser:
+confirmed the counters track real state as the app is used (`dom 129 → 775`, `paths$ 0 → 3`,
+`topo$ 0 → 2` on selecting the USA and zooming past the admin-1 threshold, `cityIdx 0 → 170487` once the
+city layer loads), confirmed the crash-sentinel localStorage record now carries a `census` field, and
+forced a real `memory: climbing` breadcrumb (retained ~300MB) to confirm it logs
+`… zoom 12.1x · dom 775 · cityIdx 170487 · topo$ 2 · paths$ 3`. **No source behaviour changed** — this
+is diagnosis-only, like the two instrumentation rounds before it.
+
+### How the NEXT capture pinpoints it
+After the next real-device Aw-snap (must be on a build carrying this — accept the PWA "Update available"
+banner first; see the "Atlas PWA manual update" memory), read the `crash:` marker's `census …` field and
+the `memory: climbing` lines before the gap:
+- **`dom` rising toward the crash** ⇒ a **DOM leak** — some route/overlay/list isn't being torn down.
+  Cross-check which `nav:` route and `<view>` the breadcrumbs show.
+- **`dom` flat while heap climbs to GB** ⇒ **pure-JS retention** (or detached nodes held by JS). Then:
+  `cityIdx` should sit at ~170k, `topo$` ≤ ~250, `paths$` at a few hundred — whichever is wildly larger
+  than that is the leak. If all three are bounded and `dom` is flat but the heap still ran away, the
+  retention is outside these caches (leading candidates: the live Drive-sync/fetch path, or GIS) — chase
+  the sync-active path next.

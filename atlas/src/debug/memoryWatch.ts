@@ -16,6 +16,7 @@
 import { logError, logInfo } from '@/debug/log'
 import { heapSummary, readHeap } from '@/debug/memory'
 import { getRenderVitals, renderVitalsSummary } from '@/debug/renderVitals'
+import { censusSummary } from '@/debug/census'
 
 const SAMPLE_INTERVAL_MS = 5_000
 const BASELINE_DELAY_MS = 4_000
@@ -60,9 +61,12 @@ export function installMemoryWatch(): void {
   const sample = (): void => {
     const h = readHeap()
     if (!h) return // API unavailable — nothing to watch
-    // Heap and geometry side by side: the crash can come from either budget,
-    // and the heap number alone kept looking innocent right up to the crash.
-    const summary = [heapSummary(), renderVitalsSummary()].filter(Boolean).join(' · ')
+    // Heap, on-screen geometry, and a census of what could be pinning the heap,
+    // side by side: the crash can come from any of them, and the heap number
+    // alone kept looking innocent right up to the crash. The census (@/debug/
+    // census) is the discriminator — DOM-node count climbing ⇒ a DOM leak;
+    // flat while heap runs away ⇒ pure-JS retention (check its named counters).
+    const summary = [heapSummary(), renderVitalsSummary(), censusSummary()].filter(Boolean).join(' · ')
     let logged = false
     for (const t of THRESHOLDS) {
       if (prevPressure < t && h.pressure >= t) {

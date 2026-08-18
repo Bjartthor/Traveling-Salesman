@@ -8,6 +8,7 @@
 
 import { db } from '@/db/schema'
 import { normalize } from '@/geo/search'
+import { registerCensusCounter } from '@/debug/census'
 
 export interface MapCity {
   refId: string // String(geonameId) — matches Entry.refId
@@ -25,6 +26,13 @@ export interface MapCity {
 }
 
 let indexPromise: Promise<MapCity[]> | null = null
+
+// Census probe (@/debug/census): the resolved index size (~170k once loaded, 0
+// before). Steady-state, not a leak vector — but a crash breadcrumb showing it
+// far above the row count would mean it was rebuilt without the old one being
+// released.
+let indexLength = 0
+registerCensusCounter('cityIdx', () => indexLength)
 
 async function buildIndex(): Promise<MapCity[]> {
   const [cities, countries] = await Promise.all([db.cities.toArray(), db.countries.toArray()])
@@ -45,12 +53,14 @@ async function buildIndex(): Promise<MapCity[]> {
   // keeps the biggest cities first — same rationale @/geo/search's own
   // pre-sort documents.
   out.sort((a, b) => b.population - a.population)
+  indexLength = out.length
   return out
 }
 
 /** Call after @/geo/loader reseeds `cities` — same trigger as the other two in-memory city indexes. */
 export function invalidateMapCityIndex(): void {
   indexPromise = null
+  indexLength = 0
 }
 
 export function loadMapCities(): Promise<readonly MapCity[]> {

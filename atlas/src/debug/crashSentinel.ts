@@ -24,6 +24,7 @@
 import { logError, logInfo } from '@/debug/log'
 import { heapSummary } from '@/debug/memory'
 import { renderVitalsSummary } from '@/debug/renderVitals'
+import { censusSummary } from '@/debug/census'
 
 const KEY = 'atlas:crashSentinel'
 const STAMP_INTERVAL_MS = 5_000
@@ -35,6 +36,10 @@ interface Sentinel {
   updatedAt: number
   heap: string
   render: string
+  // A census of what could be pinning the JS heap (@/debug/census) — DOM node
+  // count + registered cache sizes — so the crash marker says *what* grew, not
+  // just how big the heap got. Optional: sessions predating this field omit it.
+  census?: string
   // How many unclean exits we've detected across the sentinel's lifetime —
   // answers "how often is this happening" at a glance, since a crash erases the
   // in-session counters the breadcrumb trail would otherwise use.
@@ -69,6 +74,7 @@ function stamp(phase: 'active' | 'ended'): void {
   const heap = heapSummary()
   if (heap) current.heap = heap
   current.render = renderVitalsSummary()
+  current.census = censusSummary()
   write(current)
 }
 
@@ -101,7 +107,7 @@ export function installCrashSentinel(): void {
     const stale = describeAge(Math.max(0, now - prev.updatedAt))
     void logError(
       'crash: previous session ended uncleanly (foreground)',
-      `ran ≥${ran} · last ${prev.heap || 'heap n/a'} · on screen ${prev.render || 'n/a'} · last checkpoint ${stale} before this boot · unclean exits so far: ${priorCrashes + 1}`,
+      `ran ≥${ran} · last ${prev.heap || 'heap n/a'} · on screen ${prev.render || 'n/a'} · census ${prev.census || 'n/a'} · last checkpoint ${stale} before this boot · unclean exits so far: ${priorCrashes + 1}`,
     )
   }
 
@@ -111,6 +117,7 @@ export function installCrashSentinel(): void {
     updatedAt: now,
     heap: heapSummary(),
     render: renderVitalsSummary(),
+    census: censusSummary(),
     crashCount: crashed ? priorCrashes + 1 : priorCrashes,
   }
   write(current)
