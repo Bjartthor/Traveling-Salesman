@@ -4977,3 +4977,44 @@ the `memory: climbing` lines before the gap:
   than that is the leak. If all three are bounded and `dom` is flat but the heap still ran away, the
   retention is outside these caches (leading candidates: the live Drive-sync/fetch path, or GIS) — chase
   the sync-active path next.
+
+### 2026-08-18 (later) — a fresh real capture localises it: the runaway is SYNC-TRIGGERED at idle, not zoom
+A new device debug log caught the crash again and reframes it decisively. The crash marker:
+`ran ≥2m45s · last heap 2880MB/2884MB · limit 2989MB · 96% · on screen flat · dpr 2.25 · 250 paths ·
+0 cities · zoom 1.0x`. Two facts kill the deep-zoom theory for good:
+
+1. **The entire runaway happens at `zoom 1.0x · 250 paths · 0 cities`** — the default, fully-zoomed-*out*
+   world view, map idle, nothing selected. Not a render/zoom leak (which the render tests already
+   disproved). The prior captures' "deep zoom" was purely coincidental (the user happened to be zooming).
+2. **It starts right after `sync: pulled`** (48MB→168MB on the pull, then 168→470→696→…→2843MB over ~90s
+   to the crash) and **keeps climbing ~35s after `sync: ok`** with no further sync running. The 5s
+   watchdog keeps firing throughout (with occasional 10s gaps ⇒ intermittent long main-thread/GC
+   bursts), so it's **asynchronous** allocation, not one blocking computation.
+
+This is the same **never-isolated runaway loop from the original 868a531 bug** ("from that instant the heap
+ran away… the exact runaway loop was never isolated") — 868a531 removed one *trigger* (a throw in the merge
+transaction) but the loop itself was never found. It's now firing again on a **successful** sync (merged /
+applied / pushed / ok all logged mid-climb). Because it continues after `sync: ok`, the mechanism is almost
+certainly a **reactive `liveQuery` ↔ write loop** kicked off by the sync's table writes — which also
+explains why it's **unreproducible in the sandbox**: an async loop needs full-speed scheduling, and the
+preview tab is throttled (intermittently `document.hidden`), so the loop stalls instead of spinning. Every
+sandbox attempt (render, cascade, place-setting, sync-body, and now sync-**apply with real trips+
+tripEntries + an active trip + the app mounted**) settles clean.
+
+Read the whole app to find the reactive write that closes the loop and came up empty: `merge.ts`,
+`snapshot.ts`, `drive.ts`, `auth.ts`, `photos.ts` are all clean/O(n); every component/screen DB write is
+inside a user event handler, not an effect; the only reactive rebuild (`regionBackfill`) is gated to run
+once. Couldn't name the exact loop from code alone.
+
+**Instrumentation added (this commit):** the ~1.3 GB explosion falls inside the single un-instrumented
+`sync: pulled → sync: merged` gap (which spans the state read, `syncPhotos`, `buildLocalSnapshot`'s full
+~170k-row cities scan, `mergeSnapshots`, and canonicalisation). Split it with heap-stamped phase logs in
+`runSync` — `sync: state read`, `sync: snapshot built` (+ snapshot sizes), `sync: canonicalized` — so the
+next capture shows which sub-step the heap detonates in. Paired with the census from the previous commit
+(`dom · cityIdx · topo$ · paths$`), which now rides the `memory: climbing` lines and characterises the
+post-`ok` continued climb. `tsc` / `eslint` / `vitest` (206) clean. Still diagnosis-only — the loop isn't
+fixed yet, but it's now cornered to "reactive, sync-write-triggered," and the next log should name the phase.
+
+**Caveat on that capture:** it carried no `census …` field, so it was taken on the pre-census build — the
+PWA update hadn't fully activated for that session. The next capture must be on the new build (accept the
+"Update available" banner) to get both the census and these phase stamps.

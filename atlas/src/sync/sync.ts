@@ -123,12 +123,21 @@ async function runSync(): Promise<SyncResult> {
       return { outcome: 'ok', pushed: false, pulled: false }
     }
 
+    void logInfo('sync: state read', withHeap())
+
     // 3. Photo pass first, so new/cleared driveFileIds ride along in the doc.
     await syncPhotos()
     void logInfo('sync: photos done', withHeap())
 
     // 4. Merge (photo metadata is now current in the local snapshot).
+    // These breadcrumbs split the heaviest window of a sync — the ~1.3 GB heap
+    // runaway in a captured OOM (2026-08-18) all happened between `sync: pulled`
+    // and `sync: merged`, which used to be one un-instrumented gap spanning the
+    // snapshot read (a full ~170k-row cities scan in buildLocalSnapshot), the
+    // merge, and canonicalisation. Stamping each step tells the next capture
+    // exactly which one the heap explodes in. See PROGRESS.md.
     const local = await buildLocalSnapshot()
+    void logInfo('sync: snapshot built', withHeap(snapshotSizes(local)))
     const merged: SyncSnapshot = remoteSnapshot
       ? mergeSnapshots({ local, remote: remoteSnapshot, settingsBase: bookkeeping.lastSyncedSettings })
       : local
@@ -140,6 +149,7 @@ async function runSync(): Promise<SyncResult> {
     // twice (two full stringifies of the same, possibly large, object) — trims
     // the pull's peak main-thread allocation.
     const mergedCanon = canonicalize(merged)
+    void logInfo('sync: canonicalized', withHeap())
 
     // 5. Write locally only if the merge actually changed local state.
     if (mergedCanon !== canonicalize(local)) {
