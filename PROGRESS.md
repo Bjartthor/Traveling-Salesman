@@ -5018,3 +5018,43 @@ fixed yet, but it's now cornered to "reactive, sync-write-triggered," and the ne
 **Caveat on that capture:** it carried no `census …` field, so it was taken on the pre-census build — the
 PWA update hadn't fully activated for that session. The next capture must be on the new build (accept the
 "Update available" banner) to get both the census and these phase stamps.
+
+### Notes for the next session (high-heap Aw-snap — OPEN, waiting on a capture)
+
+**Status (2026-08-18):** the high-heap "Aw snap" is **not fixed** — this session made it *diagnosable*
+and *localised the trigger*, but the exact leaking code isn't named yet. The user **cannot reproduce it
+on demand right now**, so the next move is gated on a real-device debug log captured on the current build.
+Both instrumentation changes are **deployed to `main` / GitHub Pages**: `5904161` (census) and `1117a91`
+(sync-phase heap stamps). Both are diagnosis-only — no behaviour changed.
+
+**What is now established (don't re-litigate):**
+- **NOT the render/zoom path.** Proven clean at every zoom incl. a forced-layout hammer at k=1e23; the
+  runaway happens at `zoom 1.0x` on the idle world view. **Do not "cap the zoom"** — it won't help.
+- **It's sync-triggered** (starts after `sync: pulled`) and **async** (continues after `sync: ok`, watchdog
+  keeps firing) — the never-isolated 868a531 runaway loop, now on a *successful* sync. Leading theory: a
+  reactive `liveQuery`↔write loop the sync's table writes start.
+- **Unreproducible in the sandbox** because the preview tab is throttled (intermittently `document.hidden`),
+  which stalls any async loop. Every path driven there settles clean. Don't burn time re-attempting sandbox
+  repro of the *loop*; it needs a full-speed foreground device.
+
+**Do first when a new log arrives** (confirm it's the new build: the crash marker / `memory: climbing`
+lines carry `census dom … · cityIdx … · topo$ … · paths$ …`):
+1. Find the `sync:` phase where the heap jumps: `pulled → state read → photos done → snapshot built →
+   merged → canonicalized → applied`. Whichever adjacent pair shows the big MB jump is the culprit phase.
+   - jump at **`snapshot built`** ⇒ `buildLocalSnapshot` (its `db.cities.filter(...)` full ~170k scan, or
+     an unexpectedly huge non-bundled-cities set) — check `cityIdx` in the census too.
+   - jump at **`canonicalized`/`merged`** ⇒ the merge/serialise of the snapshot.
+   - **heap already climbing before `snapshot built`, and continuing after `applied`/`ok`** ⇒ it's the
+     reactive loop, not the sync compute. Then read the census: `dom` rising ⇒ DOM/overlay leak; `dom` flat
+     ⇒ pure-JS retention (a liveQuery re-firing + re-render churn). Prime suspects to instrument next:
+     `useSyncTriggers` (its `syncBookkeeping` liveQuery re-fires on every `syncState.revision` bump) and the
+     always-mounted shell components (`ActiveTripBanner`, `SyncIndicator`, the global overlays in `App.tsx`).
+2. If the phase stamps show the compute is innocent (climb spans them all evenly and continues post-`ok`),
+   add a targeted **liveQuery re-fire counter** (count invocations of each `useLiveQuery` query fn per
+   second) — a runaway count names the looping subscription directly.
+
+**Env notes for driving the app in preview** (see also memory `aw-snap-render-path-ruled-out`): window
+starts 0×0 so `preview_resize` to 1280×800 then shim `window.ResizeObserver` (report getBoundingClientRect)
+and remount via `location.hash`; dev server runs Node 20 via `atlas/.claude/launch.json` (untracked local
+change pointing at the nvm v20.20.2 binary). RAF/timers throttle whenever the tab is hidden — screenshots
+force a paint and briefly un-hide it.
