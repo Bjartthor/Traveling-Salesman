@@ -170,12 +170,24 @@ export function countVisited(statusIndex: Map<string, Status>): number {
   return n
 }
 
-/** Subdivisions visited within one country — id already encodes country as `${code}.${admin1}`. */
-export function countrySubdivisionsVisited(code: string, subdivisionStatus: Map<string, Status>): number {
+/**
+ * Subdivisions visited within one country — id already encodes country as
+ * `${code}.${admin1}`. Also requires the id to be one of that country's real
+ * `db.subdivisions` rows (`validIds`): an entry can otherwise carry a
+ * `${code}.`-prefixed refId sourced from map topology that never matched a
+ * real subdivision (tools/build-geo.mjs's admin-1 id-namespace mismatch —
+ * see PROGRESS.md), which would inflate this count against a denominator
+ * that was never counting that id in the first place.
+ */
+export function countrySubdivisionsVisited(
+  code: string,
+  subdivisionStatus: Map<string, Status>,
+  validIds: ReadonlySet<string>,
+): number {
   let n = 0
   const prefix = `${code}.`
   for (const [id, status] of subdivisionStatus) {
-    if (id.startsWith(prefix) && countsAsCoverage(status)) n++
+    if (id.startsWith(prefix) && validIds.has(id) && countsAsCoverage(status)) n++
   }
   return n
 }

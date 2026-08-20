@@ -16,6 +16,7 @@ export interface CountryDetailData {
   country: Country
   entry: Entry | null
   subdivisionTotal: number
+  subdivisionIds: ReadonlySet<string>
   subdivisionStatus: Map<string, Status>
   cities: { entry: Entry; city: City }[]
   explanation: { status: Status; becauseName: string } | null
@@ -28,11 +29,13 @@ export function useCountryDetailData(code: string): CountryDetailData | null | u
     const country = await db.countries.get(code)
     if (!country) return null
 
-    const [entryRow, subdivisionTotal, allEntries] = await Promise.all([
+    const [entryRow, subdivisionRows, allEntries] = await Promise.all([
       db.entries.where('[kind+refId]').equals(['country', code]).first(),
-      db.subdivisions.where('countryCode').equals(code).count(),
+      db.subdivisions.where('countryCode').equals(code).toArray(),
       db.entries.toArray(),
     ])
+    const subdivisionTotal = subdivisionRows.length
+    const subdivisionIds = new Set(subdivisionRows.map((s) => s.id))
     const entry = entryRow && entryRow.deletedAt === null ? entryRow : null
     const active = allEntries.filter((e) => e.deletedAt === null)
 
@@ -63,6 +66,6 @@ export function useCountryDetailData(code: string): CountryDetailData | null | u
       ? { status: cause.status, becauseName: (await resolvePlaceInfo(cause.because.kind, cause.because.refId))?.name ?? 'a place inside it' }
       : null
 
-    return { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation, photos }
+    return { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos }
   }, [code])
 }

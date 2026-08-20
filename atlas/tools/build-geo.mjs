@@ -182,6 +182,12 @@ function resolveA2(props) {
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true })
+  // Cleared (not just mkdir'd) rather than left to accumulate: buildAdmin1
+  // only *writes* a file for a country that still has ≥1 valid feature, so a
+  // country whose count drops to zero between runs (as GB's does with this
+  // session's id-namespace filter) would otherwise keep its previous run's
+  // stale file forever instead of correctly ending up with no admin-1 data.
+  fs.rmSync(ADMIN1_OUT, { recursive: true, force: true })
   fs.mkdirSync(ADMIN1_OUT, { recursive: true })
   fs.mkdirSync(COUNTRY_DETAIL_OUT, { recursive: true })
 
@@ -316,6 +322,7 @@ async function main() {
   fs.writeFileSync(path.join(OUT, 'subdivisions.json'), JSON.stringify(subdivisions))
   log(`  subdivisions.json: ${subdivisions.length} rows (${admin1Report.enriched} enriched with NE centroid/ISO, ${subdivisions.length - admin1Report.enriched} from GeoNames only)`)
   log(`  admin1 files: ${admin1Report.files} written; largest ${admin1Report.largestName} @ ${kb(admin1Report.largestBytes)}`)
+  log(`  admin1 features dropped for not matching any GeoNames row: ${admin1Report.droppedFeatures}`)
   const countryDetailReport = await buildCountryDetail(neByA2)
   log(
     `  countryDetail files: ${countryDetailReport.files} written, ${kb(countryDetailReport.totalBytes)} total; largest ${countryDetailReport.largestName} @ ${kb(countryDetailReport.largestBytes)}`,
@@ -565,25 +572,51 @@ async function buildCountryDetail(neByA2) {
 // subdivisions rows with NE ISO-2 code, type, and label-point centroid.
 async function buildAdmin1(admin1Rows, countries) {
   const neAdmin1 = await loadNeAdmin1()
+  // The only ids `subdivisions.json` will ever contain — see the "id
+  // namespace mismatch" note below for why a NE feature can carry an id
+  // outside this set even when it *does* look like a real "CC.code" id.
+  const validIds = new Set(admin1Rows.map((r) => r.id))
 
   // enrichment lookups
   const byGnA1 = new Map() // "CC.code" -> props
   const byGnId = new Map() // geonameId -> props
-  const byCountry = new Map() // CC -> features[]
+  const byCountry = new Map() // CC -> features[] (only those that resolve to a real GeoNames admin-1 row)
+  let droppedFeatures = 0
   for (const f of neAdmin1.features) {
     const p = f.properties
     const cc = p.iso_a2 && /^[A-Z]{2}$/.test(p.iso_a2) ? p.iso_a2 : null
     if (p.gn_a1_code) byGnA1.set(p.gn_a1_code, p)
     if (p.gn_id) byGnId.set(Number(p.gn_id), p)
-    if (cc) {
-      const id = p.gn_a1_code || p.iso_3166_2 || p.adm1_code
-      if (!byCountry.has(cc)) byCountry.set(cc, [])
-      byCountry.get(cc).push({
-        type: 'Feature',
-        properties: { id, name: p.name || p.gn_name || '' },
-        geometry: f.geometry,
-      })
+    if (!cc) continue
+    const id = p.gn_a1_code || p.iso_3166_2 || p.adm1_code
+    // Id namespace mismatch: for a country where GeoNames' and Natural
+    // Earth's admin-1 tiers don't line up (the UK is the extreme case —
+    // GeoNames has 4 rows, England/Scotland/Wales/Northern Ireland; NE
+    // digitises the UK at county/unitary-authority level, ~200 polygons,
+    // under a completely different id scheme), `id` still looks plausible
+    // (e.g. "GB.S6") but never matches a `subdivisions.json` row. Shipping
+    // it anyway drew map shapes the rest of the app could never correctly
+    // track: `subdivisionStatus.get(id)` always misses (so the shape can
+    // never show a real status) while `countrySubdivisionsVisited`
+    // (@/stats/coverage) matched it purely by "CC." prefix, so tapping one
+    // still silently counted toward "regions visited" against the wrong
+    // (GeoNames-sized) denominator. Dropping any feature whose id isn't a
+    // real GeoNames admin-1 row removes it from the map entirely instead —
+    // the country then falls back to whole-country coloring, same as any
+    // other country with no admin-1 topology at all, which is at least
+    // honest about what can and can't be tracked. Checked live across every
+    // country before shipping this (see PROGRESS.md); 36 countries had zero
+    // overlap between their shapes and their real subdivisions.
+    if (!validIds.has(id)) {
+      droppedFeatures++
+      continue
     }
+    if (!byCountry.has(cc)) byCountry.set(cc, [])
+    byCountry.get(cc).push({
+      type: 'Feature',
+      properties: { id, name: p.name || p.gn_name || '' },
+      geometry: f.geometry,
+    })
   }
 
   const countryCentroid = new Map(countries.map((c) => [c.code, [c.lat, c.lon]]))
@@ -690,7 +723,10 @@ async function buildAdmin1(admin1Rows, countries) {
     }
   }
 
-  return { subdivisions, admin1Report: { enriched, files, totalBytes, largestBytes, largestName, dupeGroupsMerged, dupeFeaturesMerged } }
+  return {
+    subdivisions,
+    admin1Report: { enriched, files, totalBytes, largestBytes, largestName, dupeGroupsMerged, dupeFeaturesMerged, droppedFeatures },
+  }
 }
 
 // cities.json.gz: trimmed cities1000, sorted by population desc, gzipped.

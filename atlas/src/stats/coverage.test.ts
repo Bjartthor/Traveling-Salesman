@@ -164,7 +164,7 @@ describe('continentsTouched', () => {
 })
 
 describe('countrySubdivisionsVisited', () => {
-  it('counts visited+lived subdivisions whose id is prefixed by the country code', () => {
+  it('counts visited+lived subdivisions whose id is prefixed by the country code and is a real subdivision', () => {
     const index = buildStatusIndex(
       [
         mkEntry({ kind: 'subdivision', refId: 'A.01', status: 'visited' }),
@@ -173,8 +173,26 @@ describe('countrySubdivisionsVisited', () => {
       ],
       'subdivision',
     )
-    expect(countrySubdivisionsVisited('A', index)).toBe(1)
-    expect(countrySubdivisionsVisited('B', index)).toBe(1)
+    const validIds = new Set(['A.01', 'A.02', 'B.01'])
+    expect(countrySubdivisionsVisited('A', index, validIds)).toBe(1)
+    expect(countrySubdivisionsVisited('B', index, validIds)).toBe(1)
+  })
+
+  it('excludes a status set on a country-prefixed id that is not a real subdivision', () => {
+    // Reproduces the UK bug: a map shape (or a city's resolved subdivisionId)
+    // can carry a `${code}.`-prefixed id sourced from admin-1 map topology
+    // that was never one of the country's real GeoNames subdivisions (see
+    // tools/build-geo.mjs and PROGRESS.md) — that must not inflate the count
+    // against a denominator that only ever counted the real ones.
+    const index = buildStatusIndex(
+      [
+        mkEntry({ kind: 'subdivision', refId: 'GB.ENG', status: 'visited' }),
+        mkEntry({ kind: 'subdivision', refId: 'GB.S6', status: 'visited' }), // decoy: not a real subdivisions.json row
+      ],
+      'subdivision',
+    )
+    const validIds = new Set(['GB.ENG', 'GB.SCT', 'GB.WLS', 'GB.NIR'])
+    expect(countrySubdivisionsVisited('GB', index, validIds)).toBe(1)
   })
 })
 

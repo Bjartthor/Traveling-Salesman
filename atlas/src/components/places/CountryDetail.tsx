@@ -53,8 +53,8 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
     )
   }
 
-  const { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation, photos } = data
-  const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus)
+  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos } = data
+  const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus, subdivisionIds)
 
   return (
     <FullScreenOverlay title={country.name} onClose={onClose}>

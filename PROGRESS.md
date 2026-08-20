@@ -5098,3 +5098,120 @@ plain data retention → go straight to a heap snapshot.** `tsc`/`eslint`/`vites
 DevTools → Memory heap snapshot** taken on desktop at ~1 GB (they reproduce it readily; one prior marker
 was desktop, dpr 1) will name the retained objects by dominator/retainer directly — more decisive than any
 more on-device logging. The `rafN`/`tmoN` census is the on-device fallback if desktop repro is inconvenient.
+
+## The UK's "Regions visited" showed 4 while the map drew ~200 regions — admin-1 id-namespace mismatch, 48 countries affected (done)
+
+Reported: the UK "has many regions but the region count displayed is only 4." Asked to fix it and check
+whether other countries have the same problem; separately floated turning the UK into a 3-tier hierarchy
+(UK → England/Scotland/Wales/N.Ireland → counties) as a "maybe cool" idea, not a firm request.
+
+**Root cause, confirmed against the raw source data**: `subdivisions.json` (the "regions visited"
+denominator, and the only source `db.subdivisions` is seeded from) is built straight from GeoNames'
+`admin1CodesASCII.txt`, which has exactly **4** admin-1 rows for GB — England, Scotland, Wales, Northern
+Ireland; that part is correct, not a bug. But the *map's* admin-1 shapes come from a different source
+(Natural Earth's `ne_10m_admin_1_states_provinces`), and for the UK that dataset is digitised at
+county/unitary-authority level — **199** polygons (Kent, Flintshire, Derry, Aberdeenshire, …) — under an
+entirely different id scheme. Checked directly: **zero** of GB's 232 raw NE features' `gn_a1_code`s match
+any of the 4 real GeoNames ids. `tools/build-geo.mjs` shipped all 199 anyway (`byCountry` accepted any
+feature with a plausible-looking id, never checked it against the GeoNames list it had just built),
+so the map drew ~200 regions the rest of the app had no real record of.
+
+This was more than a cosmetic mismatch. `stats/coverage.ts`'s `countrySubdivisionsVisited` matched by
+`${code}.` **prefix only** — so tapping one of the 199 decoy county shapes on the map (`GB.S6` etc., all
+still legitimately prefixed `GB.`) silently counted toward "regions visited" against the unrelated
+4-row denominator, while the 4 *real* rows (`GB.ENG` etc.) had no map shape at all and could never
+actually be tapped or marked visited. Separately, `CountryDetail.tsx`'s `onSelect` (unlike `MapScreen`'s,
+which already had a `fallbackName` workaround — see the "id namespace" comment already in
+`MapScreen.tsx`/`cascade.ts` from an earlier session) opens the status sheet with no fallback, so tapping
+a decoy region from the Places tab showed a broken "…" title with no flag or breadcrumb.
+
+**Checked how widespread this is before fixing it**, the same way the admin-1 id-collision session (above)
+did: decoded every committed `admin1/<CC>.topo.json` and diffed its feature ids against `subdivisions.json`
+per country. **36 countries with `subdivisions.json` rows had zero overlap** with their own map shapes —
+Uganda, Italy, Ireland, Kosovo, Malawi, Sri Lanka, Serbia, Madagascar, Taiwan, Morocco, Nepal, and more,
+plus a batch of tiny territories whose one undifferentiated NE polygon matched none of their (sometimes
+dozens of) real GeoNames subdivisions. Dozens more had partial mismatches. This exact class of gap was
+already found and deliberately deferred by an earlier session (see "Bug fix: two Natural Earth admin-1
+polygons could share one GeoNames id" above, "Deliberately did not also fix the 'bare sentinel' class… Left
+as a candidate for a future session") — this session is that follow-up, prompted by a live user report of
+its actual symptom rather than a build-log curiosity.
+
+**Discussed the fix options with the user before building anything**, given the wide range of possible
+scope (a small correctness patch vs. building the UK's suggested 3-tier hierarchy for real vs. generalising
+Natural Earth's finer regions as the tracked subdivisions everywhere) — the user picked the minimal
+correctness fix; the 3-tier idea is parked, not built.
+
+### What was built
+
+- **[`tools/build-geo.mjs`](atlas/tools/build-geo.mjs)'s `buildAdmin1`**: a NE admin-1 feature is only kept
+  (and only then assigned to a country's shape file) if its derived id is actually one of that country's
+  real GeoNames admin-1 ids (`validIds`, built from the same `admin1Rows` that seed `subdivisions.json`).
+  A country left with zero valid features gets no `admin1/<CC>.topo.json` at all, falling back to
+  whole-country coloring — the same, already-existing, already-tested path every other country with no NE
+  admin-1 coverage uses. This also fully subsumes the earlier session's "bare sentinel" `gn_a1_code: "CC."`
+  case (e.g. the 32 London boroughs NE couldn't confidently link) — those features are now dropped outright
+  instead of merely dissolved into one inert always-grey shape.
+- **`main()` now clears `ADMIN1_OUT` before writing** (`fs.rmSync(..., {recursive:true,force:true})`) — the
+  build previously only ever added/overwrote files in `public/geo/admin1/`, so a country whose count drops
+  to zero (GB, now) would otherwise keep serving its previous run's stale file forever. Without this the
+  rest of the fix would have silently done nothing for GB specifically.
+- **[`stats/coverage.ts`](atlas/src/stats/coverage.ts)'s `countrySubdivisionsVisited`** now also takes the
+  country's real subdivision id set and requires membership in it, not just the `${code}.` prefix — defense
+  in depth against any already-existing local entry with a decoy refId (this build fix stops new ones, but
+  can't retroactively clean a device's own IndexedDB), and against any future case with the same shape.
+  Threaded through `useCountryDetailData.ts` (now fetches the real subdivision rows, not just a `count()`)
+  into both call sites, `CountryDetail.tsx` and `CountrySheet.tsx`.
+- **`GEO_DATA_VERSION` bumped to 3** (`src/geo/loader.ts`) so installed devices reseed reference data
+  rather than keep their old, mismatched `subdivisions`/admin-1 data forever.
+
+### Verified
+
+- `npx tsc -b`, `npx eslint .`, `npx vitest run` (**207/207**, +2 new: the hardened-count contract and a
+  direct regression test reproducing the UK decoy-id case) all clean.
+- **`npm run build:geo` (Node 20)**: `admin1 files: 192 written` (was 240), `admin1 features dropped for
+  not matching any GeoNames row: 1363`, `admin1 id collisions fixed: 13 groups / 26 features` (was 33/170 —
+  most of the earlier session's collisions were exactly this "bare sentinel" class, now dropped rather than
+  needing a dissolve). **Independently re-diffed** the regenerated output the same way the bug was found:
+  every country with `subdivisions.json` rows now has **zero orphan shapes**, with one unrelated exception
+  (below). `subdivisions.json`, `countries.json`, `world.topo.json`, `cities.json.gz` and `countryDetail/`
+  are byte-identical to before — this only ever removes features from `admin1/<CC>.topo.json`, confirmed by
+  `git diff --stat` (52 files modified/shrunk, 48 deleted, nothing else touched).
+- **Live in the running app** (real modules via dynamic import in `preview_eval`, not screenshots — this
+  project's IndexedDB reseed blocks the renderer for ~3-4 min and makes screenshots unreliable during/right
+  after it, see memory): after the reseed (confirmed via the `[geo] reference data seeded` log),
+  `db.subdivisions.where('countryCode').equals('GB')` returns exactly England/Scotland/Wales/Northern
+  Ireland; `loadCountryTopology('GB')` resolves `null`; `resolveSubdivisionByPoint('GB', …)` for London and
+  Edinburgh both now resolve `null` instead of a decoy county id (so newly added UK cities no longer get a
+  fake subdivision); `countrySubdivisionsVisited('GB', map, validIds)` on a status map containing both a
+  real (`GB.ENG`) and decoy (`GB.S6`) entry now returns **1**, not 2. Germany (unaffected control, real NE
+  admin-1 coverage) unchanged: 16/16 subdivisions matching shapes. Opened the real `CountryDetail` overlay
+  for the UK end-to-end (`setPlaceStatus` + `countryDetailStore`, confirmed via `preview_snapshot`'s
+  accessibility tree): title "United Kingdom" (not the old broken "…"), "Regions visited 0 / 4", no admin-1
+  mini-map section (correctly omitted by `CountryAdmin1Map`'s pre-existing "no admin-1 data" fallback — the
+  same path every no-coverage country already used, so no new UI code was needed). Zero console
+  warnings/errors through the whole reseed + interaction.
+
+### Left undone
+
+- **Russia/Ukraine (Crimea, Sevastopol)**: the post-fix diff found exactly one remaining orphan-shape case,
+  and it's not the same bug — `admin1/RU.topo.json` includes two features (`UA.11` Crimea, `UA.20`
+  Sevastopol) whose ids **are** real, valid `subdivisions.json` rows, just filed under Ukraine's country
+  code, because Natural Earth's `iso_a2` for those polygons says `RU` while GeoNames still lists them as
+  Ukrainian admin-1 divisions. `validIds` is a global set (by design, so a country's shapes can use any real
+  id), so this one slipped through where a per-country check would have caught it. Left alone deliberately —
+  it's a disputed-territory attribution disagreement between two data sources, not an engineering bug, and
+  not something to resolve unilaterally. Flagged to the user; not fixed.
+- **The 3-tier UK idea (UK → England/Scotland/Wales/N.Ireland → counties) was not built.** The user chose
+  the minimal fix for now. If picked up later: the England/Scotland/Wales/NI split for the ~199 counties
+  isn't free — Natural Earth's own fields (`region`, `type_en`) cleanly identify Wales (`type_en` contains
+  "(wales)") and Northern Ireland (`region: "Northern Ireland"`, 26 features) but **not** Scotland vs.
+  England (both use overlapping `type_en` values and NE's `region` field reuses generic direction names
+  independently per home nation, e.g. both a Scottish and an English area can be `"Eastern"`) — that split
+  needs either a small curated name lookup (Scotland's 32 council areas are a fixed, well-known list) or a
+  geometry test against real Scotland/England outlines this data doesn't currently have. Would also need a
+  genuine third tier in the schema/cascade/coverage logic and new drill-down UI, and — if generalised past
+  the UK — the same per-country parent-mapping problem repeats for the other 35 mismatched countries.
+- **The other 35 non-UK mismatched countries were fixed by the same general mechanism but not individually
+  re-verified live** — only GB (the reported case) and DE (an unaffected control) were driven end-to-end in
+  the browser; the rest rely on the build-time diff check (zero orphan shapes post-build) rather than a
+  per-country manual click-through.

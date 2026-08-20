@@ -124,9 +124,9 @@ function CountrySheetContent({
   viewerIndex: number | null
   onViewerIndexChange: (index: number | null) => void
 }) {
-  const { country, entry, subdivisionTotal, subdivisionStatus, cities, explanation, photos } = data
+  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos } = data
   const code = country.code
-  const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus)
+  const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus, subdivisionIds)
 
   return (
     <>

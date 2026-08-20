@@ -17,7 +17,13 @@ import { registerCensusCounter } from '@/debug/census'
 // Bouvet, Tokelau) gained their own map shape + filled `region`, and their
 // parents' centroids no longer include the carved-off land (see tools/build-geo
 // addTerritoryShapes).
-export const GEO_DATA_VERSION = 2
+// v3: admin1/<CC>.topo.json no longer includes Natural Earth polygons whose id
+// doesn't match a real subdivisions.json row (36 countries, the UK the most
+// visible — GeoNames models it as 4 regions, Natural Earth digitises it at
+// county level under an unrelated id scheme). Those countries lose their
+// admin-1 map overlay entirely rather than show untrackable shapes; see
+// PROGRESS.md.
+export const GEO_DATA_VERSION = 3
 
 const base = import.meta.env.BASE_URL // './' for the GitHub Pages build
 const geoUrl = (p: string) => `${base}geo/${p}`
