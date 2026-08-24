@@ -11,7 +11,18 @@ import { Legend } from '@/components/map/Legend'
 import { CountrySheet } from '@/components/map/CountrySheet'
 import { MapIcon } from '@/components/nav/BottomNav'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { countedQuery } from '@/debug/census'
 import './MapScreen.css'
+
+// Module-scope: stable across renders, matching these queries' implicit
+// `deps: []` (dexie-react-hooks normalizes an omitted deps array the same
+// way). `entries` is the table every sync merge clears + rewrites, and its
+// result cascades into 3 useMemos + the whole map render below — the
+// sharpest remaining liveQuery suspect once the shell-level ones were ruled
+// out flat across a real crash (see PROGRESS.md / memory).
+const queryCountries = countedQuery('lqCountries', () => db.countries.toArray())
+const queryEntries = countedQuery('lqEntries', () => db.entries.filter((e) => e.deletedAt === null).toArray())
+const queryMapSettings = countedQuery('lqMapSettings', () => db.settings.get(1))
 
 function GlobeIcon() {
   return (
@@ -24,9 +35,9 @@ function GlobeIcon() {
 }
 
 export function MapScreen() {
-  const countries = useLiveQuery(() => db.countries.toArray())
-  const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
-  const settings = useLiveQuery(() => db.settings.get(1))
+  const countries = useLiveQuery(queryCountries)
+  const entries = useLiveQuery(queryEntries)
+  const settings = useLiveQuery(queryMapSettings)
 
   // The selected country: drives WorldMap's admin-1 breakdown + auto-zoom
   // *and* the country sheet below, in place of the old full-screen popup.
