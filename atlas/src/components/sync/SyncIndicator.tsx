@@ -7,10 +7,14 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { settingsRepo } from '@/db/repo'
 import { syncNow } from '@/sync/sync'
 import { useSyncStore } from '@/sync/syncStore'
+import { countedQuery } from '@/debug/census'
 import './SyncIndicator.css'
 
+// Module-scope: stable across renders, matching this query's `deps: []`.
+const queryConnected = countedQuery('lqSyncInd', async () => (await settingsRepo.get())?.driveConnected ?? false)
+
 export function SyncIndicator() {
-  const connected = useLiveQuery(async () => (await settingsRepo.get())?.driveConnected ?? false, [])
+  const connected = useLiveQuery(queryConnected, [])
   const phase = useSyncStore((s) => s.phase)
   const error = useSyncStore((s) => s.error)
   const pendingUploads = useSyncStore((s) => s.pendingUploads)

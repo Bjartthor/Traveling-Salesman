@@ -32,6 +32,32 @@ export function registerCensusCounter(name: string, get: () => number): void {
   counters.set(name, get)
 }
 
+// Fire counts for the app's always-live (shell-level) useLiveQuery subscriptions
+// — keyed by name so re-wrapping the same querier (e.g. a dep-array change)
+// doesn't reset its count. The 2026-08-18 high-heap runaway proved untracked-JS
+// and, separately, proved rAF/setTimeout/setInterval are all flat while it
+// climbs (PROGRESS.md) — the leading remaining theory is a Dexie liveQuery
+// re-firing far more often than its underlying writes justify. This names
+// exactly which subscription, if any, is doing that.
+const queryFireCounts = new Map<string, number>()
+
+/**
+ * Wrap a `useLiveQuery` querier function to count how many times it actually
+ * *fires* (not how many times the owning component re-renders) — self-
+ * registers with the census under `name`. Pure passthrough otherwise: same
+ * args in, same return value out, on every call.
+ */
+export function countedQuery<Args extends unknown[], T>(name: string, fn: (...args: Args) => T): (...args: Args) => T {
+  if (!queryFireCounts.has(name)) {
+    queryFireCounts.set(name, 0)
+    registerCensusCounter(name, () => queryFireCounts.get(name) ?? 0)
+  }
+  return (...args: Args): T => {
+    queryFireCounts.set(name, (queryFireCounts.get(name) ?? 0) + 1)
+    return fn(...args)
+  }
+}
+
 /**
  * One compact line, e.g. `dom 641 · paths$ 3 · topo$ 5 · cityIdx 170487`. Empty
  * string outside a DOM context with nothing registered, so a caller can append

@@ -10,16 +10,24 @@ import { getActiveTrip } from '@/domain/tripRepo'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useActiveTripBannerStore } from '@/domain/activeTripBannerStore'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
+import { countedQuery } from '@/debug/census'
 import './ActiveTripBanner.css'
 
+// Module-scope: stable across renders, matching this query's `deps: []`.
+const queryActiveTrip = countedQuery('lqActiveTrip', () => getActiveTrip())
+
 export function ActiveTripBanner() {
-  const trip = useLiveQuery(() => getActiveTrip())
+  const trip = useLiveQuery(queryActiveTrip)
   const dismissedTripId = useActiveTripBannerStore((s) => s.dismissedTripId)
   const dismiss = useActiveTripBannerStore((s) => s.dismiss)
   const openTrip = useTripDetailStore((s) => s.open)
 
+  // Re-wrapped per trip change (deps: [trip?.id]) — countedQuery's count is
+  // keyed by name, not by closure, so it stays cumulative across those re-wraps.
   const placeCount = useLiveQuery(
-    () => (trip ? db.tripEntries.filter((te) => te.tripId === trip.id && te.deletedAt === null).count() : Promise.resolve(0)),
+    countedQuery('lqTripPlaces', () =>
+      trip ? db.tripEntries.filter((te) => te.tripId === trip.id && te.deletedAt === null).count() : Promise.resolve(0),
+    ),
     [trip?.id],
   )
 

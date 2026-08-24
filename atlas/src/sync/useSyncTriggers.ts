@@ -8,18 +8,22 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
 import { syncNow } from '@/sync/sync'
+import { countedQuery } from '@/debug/census'
 
 const CHANGE_DEBOUNCE_MS = 30_000
 
+// Module-scope (not per-render) so the wrapped function — and the census
+// registration it does on first call — stays stable for the app's lifetime,
+// matching this hook's `deps: []` mount-once queries.
+const querySettings = countedQuery('lqSettings', () => settingsRepo.get())
+const querySyncBookkeeping = countedQuery('lqSyncState', async () => {
+  const s = await db.syncState.get(1)
+  return { revision: s?.revision ?? 0, pushedRevision: s?.pushedRevision ?? 0 }
+})
+
 export function useSyncTriggers(): void {
-  const settings = useLiveQuery(() => settingsRepo.get(), [])
-  const syncBookkeeping = useLiveQuery(
-    async () => {
-      const s = await db.syncState.get(1)
-      return { revision: s?.revision ?? 0, pushedRevision: s?.pushedRevision ?? 0 }
-    },
-    [],
-  )
+  const settings = useLiveQuery(querySettings, [])
+  const syncBookkeeping = useLiveQuery(querySyncBookkeeping, [])
 
   const connected = settings?.driveConnected === true
   const autoSync = settings?.autoSync !== false
