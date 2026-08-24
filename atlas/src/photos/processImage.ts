@@ -28,10 +28,29 @@ export interface ProcessedImage {
   takenAt: number | null
 }
 
+// A malformed/adversarial EXIF structure can send exifr's TIFF-dependency
+// traversal into a loop that never returns (real-device evidence: Chrome's
+// pre-OOM debugger caught it live, mid-parse, heap climbing with zero other
+// activity). Nothing ever called `worker.terminate()`, so a stuck job didn't
+// just fail to resolve — the worker kept running in the background,
+// indefinitely, invisible to every other kind of instrumentation, until the
+// tab OOM-crashed. `WORKER_JOB_TIMEOUT_MS` bounds a single job; past it we
+// kill the worker outright (the one guaranteed way to stop it, even mid
+// infinite loop) and surface a real error instead of hanging forever.
+const WORKER_JOB_TIMEOUT_MS = 20_000
+
 let worker: Worker | null = null
 let workerBroken = false
 let nextJobId = 1
 const pending = new Map<number, { resolve: (r: ProcessedImage) => void; reject: (e: Error) => void }>()
+
+/** Kill the current worker and fail whatever was in flight on it. Does NOT set `workerBroken` — the next job gets a fresh worker, since the failure is most likely specific to one file, not the worker mechanism itself. */
+function terminateWorker(reason: string): void {
+  worker?.terminate()
+  worker = null
+  for (const job of pending.values()) job.reject(new Error(reason))
+  pending.clear()
+}
 
 function getWorker(): Worker | null {
   if (workerBroken) return null
@@ -67,7 +86,19 @@ function processViaWorker(file: File): Promise<ProcessedImage> {
   if (!w) return Promise.reject(new Error('worker unavailable'))
   const jobId = nextJobId++
   return new Promise<ProcessedImage>((resolve, reject) => {
-    pending.set(jobId, { resolve, reject })
+    const timer = setTimeout(() => {
+      terminateWorker(`image processing timed out after ${WORKER_JOB_TIMEOUT_MS / 1000}s (a photo's data may be malformed) — try a different photo`)
+    }, WORKER_JOB_TIMEOUT_MS)
+    pending.set(jobId, {
+      resolve: (r) => {
+        clearTimeout(timer)
+        resolve(r)
+      },
+      reject: (e) => {
+        clearTimeout(timer)
+        reject(e)
+      },
+    })
     const request: ImageJobRequest = { jobId, file }
     w.postMessage(request)
   })
