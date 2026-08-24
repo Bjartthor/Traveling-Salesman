@@ -230,6 +230,9 @@ export function SettingsScreen() {
           Boundaries from Natural Earth (public domain). Place data from GeoNames, licensed under CC BY 4.0. Search by
           Photon / OpenStreetMap contributors, ODbL.
         </p>
+        <p className="settings-screen__version mono">
+          Build {__APP_COMMIT__} · {new Date(__APP_BUILT_AT__).toLocaleString()}
+        </p>
       </section>
 
       <DebugLogSettings />

@@ -20,11 +20,10 @@ export function DebugLogSettings() {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   async function handleCopy() {
-    const text = (entries ?? [])
-      .slice()
-      .reverse()
-      .map(formatEntry)
-      .join('\n\n')
+    // entries is already newest-first (matches the on-screen list) — keep
+    // that order in the copy too, so the most relevant (newest) entries are
+    // first instead of buried at the end of a possibly-truncated paste.
+    const text = (entries ?? []).map(formatEntry).join('\n\n')
     try {
       await navigator.clipboard.writeText(text || 'No log entries yet.')
       setCopyState('copied')

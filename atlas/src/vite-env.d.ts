@@ -14,3 +14,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+/** Git short SHA of the commit this bundle was built from (vite.config.ts `define`). `'unknown'` outside a git checkout. */
+declare const __APP_COMMIT__: string
+/** ISO timestamp of when this bundle was built (vite.config.ts `define`). */
+declare const __APP_BUILT_AT__: string

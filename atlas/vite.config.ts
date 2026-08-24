@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -9,9 +10,26 @@ import { VitePWA } from 'vite-plugin-pwa'
 // config — local dev and preview keep the relative './' base unchanged.
 const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
 
+// Stamped into the About section (SettingsScreen) so a device can be checked
+// against `git log` instead of guessing whether a service-worker update
+// actually took — see memory "atlas-debug-log-mechanics": there was
+// previously no way to tell which build was running. `rev-parse` only needs
+// the current commit object, so it works fine against CI's shallow checkout.
+function getCommitSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: repoName ? `/${repoName}/` : './',
+  define: {
+    __APP_COMMIT__: JSON.stringify(getCommitSha()),
+    __APP_BUILT_AT__: JSON.stringify(new Date().toISOString()),
+  },
   // Default stays 5173 — plan §9 registers http://localhost:5173 as an OAuth
   // origin — but honour PORT so a second dev server can run alongside.
   server: { port: Number(process.env.PORT) || 5173 },
