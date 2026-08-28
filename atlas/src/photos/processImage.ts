@@ -8,7 +8,6 @@
 // can't do the job (construction throws, or it reports OffscreenCanvas/
 // createImageBitmap unavailable) — older Safari, mainly.
 
-import { parse as parseExif } from 'exifr'
 import {
   FULL_MAX_EDGE,
   FULL_QUALITY,
@@ -133,40 +132,42 @@ async function resizeOnMainThread(
   return { blob, width, height }
 }
 
+/**
+ * No EXIF extraction here, deliberately — see `processImage()`'s comment.
+ * `exifr` has no way to be interrupted once started outside a Worker (nothing
+ * plays the role `worker.terminate()` plays for the worker path), so it isn't
+ * safe to run it synchronously on the main thread even once. Resize-only; a
+ * photo processed via this fallback just won't get GPS/date metadata.
+ */
 async function processOnMainThread(file: File): Promise<ProcessedImage> {
-  const [bitmap, exif] = await Promise.all([
-    createImageBitmap(file, { imageOrientation: 'from-image' }),
-    readExifMainThread(file),
-  ])
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
   try {
     const [full, thumb] = await Promise.all([
       resizeOnMainThread(bitmap, FULL_MAX_EDGE, FULL_QUALITY),
       resizeOnMainThread(bitmap, THUMB_MAX_EDGE, THUMB_QUALITY),
     ])
-    return { full: full.blob, thumb: thumb.blob, width: full.width, height: full.height, ...exif }
+    return { full: full.blob, thumb: thumb.blob, width: full.width, height: full.height, lat: null, lon: null, takenAt: null }
   } finally {
     bitmap.close()
   }
 }
 
-async function readExifMainThread(file: File): Promise<{ lat: number | null; lon: number | null; takenAt: number | null }> {
-  try {
-    const tags = await parseExif(file, { gps: true, pick: ['DateTimeOriginal'] })
-    const lat = typeof tags?.latitude === 'number' ? tags.latitude : null
-    const lon = typeof tags?.longitude === 'number' ? tags.longitude : null
-    const taken = tags?.DateTimeOriginal
-    const takenAt = taken instanceof Date && !Number.isNaN(taken.getTime()) ? taken.getTime() : null
-    return { lat, lon, takenAt }
-  } catch {
-    return { lat: null, lon: null, takenAt: null }
-  }
-}
-
-/** Resize + strip EXIF (keeping GPS/date out-of-band) for one photo. Worker first, main-thread fallback. */
+/**
+ * Resize + strip EXIF (keeping GPS/date out-of-band) for one photo. Worker
+ * first, main-thread fallback — except when the worker timed out (see
+ * `WORKER_JOB_TIMEOUT_MS` above): that means this exact file's EXIF data is
+ * what hung it, and `processOnMainThread` runs the same `exifr` parse with no
+ * timeout and no way to interrupt it (unlike a Worker, the main thread can't
+ * be force-terminated out of a synchronous infinite loop), so retrying there
+ * would reproduce the same hang with the one safety net removed. Only the
+ * genuine "worker unavailable" case (construction failed, or the environment
+ * lacks OffscreenCanvas/createImageBitmap — old Safari) falls back.
+ */
 export async function processImage(file: File): Promise<ProcessedImage> {
   try {
     return await processViaWorker(file)
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('timed out')) throw e
     return processOnMainThread(file)
   }
 }
