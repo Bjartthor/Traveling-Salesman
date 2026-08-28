@@ -43,7 +43,17 @@ let workerBroken = false
 let nextJobId = 1
 const pending = new Map<number, { resolve: (r: ProcessedImage) => void; reject: (e: Error) => void }>()
 
-/** Kill the current worker and fail whatever was in flight on it. Does NOT set `workerBroken` — the next job gets a fresh worker, since the failure is most likely specific to one file, not the worker mechanism itself. */
+// A single timeout stays inconclusive — one truly malformed file shouldn't stop
+// the rest of a batch from processing, so the first one just gets a fresh
+// worker (below). But if something keeps re-submitting work that times out
+// (a caller retrying automatically, or several bad files in a row), each retry
+// otherwise gets its own fresh 20s window to leak in, forever. Two in a row is
+// past "one bad file" and into "this session shouldn't keep trying" — trip the
+// breaker permanently rather than let it repeat unbounded.
+let consecutiveTimeouts = 0
+const CONSECUTIVE_TIMEOUT_LIMIT = 2
+
+/** Kill the current worker and fail whatever was in flight on it. */
 function terminateWorker(reason: string): void {
   worker?.terminate()
   worker = null
@@ -86,11 +96,14 @@ function processViaWorker(file: File): Promise<ProcessedImage> {
   const jobId = nextJobId++
   return new Promise<ProcessedImage>((resolve, reject) => {
     const timer = setTimeout(() => {
+      consecutiveTimeouts++
+      if (consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_LIMIT) workerBroken = true
       terminateWorker(`image processing timed out after ${WORKER_JOB_TIMEOUT_MS / 1000}s (a photo's data may be malformed) — try a different photo`)
     }, WORKER_JOB_TIMEOUT_MS)
     pending.set(jobId, {
       resolve: (r) => {
         clearTimeout(timer)
+        consecutiveTimeouts = 0
         resolve(r)
       },
       reject: (e) => {
