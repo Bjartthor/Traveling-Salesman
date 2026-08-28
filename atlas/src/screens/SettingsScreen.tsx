@@ -9,9 +9,7 @@ import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
 import { loadTripCountryCodesBatch } from '@/domain/tripPlacesRepo'
 import { computeTripStats, newCountriesByTrip, type TripStats } from '@/domain/tripStats'
-import { clearUploadedBlobs, photoStorageStats } from '@/domain/photoRepo'
 import type { Trip } from '@/db/types'
-import { PhotoImportFlow } from '@/components/photos/PhotoImportFlow'
 import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
 import { BackupSettings } from '@/components/backup/BackupSettings'
 import { DebugLogSettings } from '@/components/debug/DebugLogSettings'
@@ -37,8 +35,6 @@ async function loadTripStatsData(): Promise<TripStatsData> {
 }
 
 interface StorageInfo {
-  photoCount: number
-  photoBytes: number
   usage: number | null
   quota: number | null
   persisted: boolean
@@ -46,12 +42,11 @@ interface StorageInfo {
 
 async function loadStorageInfo(): Promise<StorageInfo> {
   const emptyEstimate: StorageEstimate = {}
-  const [{ count, bytes }, estimate, persisted] = await Promise.all([
-    photoStorageStats(),
+  const [estimate, persisted] = await Promise.all([
     'storage' in navigator ? navigator.storage.estimate() : Promise.resolve(emptyEstimate),
     'storage' in navigator && 'persisted' in navigator.storage ? navigator.storage.persisted() : Promise.resolve(false),
   ])
-  return { photoCount: count, photoBytes: bytes, usage: estimate.usage ?? null, quota: estimate.quota ?? null, persisted }
+  return { usage: estimate.usage ?? null, quota: estimate.quota ?? null, persisted }
 }
 
 function formatBytes(bytes: number): string {
@@ -69,10 +64,8 @@ function formatBytes(bytes: number): string {
 export function SettingsScreen() {
   const data = useLiveQuery(loadTripStatsData)
   const settings = useLiveQuery(() => settingsRepo.get())
-  const [showImport, setShowImport] = useState(false)
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [persistError, setPersistError] = useState<string | null>(null)
-  const [clearedMessage, setClearedMessage] = useState<string | null>(null)
 
   function refreshStorage() {
     void loadStorageInfo().then(setStorage)
@@ -91,12 +84,6 @@ export function SettingsScreen() {
     } catch (e) {
       setPersistError(e instanceof Error ? e.message : String(e))
     }
-  }
-
-  async function handleClearUploaded() {
-    const n = await clearUploadedBlobs()
-    setClearedMessage(n > 0 ? `Freed local storage for ${n} uploaded photo${n === 1 ? '' : 's'}.` : 'No uploaded photos to clear yet.')
-    refreshStorage()
   }
 
   return (
@@ -123,28 +110,10 @@ export function SettingsScreen() {
       <BackupSettings />
 
       <section className="settings-screen__section">
-        <h2 className="settings-screen__section-title">Photos</h2>
-        <p className="settings-screen__hint">
-          Drop in an old photo library and let the app work out where you have been.
-        </p>
-        <button type="button" className="settings-screen__action" onClick={() => setShowImport(true)}>
-          Import from photos
-        </button>
-      </section>
-
-      <section className="settings-screen__section">
         <h2 className="settings-screen__section-title">Storage</h2>
         {storage && (
           <>
             <dl className="settings-screen__stats">
-              <div className="settings-screen__stat">
-                <dt>Photos on this device</dt>
-                <dd>{storage.photoCount}</dd>
-              </div>
-              <div className="settings-screen__stat">
-                <dt>Photo storage used</dt>
-                <dd>{formatBytes(storage.photoBytes)}</dd>
-              </div>
               {storage.usage !== null && storage.quota !== null && (
                 <div className="settings-screen__stat">
                   <dt>Device storage</dt>
@@ -168,10 +137,6 @@ export function SettingsScreen() {
                 {persistError}
               </p>
             )}
-            <button type="button" className="settings-screen__action settings-screen__action--secondary" onClick={() => void handleClearUploaded()}>
-              Clear local copies of uploaded photos
-            </button>
-            {clearedMessage && <p className="settings-screen__hint">{clearedMessage}</p>}
           </>
         )}
       </section>
@@ -236,15 +201,6 @@ export function SettingsScreen() {
       </section>
 
       <DebugLogSettings />
-
-      {showImport && (
-        <PhotoImportFlow
-          onClose={() => {
-            setShowImport(false)
-            refreshStorage()
-          }}
-        />
-      )}
     </div>
   )
 }

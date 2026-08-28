@@ -7,7 +7,6 @@
 // region on the admin-1 map opens it for that subdivision, tapping a city
 // opens it for that city. This screen only displays and routes taps.
 
-import { useState } from 'react'
 import { useCountryDetailData } from '@/domain/useCountryDetailData'
 import { countrySubdivisionsVisited } from '@/stats/coverage'
 import { useCountryDetailStore } from '@/domain/countryDetailStore'
@@ -17,10 +16,6 @@ import { flagEmoji } from '@/geo/flags'
 import { colorForStatus, STATUS_LABEL } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
 import { CountryAdmin1Map } from '@/components/places/CountryAdmin1Map'
-import { PhotoGrid } from '@/components/photos/PhotoGrid'
-import { PhotoViewer } from '@/components/photos/PhotoViewer'
-import { AddPhotosButton } from '@/components/photos/AddPhotosButton'
-import { softDeletePhoto, updateCaption } from '@/domain/photoRepo'
 import './CountryDetail.css'
 
 const nf = new Intl.NumberFormat()
@@ -35,8 +30,6 @@ export function CountryDetail() {
 function CountryDetailContent({ code, onClose }: { code: string; onClose: () => void }) {
   const openSheet = usePlaceSheetStore((s) => s.open)
   const data = useCountryDetailData(code)
-
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null)
 
   if (data === null) {
     return (
@@ -53,7 +46,7 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
     )
   }
 
-  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos } = data
+  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation } = data
   const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus, subdivisionIds)
 
   return (
@@ -135,28 +128,7 @@ function CountryDetailContent({ code, onClose }: { code: string; onClose: () => 
             </ul>
           )}
         </section>
-
-        <section className="country-detail__section">
-          <h2 className="country-detail__section-title">Photos</h2>
-          {entry ? (
-            <AddPhotosButton entryId={entry.id} tripId={null} />
-          ) : (
-            <p className="country-detail__empty">Set a status above first, then you can attach photos here.</p>
-          )}
-          <PhotoGrid photos={photos} onSelect={setViewerIndex} />
-        </section>
       </div>
-
-      {viewerIndex !== null && (
-        <PhotoViewer
-          photos={photos}
-          index={viewerIndex}
-          onClose={() => setViewerIndex(null)}
-          onIndexChange={setViewerIndex}
-          onCaptionChange={(photo, caption) => updateCaption(photo.id, caption)}
-          onDelete={(photo) => softDeletePhoto(photo.id)}
-        />
-      )}
     </FullScreenOverlay>
   )
 }

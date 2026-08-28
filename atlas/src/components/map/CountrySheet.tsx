@@ -1,9 +1,9 @@
 // The map's own country panel — replaces opening the full-screen CountryDetail
 // when a country is tapped on the Map tab. Same information and the same
-// editing actions (tap status / a city to open the place-status sheet, add
-// photos), but as a draggable bottom sheet with no backdrop: the map — and
-// the countries around the selected one — stays visible and interactive the
-// whole time. A country's regions are no longer drawn on a second, separate
+// editing actions (tap status / a city to open the place-status sheet), but
+// as a draggable bottom sheet with no backdrop: the map — and the countries
+// around the selected one — stays visible and interactive the whole time. A
+// country's regions are no longer drawn on a second, separate
 // mini-map here; WorldMap now shows them in place on the real map instead
 // (see WorldMap.tsx's auto-zoom-on-select effect), so tapping a region opens
 // the status sheet directly via `onSelectSubdivision` on WorldMap.
@@ -19,10 +19,6 @@ import type { PlaceRef } from '@/domain/cascade'
 import { formatLongDate } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { colorForStatus, STATUS_LABEL } from '@/components/map/statusColor'
-import { PhotoGrid } from '@/components/photos/PhotoGrid'
-import { PhotoViewer } from '@/components/photos/PhotoViewer'
-import { AddPhotosButton } from '@/components/photos/AddPhotosButton'
-import { softDeletePhoto, updateCaption } from '@/domain/photoRepo'
 import {
   COUNTRY_SHEET_CLOSE_THRESHOLD_VH,
   COUNTRY_SHEET_EXPANDED_VH,
@@ -41,9 +37,6 @@ interface CountrySheetProps {
 export function CountrySheet({ code, onClose }: CountrySheetProps) {
   const openSheet = usePlaceSheetStore((s) => s.open)
   const data = useCountryDetailData(code)
-
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null)
-  useEffect(() => setViewerIndex(null), [code])
 
   const [heightVh, setHeightVh] = useState(COUNTRY_SHEET_PEEK_VH)
   const [isDragging, setIsDragging] = useState(false)
@@ -105,7 +98,7 @@ export function CountrySheet({ code, onClose }: CountrySheetProps) {
       {data === undefined ? (
         <p className="country-sheet__empty">Loading…</p>
       ) : (
-        <CountrySheetContent data={data} onClose={onClose} onOpenPlaceSheet={openSheet} viewerIndex={viewerIndex} onViewerIndexChange={setViewerIndex} />
+        <CountrySheetContent data={data} onClose={onClose} onOpenPlaceSheet={openSheet} />
       )}
     </div>
   )
@@ -115,16 +108,12 @@ function CountrySheetContent({
   data,
   onClose,
   onOpenPlaceSheet,
-  viewerIndex,
-  onViewerIndexChange,
 }: {
   data: CountryDetailData
   onClose: () => void
   onOpenPlaceSheet: (place: PlaceRef) => void
-  viewerIndex: number | null
-  onViewerIndexChange: (index: number | null) => void
 }) {
-  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos } = data
+  const { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation } = data
   const code = country.code
   const subdivisionsVisited = countrySubdivisionsVisited(code, subdivisionStatus, subdivisionIds)
 
@@ -209,28 +198,7 @@ function CountrySheetContent({
             </ul>
           )}
         </section>
-
-        <section className="country-sheet__section">
-          <h3 className="country-sheet__section-title">Photos</h3>
-          {entry ? (
-            <AddPhotosButton entryId={entry.id} tripId={null} />
-          ) : (
-            <p className="country-sheet__empty">Set a status above first, then you can attach photos here.</p>
-          )}
-          <PhotoGrid photos={photos} onSelect={onViewerIndexChange} />
-        </section>
       </div>
-
-      {viewerIndex !== null && (
-        <PhotoViewer
-          photos={photos}
-          index={viewerIndex}
-          onClose={() => onViewerIndexChange(null)}
-          onIndexChange={onViewerIndexChange}
-          onCaptionChange={(photo, caption) => updateCaption(photo.id, caption)}
-          onDelete={(photo) => softDeletePhoto(photo.id)}
-        />
-      )}
     </>
   )
 }
