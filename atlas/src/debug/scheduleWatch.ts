@@ -1,5 +1,6 @@
-// Counts cumulative requestAnimationFrame + setTimeout scheduling, surfaced in
-// the census (@/debug/census) as `rafN` / `tmoN`.
+// Counts cumulative requestAnimationFrame + setTimeout scheduling and window
+// `message` events, surfaced in the census (@/debug/census) as `rafN` / `tmoN`
+// / `msgN`.
 //
 // Why: the 2026-08-18 high-heap Aw-snap is a self-sustaining background runaway
 // — it ignites right after a `sync: pulled`, then keeps leaking ~10-50 MB/s
@@ -22,6 +23,7 @@ import { registerCensusCounter } from '@/debug/census'
 
 let rafCount = 0
 let timeoutCount = 0
+let messageCount = 0
 let installed = false
 
 export function installScheduleWatch(): void {
@@ -44,5 +46,19 @@ export function installScheduleWatch(): void {
       return nativeSetTimeout(handler as never, timeout, ...args)
     }) as typeof window.setTimeout
     registerCensusCounter('tmoN', () => timeoutCount)
+  }
+
+  // The high-heap runaway turned out to be neither: it was a `message`
+  // ping-pong — the photo worker's job handler, loaded onto the page by
+  // mistake, answering every message the page got by posting another one to
+  // the page itself (see AW-SNAP-DEBUGGING.md). No rAF, no timers, so
+  // `rafN`/`tmoN` sat flat through every climb and hid it for weeks. A healthy
+  // page sees a handful (a sign-in popup, a browser extension); a loop shows as
+  // thousands per 5 s. Counting only — delivery is never stopped or altered.
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('message', () => {
+      messageCount++
+    }, true)
+    registerCensusCounter('msgN', () => messageCount)
   }
 }
