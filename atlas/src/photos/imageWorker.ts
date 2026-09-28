@@ -13,36 +13,14 @@
 // we ever draw it — no manual rotation math needed.
 
 import { parse as parseExif } from 'exifr'
-
-export const FULL_MAX_EDGE = 2048
-export const THUMB_MAX_EDGE = 320
-export const FULL_QUALITY = 0.82
-export const THUMB_QUALITY = 0.82
-
-export interface ImageJobRequest {
-  jobId: number
-  file: File
-}
-
-export interface ImageJobResult {
-  jobId: number
-  ok: true
-  full: Blob
-  thumb: Blob
-  width: number // of the stored `full` image, post-resize
-  height: number
-  lat: number | null
-  lon: number | null
-  takenAt: number | null // ms epoch, from EXIF DateTimeOriginal
-}
-
-export interface ImageJobError {
-  jobId: number
-  ok: false
-  error: string
-}
-
-export type ImageJobResponse = ImageJobResult | ImageJobError
+import {
+  FULL_MAX_EDGE,
+  FULL_QUALITY,
+  THUMB_MAX_EDGE,
+  THUMB_QUALITY,
+  type ImageJobRequest,
+  type ImageJobResponse,
+} from '@/photos/imageJob'
 
 function fitDimensions(width: number, height: number, maxEdge: number): { width: number; height: number } {
   const longest = Math.max(width, height)
@@ -107,8 +85,18 @@ async function processOne({ jobId, file }: ImageJobRequest): Promise<ImageJobRes
   }
 }
 
-self.onmessage = (event: MessageEvent<ImageJobRequest>) => {
-  void processOne(event.data).then((response) => {
-    ;(self as unknown as Worker).postMessage(response)
-  })
+// Not in the DOM lib this project compiles against; only defined inside workers.
+declare const WorkerGlobalScope: (abstract new () => unknown) | undefined
+
+// Only ever answer jobs from inside an actual worker. If this module is
+// evaluated on the page instead (any main-thread import from this file does
+// that — see @/photos/imageJob), `self` is the window: this handler would
+// answer every message the page receives by posting one back to the page
+// itself, forever — the runaway-heap "Aw snap" loop.
+if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
+  self.onmessage = (event: MessageEvent<ImageJobRequest>) => {
+    void processOne(event.data).then((response) => {
+      ;(self as unknown as Worker).postMessage(response)
+    })
+  }
 }

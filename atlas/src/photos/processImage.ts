@@ -8,6 +8,7 @@
 // can't do the job (construction throws, or it reports OffscreenCanvas/
 // createImageBitmap unavailable) — older Safari, mainly.
 
+// Never import from imageWorker.ts here, not even a type — see imageJob.ts.
 import {
   FULL_MAX_EDGE,
   FULL_QUALITY,
@@ -15,7 +16,7 @@ import {
   THUMB_QUALITY,
   type ImageJobRequest,
   type ImageJobResponse,
-} from '@/photos/imageWorker'
+} from '@/photos/imageJob'
 
 export interface ProcessedImage {
   full: Blob
@@ -27,15 +28,13 @@ export interface ProcessedImage {
   takenAt: number | null
 }
 
-// A malformed/adversarial EXIF structure can send exifr's TIFF-dependency
-// traversal into a loop that never returns (real-device evidence: Chrome's
-// pre-OOM debugger caught it live, mid-parse, heap climbing with zero other
-// activity). Nothing ever called `worker.terminate()`, so a stuck job didn't
-// just fail to resolve — the worker kept running in the background,
-// indefinitely, invisible to every other kind of instrumentation, until the
-// tab OOM-crashed. `WORKER_JOB_TIMEOUT_MS` bounds a single job; past it we
-// kill the worker outright (the one guaranteed way to stop it, even mid
-// infinite loop) and surface a real error instead of hanging forever.
+// Safety net: a job the worker never answers (a decode or EXIF parse that
+// hangs on some pathological file) mustn't leave its caller waiting forever,
+// and only `worker.terminate()` can stop a worker stuck mid-loop.
+// `WORKER_JOB_TIMEOUT_MS` bounds a single job; past it we kill the worker
+// outright and surface a real error instead. (Added while chasing the
+// runaway-heap "Aw snap", on evidence later traced to a different cause: the
+// worker's own message handler running on the page — see imageJob.ts.)
 const WORKER_JOB_TIMEOUT_MS = 20_000
 
 let worker: Worker | null = null
