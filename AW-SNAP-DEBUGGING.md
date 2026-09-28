@@ -1,4 +1,160 @@
-# Aw-snap crash — session log (2026-08-28)
+# Aw-snap crash — debugging log
+
+> **2026-09-28: root cause found and fixed; not yet confirmed on a real
+> device.** Start at [Resolution (2026-09-28)](#resolution-2026-09-28) and its
+> [on-device checklist](#on-device-checklist-needs-you). Everything after that
+> section is the 2026-08-28 session log, kept for the record. Its conclusions
+> ("a malformed photo hangs exifr", "who calls `processImage`?") were wrong,
+> and the resolution explains why.
+
+## Resolution (2026-09-28)
+
+### What was actually happening
+
+It wasn't a malformed photo, and nothing was calling `processImage`. It was
+an import side effect that turned the page into a message loop:
+
+1. `photos/processImage.ts` (main-thread code) imported four resize constants
+   from `photos/imageWorker.ts`. A runtime import evaluates the whole module,
+   so the worker file (and all of exifr) was bundled into the **main**
+   bundle and ran on the page at startup. The import chain is static and
+   always loaded: `App.tsx` → `useSyncTriggers`/`SyncIndicator` →
+   `sync/sync.ts` → `sync/photos.ts` → `processImage.ts` → `imageWorker.ts`.
+   It had been like this since photos shipped (`bb17c6e`, 2026-07-29), before
+   the first Aw-snap report.
+2. `imageWorker.ts` ends with a top-level `self.onmessage = …`. In a worker,
+   `self` is the worker. On the page, `self` **is the window**, so the
+   worker's job handler got installed as `window.onmessage`.
+3. The first message the page receives starts the loop. That's Google
+   sign-in's popup replying with a token (on Connect or reconnect, or on Sync
+   now / Retry after the ~1 h token expiry). On desktop Chrome it's also any
+   extension that `postMessage`s into pages, and many do that on every load.
+4. The handler treats the message as a photo job, fails (there's no file),
+   and replies with `self.postMessage(error)`. On the page that's
+   `window.postMessage`, a message to itself, which it answers again,
+   forever. It runs about 9,000 round trips a second, all plain macrotasks:
+   no rAF, no timers, no Dexie, no React.
+5. Each round trip calls `exifr.parse(undefined, { gps: true, pick: […] })`
+   with a fresh options literal. exifr 7.1.3 caches one `Options` per
+   options-object *identity* in a module-level `Map` (`existingInstances`,
+   `node_modules/exifr/src/options.mjs`) that is never cleared, and it builds
+   that `Options` before it even looks at the input. About 4 KB is retained
+   per round trip, which comes to ~38 MB/s and an OOM crash in ~1–2 minutes.
+
+### Every earlier clue, explained
+
+| Clue (PROGRESS.md / the log below) | Explanation |
+|---|---|
+| Heap climbs with **zero** interaction, on any route, and never recovers | A self-sustaining message loop that doesn't depend on the UI |
+| `rafN`/`tmoN` flat, all 8 liveQuery counters flat, `dom` flat | Message events are none of those, and the census had no counter for them |
+| 29 s gap for 3 cheap Dexie reads after `sync: pulled` | The main thread was saturated by ~9k handler runs/s |
+| Starts around a sync / Drive connect. Incognito without Drive: fine. Incognito + connect: crash | Connect opens the sign-in popup, and its reply is the first message |
+| Paused stack `self.onmessage → postMessage → Promise.then → self.onmessage …`, with **only Main** in the Threads panel | That's the loop itself, running on the main thread (async stack traces stitch the hops together) |
+| `traverseTiffDependencyTree` / `checkLoadedPlugins` on the stack | Those run in exifr's `Options` **constructor**, which builds options and doesn't parse a file. Nothing was stuck parsing anything |
+| Heap snapshot: `My` 110,013, `{gps, pick}` 110,013, `Au` exactly 11× | One `Options` plus one options literal per round trip. exifr has exactly 11 segment sub-options (`tiff jfif xmp icc iptc ihdr ifd0 ifd1 exif gps interop`) |
+| Retainer `table in Map` | exifr's `existingInstances` Map |
+| Still crashed after fix #1 took exifr out of the main-thread fallback | Fix #1 never touched the handler. The snapshot (which defaults to the main-thread heap) was of the main thread all along, not the Worker |
+| `photos=0`, Photos UI removed, and it still crashed | No photo was ever involved. The "job" was the sign-in message |
+| A fresh tab in the automation extension's browser climbed with zero clicks | That extension talks to pages via `postMessage` |
+| Earlier live patches of `window.onmessage`/`postMessage` saw nothing | They were installed before navigating (so the navigation wiped them), or after the handler had already been assigned at startup |
+
+This is also very likely the "exact runaway loop [that] was never isolated"
+in the 2026-08-12 investigation (`868a531`). That one was sync-triggered and
+started after photos shipped, but it can't be proven after the fact.
+
+### Reproduced in the sandbox (before the fix)
+
+On a plain dev-server page load, `window.onmessage` was the worker's
+handler. One `window.postMessage({})` produced 9,090 iterations in the first
+second and 45,667 in five, and the heap went 20 → 211 MB in 5 s. After
+stopping it and churning the GC, the heap floor stayed at 199 MB, so the
+memory was retained, not garbage. A production build confirmed the same
+thing: `self.onmessage=…` and exifr sat in the main `index-*.js`.
+
+### The fix
+
+- **Root cause:** a new side-effect-free `photos/imageJob.ts` holds the
+  shared constants and message types. `processImage.ts` imports only from
+  it, never from `imageWorker.ts`, not even a type. With
+  `verbatimModuleSyntax`, `import { type X }` still compiles to a
+  side-effect `import {}` that evaluates the module.
+- **Defense in depth:** `imageWorker.ts` installs its handler only when
+  `self instanceof WorkerGlobalScope`, so a future stray import can't bring
+  this back.
+- **Instrumentation:** the census gains `msgN` (window `message` events,
+  counted passively) next to `rafN`/`tmoN`. That closes the exact blind spot
+  that hid this bug.
+
+Tests (each watched failing first): `photos/processImage.test.ts` checks
+that loading the page-side client and sending one message doesn't make the
+page post back. `photos/imageWorker.test.ts` checks the module is inert on
+the page but still answers jobs by id inside a worker (mutation-checked).
+`debug/scheduleWatch.test.ts` checks `msgN`.
+
+### Verified in the sandbox (after the fix)
+
+- `tsc -b`, `eslint .`, and `vitest` 211/211 all pass.
+- Production build: the main chunk has **no exifr and no handler**, and
+  shrank from 644 to 571 KB. The worker chunk has exifr plus the guarded
+  handler.
+- Live: `window.onmessage` is `null`. One message produces exactly 1 message
+  event, and the heap stays flat for 5 s. The census shows `msgN 1` and stays
+  there.
+- The photo pipeline still works through the real Worker: a 3000×1500 JPEG
+  becomes 2048×1024 plus a thumbnail in ~80 ms, with the EXIF date extracted.
+
+### On-device checklist (needs you)
+
+This hasn't been tested yet on a real phone or desktop with a real Google
+sign-in. That's the one step left.
+
+1. **Deploy:** push to `main` (GitHub Pages deploys automatically), if that
+   hasn't been done yet.
+2. **Get the new build onto the device.** The You tab's About section shows
+   the build commit, and it must match the fix commit. If it doesn't, tap
+   the "new version" banner. If there's no banner, background and
+   foreground the app once. If it's still stale, fully close the app/tab and
+   reopen it. Close any *other* Atlas tabs/windows too, because the banner
+   only reloads the one you tap.
+3. **Trigger the old crash on purpose:** in the You tab, go to Google Drive
+   → Disconnect, then Connect. That was the reliable repro (sign-in popup
+   plus a forced full merge). On desktop, also try normal (non-Incognito)
+   Chrome with your extensions on.
+4. **Leave it running for ~5 minutes.** The old crash took ~1–2.
+5. **Check the Debug log** in the You tab (newest at the top). You should
+   see no `memory: climbing` or `heap pressure crossed` lines, and on the
+   next launch no new `crash: previous session ended uncleanly`. The census,
+   including `msgN`, is *only* written on those lines, so not seeing it at
+   all is the good outcome.
+
+**If it still crashes,** the census on those lines tells you where to look:
+- `msgN` in the thousands and climbing: still a message loop, through some
+  other path. Look for a `self.onmessage` or `postMessage` reaching the page.
+- `msgN` small but the heap climbing: a different mechanism. Go straight to a
+  DevTools heap snapshot plus a CPU profile.
+- A crash at **low** heap (no climb): that's the separate, still-open
+  low-heap/GPU variant (PROGRESS.md, "came back at LOW heap").
+
+### Follow-ups (optional, not done)
+
+- The **Photos UI** is still unwired app-wide (`32e9a50`). That was a
+  stopgap for the misdiagnosis, and it can come back once the device check
+  passes.
+- Before it does, note that **photo GPS has never worked.** exifr's global
+  `pick` filters the coordinates out of `readExif`'s result. This is flagged
+  as a separate task. When fixing it, pass a module-level constant options
+  object, never a fresh literal per call (see step 5 of "What was actually
+  happening").
+- The earlier hardening (`205267b` timeout, `41a0567` no exifr on the main
+  thread, `048aa58` circuit breaker) was aimed at the misdiagnosis but does
+  no harm, so keep it.
+- The Aw-snap instrumentation (census counters, `countedQuery`,
+  `scheduleWatch`, the heap watch, the crash sentinel) can be trimmed once
+  the device check has held for a while.
+
+---
+
+# 2026-08-28 session log (superseded, kept for the record)
 
 Companion to `PROGRESS.md`'s own Aw-snap sections (search it for "Aw snap" —
 there's a whole prior investigation, 2026-08-17 through 08-24, that ruled out
@@ -10,12 +166,14 @@ finding that the 08-24 fix had a gap, fixing it twice, and then discovering
 the crash the user is actually hitting is a **different, still-unsolved
 bug** that merely happens to look similar.
 
-**Read this first if you're picking this up cold:** skip to
+**(As of 2026-08-28) Read this first if you're picking this up cold:** skip to
 [Where this actually stands](#where-this-actually-stands) and
 [Recommended next step](#recommended-next-step) — the numbered timeline below
 is for when you need the reasoning behind a claim, not as required reading.
 
 ## Where this actually stands
+
+*Superseded 2026-09-28. See [Resolution](#resolution-2026-09-28).*
 
 - **Fixed and deployed:** two real gaps in the exifr/photo-processing safety
   net (below). Both verified live, both pushed to `main`/GitHub Pages.
@@ -37,6 +195,8 @@ is for when you need the reasoning behind a claim, not as required reading.
   easier to catch mid-crash next time.
 
 ## Recommended next step
+
+*Superseded 2026-09-28. See [Resolution](#resolution-2026-09-28).*
 
 The static-reading approach is exhausted (see the file list below) — every
 file that could plausibly call `processImage`/`parseExif` has been read in
@@ -295,7 +455,9 @@ tests clean.
 
 ## The mystery: who calls `processImage`?
 
-Still open. What we know for certain:
+*Answered 2026-09-28: nobody did. The worker's own message handler was running on the page. See [Resolution](#resolution-2026-09-28).*
+
+What we knew at the time:
 
 - It's triggered by connecting Google Drive (or reconnecting, which forces a
   full merge even against unchanged data) **when the device has real,
