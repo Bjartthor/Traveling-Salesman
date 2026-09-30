@@ -33,15 +33,15 @@ export function ActiveTripBanner() {
 
   if (!trip || dismissedTripId === trip.id) return null
 
-  const days = tripDurationDays(trip) ?? 1
   const places = placeCount ?? 0
+  const label = trip.isActive
+    ? `${trip.name} · Day ${tripDurationDays(trip) ?? 1} · ${places} ${places === 1 ? 'place' : 'places'}`
+    : `Backfilling ${trip.name} · ${places} ${places === 1 ? 'place' : 'places'}`
 
   return (
     <div className="active-trip-banner">
       <button type="button" className="active-trip-banner__tap" onClick={() => openTrip(trip.id)}>
-        <span className="active-trip-banner__text mono">
-          {trip.name} · Day {days} · {places} {places === 1 ? 'place' : 'places'}
-        </span>
+        <span className="active-trip-banner__text mono">{label}</span>
       </button>
       <button
         type="button"
