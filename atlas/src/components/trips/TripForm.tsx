@@ -7,6 +7,10 @@
 // `showEndDate=true, requireEndDate=true` is "log a past trip" — both dates
 // up front, always produces an already-closed trip; no conflict with
 // whatever's currently active is possible, since it never sets `isActive`.
+// This is also the only variant with the "Countries visited" picker below,
+// and the only one where the end date mirrors the start date until touched
+// (both exist to make backfilling an old trip fast — see
+// docs/superpowers/specs/2026-09-30-log-past-trip-countries-design.md).
 // `showEndDate=true, requireEndDate=false` is plain editing of an existing
 // trip's name/dates, which never touches `isActive` at all (only the
 // dedicated close/reopen actions in TripDetail do that) — the cover photo
@@ -20,14 +24,17 @@
 
 import { useState, type FormEvent } from 'react'
 import { todayISO } from '@/domain/dateFormat'
+import type { TripCountryRow } from '@/domain/tripCountryDefaults'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
 import { DateField } from '@/components/shared/DateField'
+import { TripCountryPicker } from '@/components/trips/TripCountryPicker'
 import './TripForm.css'
 
 export interface TripFormValues {
   name: string
   startDate: string
   endDate: string | null
+  countries?: TripCountryRow[]
 }
 
 interface TripFormProps {
@@ -41,16 +48,31 @@ interface TripFormProps {
 }
 
 export function TripForm({ title, submitLabel, showEndDate, requireEndDate, initial, onClose, onSubmit }: TripFormProps) {
+  const isLogPast = showEndDate && Boolean(requireEndDate)
+
   const [name, setName] = useState(initial?.name ?? '')
-  const [startDate, setStartDate] = useState(initial?.startDate ?? todayISO())
-  const [endDate, setEndDate] = useState<string | null>(initial?.endDate ?? null)
+  const initialStartDate = initial?.startDate ?? todayISO()
+  const [startDate, setStartDate] = useState(initialStartDate)
+  const [endDate, setEndDate] = useState<string | null>(initial?.endDate ?? (isLogPast ? initialStartDate : null))
+  const [endDateTouched, setEndDateTouched] = useState(false)
+  const [countries, setCountries] = useState<TripCountryRow[]>([])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  function handleStartDateChange(v: string) {
+    setStartDate(v)
+    if (isLogPast && !endDateTouched) setEndDate(v)
+  }
+
+  function handleEndDateChange(v: string | null) {
+    setEndDateTouched(true)
+    setEndDate(v)
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     setError(null)
-    if (showEndDate && requireEndDate && !endDate) {
+    if (isLogPast && !endDate) {
       setError('Pick an end date.')
       return
     }
@@ -60,6 +82,7 @@ export function TripForm({ title, submitLabel, showEndDate, requireEndDate, init
         name: name.trim() || `Trip from ${startDate}`,
         startDate,
         endDate: showEndDate ? endDate : null,
+        countries: isLogPast ? countries : undefined,
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -84,12 +107,12 @@ export function TripForm({ title, submitLabel, showEndDate, requireEndDate, init
         <div className={showEndDate ? 'trip-form__dates' : undefined}>
           <div className="trip-form__field">
             <span>Start date</span>
-            <DateField value={startDate} ariaLabel="Start date" onChange={(v) => v && setStartDate(v)} />
+            <DateField value={startDate} ariaLabel="Start date" onChange={(v) => v && handleStartDateChange(v)} />
           </div>
           {showEndDate && (
             <div className="trip-form__field">
               <span>End date{requireEndDate ? '' : ' (optional)'}</span>
-              <DateField value={endDate} ariaLabel="End date" min={startDate} onChange={setEndDate} />
+              <DateField value={endDate} ariaLabel="End date" min={startDate} onChange={handleEndDateChange} />
             </div>
           )}
         </div>
@@ -98,6 +121,8 @@ export function TripForm({ title, submitLabel, showEndDate, requireEndDate, init
             This starts the trip now — every place you add from here on attaches to it automatically.
           </p>
         )}
+
+        {isLogPast && <TripCountryPicker rows={countries} onChange={setCountries} startDate={startDate} />}
 
         {error && (
           <p className="trip-form__error" role="alert">
