@@ -87,6 +87,11 @@ export interface Trip extends SyncedRecord {
   startDate: string | null
   endDate: string | null
   isActive: boolean
+  // "Capturing" = isActive || isBackfilling; @/domain/tripRepo enforces that
+  // at most one trip is ever capturing. No Dexie version bump needed here —
+  // only indexed fields need declaring (see `trips: 'id, isActive, updatedAt'`
+  // in db/schema.ts), same precedent as `explicitStatus` above.
+  isBackfilling: boolean
   notes: string
   coverPhotoId: string | null
 }

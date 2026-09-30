@@ -19,7 +19,7 @@ import {
   type Mutation,
   type SetStatusRequest,
 } from '@/domain/cascade'
-import { autoAttachToActiveTrip } from '@/domain/tripRepo'
+import { autoAttachToCapturingTrip } from '@/domain/tripRepo'
 
 /**
  * A city entry points at a `cities` row that is not there. Loud on purpose: the
@@ -124,8 +124,9 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
 
 /**
  * Set a place's status, creating and recomputing whatever it implies above
- * it. If a trip is currently active, also attaches the *target* entry (never
- * the ancestors this implies) to it — see @/domain/tripRepo.autoAttachToActiveTrip.
+ * it. If a trip is currently capturing (live or backfilling), also attaches
+ * the *target* entry (never the ancestors this implies) to it — see
+ * @/domain/tripRepo.autoAttachToCapturingTrip.
  */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
   void logInfo(`place: set ${request.kind}/${request.refId} → ${request.status}`, breadcrumbDetail())
@@ -133,7 +134,7 @@ export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
     const state = await loadCascadeState(request.kind === 'city' ? [request.refId] : [])
     await applyMutations(setStatus(state, request))
     const target = await db.entries.where('[kind+refId]').equals([request.kind, request.refId]).first()
-    if (target) await autoAttachToActiveTrip(target.id)
+    if (target) await autoAttachToCapturingTrip(target.id)
   })
 }
 

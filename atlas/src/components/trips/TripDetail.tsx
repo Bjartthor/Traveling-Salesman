@@ -12,7 +12,7 @@ import { buildStatusIndex } from '@/stats/coverage'
 import { tripCityRows, tripCountryCodes, type TripCountryGroup, type TripPlaceRow } from '@/domain/tripPlaces'
 import { loadCountryFirstVisited, loadTripCountryCodesBatch, loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { newCountriesByTrip, tripDurationDays } from '@/domain/tripStats'
-import { closeTrip, getActiveTrip, reopenTrip, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
+import { closeTrip, getCapturingTrip, reopenTrip, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { formatLongDate, todayISO } from '@/domain/dateFormat'
@@ -109,8 +109,8 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
   }
 
   async function handleReopenTapped() {
-    const active = await getActiveTrip()
-    if (active && active.id !== trip.id) setConflictTripName(active.name)
+    const capturing = await getCapturingTrip()
+    if (capturing && capturing.id !== trip.id) setConflictTripName(capturing.name)
     else await run(() => reopenTrip(trip.id))
   }
 

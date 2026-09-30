@@ -1,11 +1,13 @@
-// The Dexie-facing half of trip lifecycle (05-trips.md task 1). Trip/
-// tripEntries writes go through @/db/repo like everything else, but the
-// lifecycle rules (only one active trip, auto-attach on a touched entry,
+// The Dexie-facing half of trip lifecycle (05-trips.md task 1, extended for
+// backfill mode — see docs/superpowers/specs/2026-09-30-backfill-trip-mode-design.md).
+// Trip/tripEntries writes go through @/db/repo like everything else, but the
+// lifecycle rules (only one capturing trip, auto-attach on a touched entry,
 // soft-delete never touching places) live here, one level up.
 //
-// `cascadeRepo.ts` calls `autoAttachToActiveTrip` from inside its own
+// `cascadeRepo.ts` calls `autoAttachToCapturingTrip` from inside its own
 // transaction after every `setPlaceStatus`, so "a place touched while a trip
-// is running attaches to it" is never a step a caller can forget.
+// is capturing attaches to it" is never a step a caller can forget — true for
+// a live trip and a backfilling one alike.
 
 import { db } from '@/db/schema'
 import { tripEntriesRepo, tripsRepo } from '@/db/repo'
@@ -19,57 +21,89 @@ function today(): string {
 }
 
 /**
- * The one trip currently capturing, or null. "Only one trip active" is an
- * app-level rule, not a DB constraint — enforced by always routing through
- * `createTrip`/`reopenTrip` below.
+ * The one trip currently capturing (live or backfilling), or null. "Only one
+ * trip capturing at a time" is an app-level rule, not a DB constraint —
+ * enforced by always routing through `createTrip`/`reopenTrip` below.
  *
  * Reads the (small) table directly rather than `where('isActive')`: IndexedDB
  * keys can't be booleans, so an index on a boolean column silently never
  * matches anything through Dexie's `where()` — harmless here since `trips`
  * stays small, but worth knowing before reaching for that index elsewhere.
  */
-export async function getActiveTrip(): Promise<Trip | null> {
-  const active = await db.trips.filter((t) => t.deletedAt === null && t.isActive).toArray()
-  return active[0] ?? null
+export async function getCapturingTrip(): Promise<Trip | null> {
+  const capturing = await db.trips.filter((t) => t.deletedAt === null && (t.isActive || t.isBackfilling)).toArray()
+  return capturing[0] ?? null
 }
 
-async function resolveConflict(active: Trip, resolution: ActiveTripConflictResolution): Promise<void> {
+async function resolveConflict(capturing: Trip, resolution: ActiveTripConflictResolution): Promise<void> {
   if (resolution === 'close') {
-    await tripsRepo.update(active.id, { isActive: false, endDate: active.endDate ?? today() })
+    await tripsRepo.update(capturing.id, { isActive: false, isBackfilling: false, endDate: capturing.endDate ?? today() })
   } else {
     // "Leave the old one open" — still no end date, just no longer the one capturing.
-    await tripsRepo.update(active.id, { isActive: false })
+    await tripsRepo.update(capturing.id, { isActive: false, isBackfilling: false })
   }
 }
+
+export type CaptureMode = 'live' | 'backfill'
 
 export interface CreateTripInput {
   name: string
   startDate: string
-  endDate: string | null
+  mode: CaptureMode
   notes?: string
 }
 
 /**
- * `endDate` present at creation means a retroactive, already-closed trip —
- * `isActive` is false immediately and no conflict is possible. `endDate` null
- * means "starting now": if another trip is already active, `resolution` is
- * required (the caller must ask the user first — see TripForm/TripConflictDialog).
+ * Every new trip starts open-ended (`endDate: null`) regardless of mode — a
+ * trip only gets an end date by being closed (`closeTrip`), ended
+ * (`endBackfill`), or edited by hand. `mode: 'live'` sets `isActive`;
+ * `mode: 'backfill'` sets `isBackfilling`. Either way, if another trip is
+ * already capturing, `resolution` is required (the caller must ask the user
+ * first — see TripsScreen/TripConflictDialog).
  */
 export async function createTrip(input: CreateTripInput, resolution?: ActiveTripConflictResolution): Promise<Trip> {
-  void logInfo(`trip: create "${input.name}"`)
-  const isActive = input.endDate === null
-  if (isActive) {
-    const active = await getActiveTrip()
-    if (active) {
-      if (!resolution) throw new Error('Another trip is active — resolve the conflict first')
-      await resolveConflict(active, resolution)
-    }
+  void logInfo(`trip: create "${input.name}" (${input.mode})`)
+  const capturing = await getCapturingTrip()
+  if (capturing) {
+    if (!resolution) throw new Error('Another trip is capturing — resolve the conflict first')
+    await resolveConflict(capturing, resolution)
   }
   return tripsRepo.create({
     name: input.name,
     startDate: input.startDate,
+    endDate: null,
+    isActive: input.mode === 'live',
+    isBackfilling: input.mode === 'backfill',
+    notes: input.notes ?? '',
+    coverPhotoId: null,
+  })
+}
+
+export interface CreateClosedTripInput {
+  name: string
+  startDate: string
+  endDate: string
+  notes?: string
+}
+
+/**
+ * A trip whose full date range is already known at creation — used by the
+ * photo-import flow (`PhotoImportFlow.tsx`), which infers a trip's start and
+ * end dates directly from photo EXIF timestamps, so there's nothing to
+ * "capture" or backfill: never sets `isActive`/`isBackfilling`, so no
+ * conflict with whatever else is capturing is possible. This is the one
+ * remaining piece of the old (pre-backfill-mode) `createTrip`'s "`endDate`
+ * present at creation" branch — split out on its own now that `createTrip`
+ * itself is exclusively about starting a capturing session.
+ */
+export async function createClosedTrip(input: CreateClosedTripInput): Promise<Trip> {
+  void logInfo(`trip: create closed "${input.name}"`)
+  return tripsRepo.create({
+    name: input.name,
+    startDate: input.startDate,
     endDate: input.endDate,
-    isActive,
+    isActive: false,
+    isBackfilling: false,
     notes: input.notes ?? '',
     coverPhotoId: null,
   })
@@ -80,12 +114,17 @@ export async function closeTrip(tripId: string, endDate?: string): Promise<void>
   await tripsRepo.update(tripId, { isActive: false, endDate: endDate ?? today() })
 }
 
-/** Reversible close (05-trips.md task 1). Clears `endDate` — resuming capture means open-ended again until closed a second time. */
+/** The backfill equivalent of `closeTrip` — `endDate` is required (no `today()` fallback): the caller (`EndBackfillDialog`) always supplies one, defaulted via `nextBackfillDate`. */
+export async function endBackfill(tripId: string, endDate: string): Promise<void> {
+  await tripsRepo.update(tripId, { isBackfilling: false, endDate })
+}
+
+/** Reversible close (05-trips.md task 1). Clears `endDate` — resuming capture means open-ended again until closed a second time. Always resumes as *live*, never back into backfill mode. */
 export async function reopenTrip(tripId: string, resolution?: ActiveTripConflictResolution): Promise<void> {
-  const active = await getActiveTrip()
-  if (active && active.id !== tripId) {
-    if (!resolution) throw new Error('Another trip is active — resolve the conflict first')
-    await resolveConflict(active, resolution)
+  const capturing = await getCapturingTrip()
+  if (capturing && capturing.id !== tripId) {
+    if (!resolution) throw new Error('Another trip is capturing — resolve the conflict first')
+    await resolveConflict(capturing, resolution)
   }
   await tripsRepo.update(tripId, { isActive: true, endDate: null })
 }
@@ -134,14 +173,32 @@ export async function detachEntryFromTrip(tripId: string, entryId: string): Prom
  * creates alongside it. This is what "attach at the city level; plus any
  * country added directly" (05-trips.md task 1) resolves to as one rule: the
  * *target* of a direct set attaches (city, subdivision or country alike),
- * whatever it implies upward does not. No-ops when no trip is active, or when
- * the place is already attached (re-touching an existing entry, e.g. a second
- * visit to a city already on this trip, is exactly the "existing entries
- * touched" case the brief calls out — attaching again is a harmless no-op).
+ * whatever it implies upward does not. No-ops when no trip is capturing, or
+ * when the place is already attached (re-touching an existing entry, e.g. a
+ * second visit to a city already on this trip, is exactly the "existing
+ * entries touched" case the brief calls out — attaching again is a harmless
+ * no-op). Covers a live trip and a backfilling one identically — the only
+ * difference between the two lives in what date `PlaceStatusSheet` offers as
+ * a default before calling `setPlaceStatus`, not in attachment itself.
  */
-export async function autoAttachToActiveTrip(entryId: string): Promise<void> {
-  const active = await getActiveTrip()
-  if (active) await attachEntryToTrip(active.id, entryId)
+export async function autoAttachToCapturingTrip(entryId: string): Promise<void> {
+  const capturing = await getCapturingTrip()
+  if (capturing) await attachEntryToTrip(capturing.id, entryId)
+}
+
+/**
+ * The date offered for the next place touched while backfilling: the trip's
+ * start date if nothing has been attached yet, otherwise the `firstVisited`
+ * of whichever entry was *most recently attached* (by `tripEntries.addedAt`,
+ * not by date value — chains off the last thing you touched, not the latest
+ * date typed), falling back to the start date if that entry has no date.
+ */
+export async function nextBackfillDate(tripId: string, startDate: string): Promise<string> {
+  const rows = await db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
+  if (rows.length === 0) return startDate
+  const latest = rows.reduce((a, b) => (a.addedAt > b.addedAt ? a : b))
+  const entry = await db.entries.get(latest.entryId)
+  return entry?.firstVisited ?? startDate
 }
 
 /** Trip ids (active membership only) a given entry currently belongs to — for the place-status sheet's trip toggle. */

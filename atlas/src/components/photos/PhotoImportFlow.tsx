@@ -16,7 +16,7 @@ import { matchPhotoLocation, type LocationMatch } from '@/geo/nearestCity'
 import { clusterTrips, groupByProposedPlace, type ProposalGroup, type ProposalKey } from '@/domain/exifImport'
 import { statusRank } from '@/domain/cascade'
 import { setPlaceStatus } from '@/domain/cascadeRepo'
-import { createTrip } from '@/domain/tripRepo'
+import { createClosedTrip } from '@/domain/tripRepo'
 import { attachPhoto } from '@/domain/photoRepo'
 import { flagEmoji } from '@/geo/flags'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
@@ -222,7 +222,7 @@ export function PhotoImportFlow({ onClose }: { onClose: () => void }) {
       let tripsCreated = 0
       for (const cluster of clusters) {
         if (!cluster.included) continue
-        const trip = await createTrip({ name: cluster.name.trim() || 'Trip', startDate: cluster.startDate, endDate: cluster.endDate })
+        const trip = await createClosedTrip({ name: cluster.name.trim() || 'Trip', startDate: cluster.startDate, endDate: cluster.endDate })
         tripsCreated++
         for (const id of cluster.photoIds) tripIdByPhotoId.set(id, trip.id)
       }

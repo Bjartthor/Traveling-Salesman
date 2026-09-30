@@ -33,6 +33,7 @@ function trip(over: Partial<Trip> = {}): Trip {
     startDate: null,
     endDate: null,
     isActive: false,
+    isBackfilling: false,
     notes: '',
     coverPhotoId: null,
     createdAt: 1000,

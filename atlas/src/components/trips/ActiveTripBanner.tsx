@@ -6,7 +6,7 @@
 
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import { getActiveTrip } from '@/domain/tripRepo'
+import { getCapturingTrip } from '@/domain/tripRepo'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useActiveTripBannerStore } from '@/domain/activeTripBannerStore'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
@@ -14,10 +14,10 @@ import { countedQuery } from '@/debug/census'
 import './ActiveTripBanner.css'
 
 // Module-scope: stable across renders, matching this query's `deps: []`.
-const queryActiveTrip = countedQuery('lqActiveTrip', () => getActiveTrip())
+const queryCapturingTrip = countedQuery('lqCapturingTrip', () => getCapturingTrip())
 
 export function ActiveTripBanner() {
-  const trip = useLiveQuery(queryActiveTrip)
+  const trip = useLiveQuery(queryCapturingTrip)
   const dismissedTripId = useActiveTripBannerStore((s) => s.dismissedTripId)
   const dismiss = useActiveTripBannerStore((s) => s.dismiss)
   const openTrip = useTripDetailStore((s) => s.open)

@@ -1,15 +1,15 @@
-// The Trips tab (05-trips.md task 3): an Active section (the currently
-// capturing trip, plus the two ways to start one) and a Past section of
-// stamps in reverse chronological order, stacked with slight overlap like a
-// passport page.
+// The Trips tab (05-trips.md task 3, extended for backfill mode): a
+// Capturing section (whichever trip — live or backfilling — is currently
+// capturing, plus the two ways to start one) and a Past section of stamps in
+// reverse chronological order, stacked with slight overlap like a passport
+// page.
 
 import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import type { Status, Trip } from '@/db/types'
 import { buildStatusIndex } from '@/stats/coverage'
-import { attachEntryToTrip, createTrip, getActiveTrip, type ActiveTripConflictResolution } from '@/domain/tripRepo'
-import { setPlaceStatus } from '@/domain/cascadeRepo'
+import { createTrip, getCapturingTrip, type ActiveTripConflictResolution, type CaptureMode } from '@/domain/tripRepo'
 import { loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
@@ -20,7 +20,7 @@ import { TripConflictDialog } from '@/components/trips/TripConflictDialog'
 import { TripStamp } from '@/components/trips/TripStamp'
 import './TripsScreen.css'
 
-type FormMode = 'start' | 'logPast' | null
+type FormMode = CaptureMode | null
 
 export function TripsScreen() {
   const [formMode, setFormMode] = useState<FormMode>(null)
@@ -29,35 +29,37 @@ export function TripsScreen() {
   const openTrip = useTripDetailStore((s) => s.open)
 
   const trips = useLiveQuery(() => db.trips.filter((t) => t.deletedAt === null).toArray())
-  const active = trips?.find((t) => t.isActive) ?? null
+  const capturing = trips?.find((t) => t.isActive || t.isBackfilling) ?? null
   const past = (trips ?? [])
-    .filter((t) => !t.isActive)
+    .filter((t) => t.endDate !== null)
     .sort((a, b) => (b.startDate ?? '').localeCompare(a.startDate ?? '') || b.createdAt - a.createdAt)
 
   // Shared across every stamp's mini route map, computed once rather than per stamp.
   const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
 
-  async function handleStartTapped() {
-    const conflictTrip = await getActiveTrip()
+  const capturingPlaceCount = useLiveQuery(
+    () => (capturing ? db.tripEntries.filter((te) => te.tripId === capturing.id && te.deletedAt === null).count() : Promise.resolve(0)),
+    [capturing?.id],
+  )
+
+  // `formMode` is set here regardless of whether there's a conflict — a
+  // conflict just means TripConflictDialog renders on top and the form
+  // itself stays hidden (see the render gate below) until the user resolves
+  // it, so `submitForm` still knows which mode to pass to `createTrip`
+  // afterward. Canceling the conflict dialog clears `formMode` back to null
+  // (see its `onCancel` below) so nothing opens.
+  async function requestFormMode(mode: CaptureMode) {
+    const conflictTrip = await getCapturingTrip()
     if (conflictTrip) setConflictTripName(conflictTrip.name)
-    else setFormMode('start')
+    setFormMode(mode)
   }
 
-  async function submitStart(values: TripFormValues) {
-    await createTrip({ name: values.name, startDate: values.startDate, endDate: null }, pendingResolution)
+  async function submitForm(values: TripFormValues) {
+    if (!formMode) return
+    await createTrip({ name: values.name, startDate: values.startDate, mode: formMode }, pendingResolution)
     setFormMode(null)
     setPendingResolution(undefined)
-  }
-
-  async function submitLogPast(values: TripFormValues) {
-    const trip = await createTrip({ name: values.name, startDate: values.startDate, endDate: values.endDate })
-    for (const row of values.countries ?? []) {
-      await setPlaceStatus({ kind: 'country', refId: row.code, status: row.status, firstVisited: row.date, lastVisited: row.date })
-      const entry = await db.entries.where('[kind+refId]').equals(['country', row.code]).first()
-      if (entry) await attachEntryToTrip(trip.id, entry.id)
-    }
-    setFormMode(null)
   }
 
   return (
@@ -65,12 +67,14 @@ export function TripsScreen() {
       <h1 className="trips-screen__title">Trips</h1>
 
       <section className="trips-screen__section">
-        <h2 className="trips-screen__section-title mono">Active</h2>
-        {active ? (
-          <button type="button" className="trips-screen__active-card" onClick={() => openTrip(active.id)}>
-            <span className="trips-screen__active-name">{active.name}</span>
+        <h2 className="trips-screen__section-title mono">Capturing</h2>
+        {capturing ? (
+          <button type="button" className="trips-screen__active-card" onClick={() => openTrip(capturing.id)}>
+            <span className="trips-screen__active-name">{capturing.name}</span>
             <span className="trips-screen__active-meta mono">
-              Day {tripDurationDays(active)} · started {active.startDate ? formatLongDate(active.startDate) : '—'}
+              {capturing.isActive
+                ? `Day ${tripDurationDays(capturing)} · started ${capturing.startDate ? formatLongDate(capturing.startDate) : '—'}`
+                : `Backfilling since ${capturing.startDate ? formatLongDate(capturing.startDate) : '—'} · ${capturingPlaceCount ?? 0} ${capturingPlaceCount === 1 ? 'place' : 'places'}`}
             </span>
           </button>
         ) : (
@@ -81,10 +85,10 @@ export function TripsScreen() {
       </section>
 
       <div className="trips-screen__actions">
-        <button type="button" className="trips-screen__action" onClick={() => void handleStartTapped()}>
+        <button type="button" className="trips-screen__action" onClick={() => void requestFormMode('live')}>
           Start a trip
         </button>
-        <button type="button" className="trips-screen__action trips-screen__action--secondary" onClick={() => setFormMode('logPast')}>
+        <button type="button" className="trips-screen__action trips-screen__action--secondary" onClick={() => void requestFormMode('backfill')}>
           Log a past trip
         </button>
       </div>
@@ -98,31 +102,21 @@ export function TripsScreen() {
             ))}
           </div>
         ) : (
-          <p className="trips-screen__hint">Trips you close (or log from the past) show up here as a stamp.</p>
+          <p className="trips-screen__hint">Trips you close (or finish backfilling) show up here as a stamp.</p>
         )}
       </section>
 
-      {formMode === 'start' && (
+      {formMode && !conflictTripName && (
         <TripForm
-          title="Start a trip"
-          submitLabel="Start trip"
+          title={formMode === 'live' ? 'Start a trip' : 'Log a past trip'}
+          submitLabel={formMode === 'live' ? 'Start trip' : 'Start backfilling'}
           showEndDate={false}
+          mode={formMode}
           onClose={() => {
             setFormMode(null)
             setPendingResolution(undefined)
           }}
-          onSubmit={submitStart}
-        />
-      )}
-
-      {formMode === 'logPast' && (
-        <TripForm
-          title="Log a past trip"
-          submitLabel="Save trip"
-          showEndDate
-          requireEndDate
-          onClose={() => setFormMode(null)}
-          onSubmit={submitLogPast}
+          onSubmit={submitForm}
         />
       )}
 
@@ -132,9 +126,11 @@ export function TripsScreen() {
           onResolve={(resolution) => {
             setPendingResolution(resolution)
             setConflictTripName(null)
-            setFormMode('start')
           }}
-          onCancel={() => setConflictTripName(null)}
+          onCancel={() => {
+            setConflictTripName(null)
+            setFormMode(null)
+          }}
         />
       )}
     </div>
