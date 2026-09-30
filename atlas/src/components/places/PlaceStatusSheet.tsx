@@ -11,7 +11,7 @@ import { settingsRepo } from '@/db/repo'
 import type { Entry, Status, Trip } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
-import { attachEntryToTrip, detachEntryFromTrip, listTrips, tripIdsForEntry } from '@/domain/tripRepo'
+import { attachEntryToTrip, detachEntryFromTrip, getCapturingTrip, listTrips, nextBackfillDate, tripIdsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
 import { todayISO } from '@/domain/dateFormat'
@@ -96,6 +96,8 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     () => (entryId ? tripIdsForEntry(entryId) : Promise.resolve(new Set<string>())),
     [entryId],
   )
+  const capturingTrip = useLiveQuery(() => getCapturingTrip())
+  const backfillingTrip = capturingTrip?.isBackfilling ? capturingTrip : null
 
   async function toggleTrip(trip: Trip, attached: boolean) {
     if (!entryId) return
@@ -115,14 +117,28 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     if (dateTouched) return
     if (data?.entry?.firstVisited) {
       setDate(data.entry.firstVisited)
-    } else if (!data?.entry && settings?.defaultDateToToday) {
+      return
+    }
+    if (data?.entry) return // existing entry, no date on it — leave blank, don't override with backfill/today defaults
+    if (backfillingTrip?.startDate) {
+      // A genuinely new place while backfilling — chain off the last place
+      // touched in this trip (or its start date if this is the first one),
+      // and count it as an explicit choice so a bare status tap saves it
+      // without the user re-touching the field. This takes priority over
+      // `defaultDateToToday` below — being mid-backfill is a much stronger
+      // signal than the general "default new entries to today" preference.
+      void nextBackfillDate(backfillingTrip.id, backfillingTrip.startDate).then((d) => {
+        setDate(d)
+        setDateTouched(true)
+      })
+    } else if (settings?.defaultDateToToday) {
       // A genuinely new place (no entry yet) — pre-fill and count it as an
       // explicit choice, so a bare status tap does save today's date, which
       // is the point of the "default new entries to today" preference.
       setDate(todayISO())
       setDateTouched(true)
     }
-  }, [data, dateTouched, settings])
+  }, [data, dateTouched, settings, backfillingTrip])
 
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -219,6 +235,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
 
         <div className="place-sheet__date">
           <span>Date (optional)</span>
+          {backfillingTrip && <p className="place-sheet__backfill-note">Backfilling "{backfillingTrip.name}"</p>}
           <DateField
             value={date}
             ariaLabel="Date"

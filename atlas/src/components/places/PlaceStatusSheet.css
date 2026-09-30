@@ -190,3 +190,8 @@
   font-size: var(--text-sm);
   color: var(--lived);
 }
+
+.place-sheet__backfill-note {
+  font-size: var(--text-xs);
+  color: var(--haze);
+}
