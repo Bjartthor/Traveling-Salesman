@@ -120,6 +120,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
       return
     }
     if (data?.entry) return // existing entry, no date on it — leave blank, don't override with backfill/today defaults
+    if (capturingTrip === undefined) return // still loading — wait, so `defaultDateToToday` below can't race ahead of a real backfilling trip and lock in today's date first
     if (backfillingTrip?.startDate) {
       // A genuinely new place while backfilling — chain off the last place
       // touched in this trip (or its start date if this is the first one),
@@ -138,7 +139,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
       setDate(todayISO())
       setDateTouched(true)
     }
-  }, [data, dateTouched, settings, backfillingTrip])
+  }, [data, dateTouched, settings, backfillingTrip, capturingTrip])
 
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
