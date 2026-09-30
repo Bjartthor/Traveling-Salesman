@@ -103,9 +103,34 @@ same way `isActive` is enforced today: a conflict check before starting or reope
   }
   ```
 
-  Every new trip starts with `endDate: null` — the "retroactive, already-closed" creation path
-  (`endDate` present at creation) is gone; a trip only gets an `endDate` by being closed (live) or
-  ended (backfill) or edited.
+  Every trip `createTrip` produces starts with `endDate: null` — an interactive capturing session
+  only gets an `endDate` by being closed (live), ended (backfill), or edited.
+- **`createClosedTrip`** is a new, separate function preserving the old "`endDate` present at
+  creation" behavior verbatim (`isActive`/`isBackfilling` both `false`, no conflict possible), for
+  the one caller that still needs it: `PhotoImportFlow.tsx`, which infers a trip's whole date range
+  from photo EXIF timestamps before creating it — there's nothing to capture or backfill in that
+  flow, so it was never part of what this redesign reshapes:
+
+  ```ts
+  export interface CreateClosedTripInput {
+    name: string
+    startDate: string
+    endDate: string
+    notes?: string
+  }
+
+  export async function createClosedTrip(input: CreateClosedTripInput): Promise<Trip> {
+    return tripsRepo.create({
+      name: input.name,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      isActive: false,
+      isBackfilling: false,
+      notes: input.notes ?? '',
+      coverPhotoId: null,
+    })
+  }
+  ```
 - **`resolveConflict`** generalizes from "the active trip" to "the capturing trip," clearing both flags:
 
   ```ts
