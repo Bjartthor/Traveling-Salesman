@@ -1,0 +1,66 @@
+/* z-index 40: same layer as the place-status sheet — this can be triggered
+   from inside a full-screen overlay (TripDetail). */
+.end-backfill-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: color-mix(in srgb, var(--abyss) 60%, transparent);
+}
+
+.end-backfill {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--shelf);
+  border: 1px solid var(--contour);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.end-backfill__title {
+  font-size: var(--text-lg);
+  color: var(--chalk);
+}
+
+.end-backfill__body {
+  font-size: var(--text-sm);
+  color: var(--haze);
+}
+
+.end-backfill__error {
+  font-size: var(--text-sm);
+  color: var(--lived);
+}
+
+.end-backfill__confirm {
+  min-height: var(--tap-target-min);
+  padding: var(--space-3);
+  background: var(--visited);
+  color: var(--abyss);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: var(--text-sm);
+}
+
+.end-backfill__confirm:disabled {
+  opacity: 0.6;
+}
+
+.end-backfill__cancel {
+  min-height: var(--tap-target-min);
+  color: var(--haze);
+  text-align: center;
+}
+
+.end-backfill__cancel:hover {
+  color: var(--chalk);
+}

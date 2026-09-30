@@ -21,6 +21,7 @@ import { colorForStatus } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
 import { TripForm } from '@/components/trips/TripForm'
 import { TripConflictDialog } from '@/components/trips/TripConflictDialog'
+import { EndBackfillDialog } from '@/components/trips/EndBackfillDialog'
 import { TripRouteMap } from '@/components/trips/TripRouteMap'
 import './TripDetail.css'
 
@@ -67,6 +68,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
 
   const [showEdit, setShowEdit] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showEndBackfill, setShowEndBackfill] = useState(false)
   const [conflictTripName, setConflictTripName] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -123,7 +125,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
       <div className="trip-detail">
         <p className="trip-detail__dates mono">
           {trip.startDate ? formatLongDate(trip.startDate) : '—'} –{' '}
-          {trip.endDate ? formatLongDate(trip.endDate) : trip.isActive ? 'ONGOING' : '—'}
+          {trip.endDate ? formatLongDate(trip.endDate) : trip.isActive ? 'ONGOING' : trip.isBackfilling ? 'BACKFILLING' : '—'}
         </p>
 
         <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cityPoints} />
@@ -147,6 +149,10 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
           {trip.isActive ? (
             <button type="button" className="trip-detail__action" onClick={() => void run(() => closeTrip(trip.id))}>
               Close trip
+            </button>
+          ) : trip.isBackfilling ? (
+            <button type="button" className="trip-detail__action" onClick={() => setShowEndBackfill(true)}>
+              End past trip
             </button>
           ) : (
             <button type="button" className="trip-detail__action" onClick={() => void handleReopenTapped()}>
@@ -221,6 +227,15 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
             void run(() => reopenTrip(trip.id, resolution))
           }}
           onCancel={() => setConflictTripName(null)}
+        />
+      )}
+
+      {showEndBackfill && trip.startDate && (
+        <EndBackfillDialog
+          tripId={trip.id}
+          startDate={trip.startDate}
+          onDone={() => setShowEndBackfill(false)}
+          onCancel={() => setShowEndBackfill(false)}
         />
       )}
 
