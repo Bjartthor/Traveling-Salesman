@@ -8,7 +8,8 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import type { Status, Trip } from '@/db/types'
 import { buildStatusIndex } from '@/stats/coverage'
-import { createTrip, getActiveTrip, type ActiveTripConflictResolution } from '@/domain/tripRepo'
+import { attachEntryToTrip, createTrip, getActiveTrip, type ActiveTripConflictResolution } from '@/domain/tripRepo'
+import { setPlaceStatus } from '@/domain/cascadeRepo'
 import { loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
@@ -50,7 +51,12 @@ export function TripsScreen() {
   }
 
   async function submitLogPast(values: TripFormValues) {
-    await createTrip({ name: values.name, startDate: values.startDate, endDate: values.endDate })
+    const trip = await createTrip({ name: values.name, startDate: values.startDate, endDate: values.endDate })
+    for (const row of values.countries ?? []) {
+      await setPlaceStatus({ kind: 'country', refId: row.code, status: row.status, firstVisited: row.date, lastVisited: row.date })
+      const entry = await db.entries.where('[kind+refId]').equals(['country', row.code]).first()
+      if (entry) await attachEntryToTrip(trip.id, entry.id)
+    }
     setFormMode(null)
   }
 
