@@ -49,6 +49,7 @@ function tripEntry(over: Partial<TripEntry> = {}): TripEntry {
     tripId: 't1',
     entryId: 'e1',
     addedAt: 1000,
+    visitedDate: null,
     createdAt: 1000,
     updatedAt: 1000,
     deletedAt: null,

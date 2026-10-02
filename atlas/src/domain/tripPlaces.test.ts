@@ -172,6 +172,35 @@ describe('chronological ordering (oldest visit first)', () => {
   })
 })
 
+describe('visitedDates (per-trip dates, independent of the entry\'s own lastVisited)', () => {
+  it('sorts and reports by the trip-specific date, overriding the entry\'s own lastVisited', () => {
+    const entries: Entry[] = [
+      mkEntry({ kind: 'country', refId: 'JP', lastVisited: '2024-06-01', createdAt: 1 }),
+      mkEntry({ kind: 'city', refId: '20', lastVisited: '2024-01-15', createdAt: 2 }), // Monaco-Ville
+    ]
+    // On *this* trip, Japan was actually visited before Monaco — the reverse of each entry's own global date.
+    const visitedDates = new Map([
+      [entries[0]!.id, '2023-01-01'],
+      [entries[1]!.id, '2025-01-01'],
+    ])
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES, visitedDates })
+    expect(groups.map((g) => g.code)).toEqual(['JP', 'MC'])
+  })
+
+  it('treats an entry present in the map with no date as undated for this trip, even if the entry has a global lastVisited', () => {
+    const entries: Entry[] = [mkEntry({ kind: 'country', refId: 'JP', lastVisited: '2024-06-01', createdAt: 1 })]
+    const visitedDates = new Map([[entries[0]!.id, null]])
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES, visitedDates })
+    expect(groups[0]!.row?.visitedDate).toBeNull()
+  })
+
+  it('falls back to the entry\'s own lastVisited when no visitedDates map is given at all', () => {
+    const entries: Entry[] = [mkEntry({ kind: 'country', refId: 'JP', lastVisited: '2024-06-01', createdAt: 1 })]
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES })
+    expect(groups[0]!.row?.visitedDate).toBe('2024-06-01')
+  })
+})
+
 describe('tripCountryCodes / tripCityRows', () => {
   it('returns exactly the countries with something attached under them', () => {
     expect(tripCountryCodes(build()).sort()).toEqual(['DE', 'JP', 'MC'])

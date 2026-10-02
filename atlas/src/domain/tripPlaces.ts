@@ -21,7 +21,8 @@ export interface TripPlaceRow {
   refId: string
   name: string
   status: Status
-  lastVisited: string | null
+  /** This *trip's* own visit date for the place (not the place's global `firstVisited`/`lastVisited`) — see `TripPlacesInput.visitedDates`. */
+  visitedDate: string | null
   lat: number | null
   lon: number | null
   createdAt: number
@@ -43,20 +44,35 @@ export interface TripCountryGroup {
 }
 
 export interface TripPlacesInput {
-  /** This trip's attached entries, active only — caller resolves via tripRepo.entryIdsForTrip + a live entries query. */
+  /** This trip's attached entries, active only — caller resolves via tripRepo.tripEntryRowsForTrip + a live entries query. */
   entries: readonly Entry[]
   countries: readonly Country[]
   subdivisions: readonly Subdivision[]
   cities: TripCityLookup
+  /**
+   * entryId -> this trip's own visit date for that entry, from its
+   * `TripEntry.visitedDate` (the same place can carry a different date on
+   * another trip, or none at all here). Omitted entirely means "no
+   * trip-specific dates known" — falls back to the entry's own
+   * `lastVisited`, which keeps every existing caller/test working unchanged.
+   */
+  visitedDates?: ReadonlyMap<string, string | null>
 }
 
-function toRow(entry: Entry, name: string, lat: number | null = null, lon: number | null = null): TripPlaceRow {
+function toRow(
+  entry: Entry,
+  name: string,
+  visitedDates: TripPlacesInput['visitedDates'],
+  lat: number | null = null,
+  lon: number | null = null,
+): TripPlaceRow {
+  const visitedDate = visitedDates ? (visitedDates.get(entry.id) ?? null) : entry.lastVisited
   return {
     entryId: entry.id,
     refId: entry.refId,
     name,
     status: entry.status,
-    lastVisited: entry.lastVisited,
+    visitedDate,
     lat,
     lon,
     createdAt: entry.createdAt,
@@ -80,7 +96,7 @@ interface SortInfo {
 }
 
 function rowSortInfo(row: TripPlaceRow): SortInfo {
-  return { date: row.lastVisited, createdAt: row.createdAt }
+  return { date: row.visitedDate, createdAt: row.createdAt }
 }
 
 /** Earliest dated entry among a node's own row (if any) and its children; `date: null` only when nothing below has one. */
@@ -116,7 +132,7 @@ function sortRanked<T extends { name: string }>(ranked: Ranked<T>[]): T[] {
 }
 
 export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
-  const { entries, countries, subdivisions, cities } = input
+  const { entries, countries, subdivisions, cities, visitedDates } = input
   const countryByCode = new Map(countries.map((c) => [c.code, c]))
   const subdivisionById = new Map(subdivisions.map((s) => [s.id, s]))
 
@@ -160,7 +176,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (entry.deletedAt !== null) continue // defence in depth — callers pass active entries only
     if (entry.kind === 'country') {
       const bucket = bucketFor(entry.refId)
-      if (bucket) bucket.row = toRow(entry, bucket.country.name)
+      if (bucket) bucket.row = toRow(entry, bucket.country.name, visitedDates)
       continue
     }
     if (entry.kind === 'subdivision') {
@@ -168,7 +184,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
       if (!sub) continue
       const bucket = bucketFor(sub.countryCode)
       if (!bucket) continue
-      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name)
+      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name, visitedDates)
       continue
     }
     // city
@@ -176,7 +192,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (!city) continue
     const bucket = bucketFor(city.countryCode)
     if (!bucket) continue
-    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, city.lat, city.lon))
+    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, visitedDates, city.lat, city.lon))
   }
 
   const rankedGroups: Ranked<TripCountryGroup>[] = []

@@ -100,6 +100,13 @@ export interface TripEntry extends SyncedRecord {
   tripId: string
   entryId: string
   addedAt: number
+  // This specific trip's own visit date for this place — distinct from the
+  // place's `Entry.firstVisited` (the date it was first ever visited, across
+  // any trip). The same place can sit on several trips, each at a different
+  // time; without this, every trip sharing a place would be stuck reading the
+  // one global date off its entry. Not indexed, so no Dexie migration needed
+  // (same precedent as `explicitStatus`/`isBackfilling`).
+  visitedDate: string | null
 }
 
 export interface Photo extends SyncedRecord {

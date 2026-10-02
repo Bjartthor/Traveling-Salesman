@@ -125,7 +125,9 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
 /**
  * Set a place's status, creating and recomputing whatever it implies above
  * it. If a trip is currently capturing (live or backfilling), also attaches
- * the *target* entry (never the ancestors this implies) to it — see
+ * the *target* entry (never the ancestors this implies) to it, carrying this
+ * call's own date along as *that trip's* visit date (not the entry's
+ * `firstVisited`, which stays whatever the user set standalone) — see
  * @/domain/tripRepo.autoAttachToCapturingTrip.
  */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
@@ -134,7 +136,7 @@ export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
     const state = await loadCascadeState(request.kind === 'city' ? [request.refId] : [])
     await applyMutations(setStatus(state, request))
     const target = await db.entries.where('[kind+refId]').equals([request.kind, request.refId]).first()
-    if (target) await autoAttachToCapturingTrip(target.id)
+    if (target) await autoAttachToCapturingTrip(target.id, request.firstVisited)
   })
 }
 

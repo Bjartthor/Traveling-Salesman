@@ -5,7 +5,7 @@
 
 import { db } from '@/db/schema'
 import type { City, Country, Entry, Subdivision } from '@/db/types'
-import { entryIdsForTrip } from '@/domain/tripRepo'
+import { tripEntryRowsForTrip } from '@/domain/tripRepo'
 import { groupTripPlaces, tripCountryCodes, type TripCountryGroup } from '@/domain/tripPlaces'
 
 interface RefData {
@@ -19,10 +19,11 @@ async function loadRefData(): Promise<RefData> {
 }
 
 async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryGroup[]> {
-  const entryIds = await entryIdsForTrip(tripId)
-  if (entryIds.length === 0) return []
+  const tripEntries = await tripEntryRowsForTrip(tripId)
+  if (tripEntries.length === 0) return []
+  const visitedDates = new Map(tripEntries.map((te) => [te.entryId, te.visitedDate]))
 
-  const rows = await db.entries.bulkGet(entryIds)
+  const rows = await db.entries.bulkGet(tripEntries.map((te) => te.entryId))
   const entries = rows.filter((e): e is Entry => e !== undefined && e.deletedAt === null)
   if (entries.length === 0) return []
 
@@ -34,7 +35,7 @@ async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryG
     if (row) cities.set(e.refId, { name: row.name, countryCode: row.countryCode, subdivisionId: row.subdivisionId, lat: row.lat, lon: row.lon })
   })
 
-  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities })
+  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates })
 }
 
 export async function loadTripPlaces(tripId: string): Promise<TripCountryGroup[]> {
