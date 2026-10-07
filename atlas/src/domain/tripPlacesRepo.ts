@@ -22,6 +22,7 @@ async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryG
   const tripEntries = await tripEntryRowsForTrip(tripId)
   if (tripEntries.length === 0) return []
   const visitedDates = new Map(tripEntries.map((te) => [te.entryId, te.visitedDate]))
+  const addedAts = new Map(tripEntries.map((te) => [te.entryId, te.addedAt]))
 
   const rows = await db.entries.bulkGet(tripEntries.map((te) => te.entryId))
   const entries = rows.filter((e): e is Entry => e !== undefined && e.deletedAt === null)
@@ -35,7 +36,7 @@ async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryG
     if (row) cities.set(e.refId, { name: row.name, countryCode: row.countryCode, subdivisionId: row.subdivisionId, lat: row.lat, lon: row.lon })
   })
 
-  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates })
+  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates, addedAts })
 }
 
 export async function loadTripPlaces(tripId: string): Promise<TripCountryGroup[]> {

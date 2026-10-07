@@ -4,6 +4,8 @@
 // space available" precedent as @/components/places/CountryAdmin1Map, at
 // world scope instead of one country's admin-1 regions. Read-only: editing a
 // place always happens through the status sheet, never from a map.
+// Optionally draws the route the trip was traveled in — thin arcs with a
+// midpoint chevron between consecutive stops (see @/components/trips/routeGeometry).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { geoNaturalEarth1, geoPath, type GeoSphere } from 'd3-geo'
@@ -12,6 +14,8 @@ import type { Status } from '@/db/types'
 import { loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { decodeLayer } from '@/components/map/topo'
 import { colorForStatus } from '@/components/map/statusColor'
+import { routeLeg, type RouteLeg } from '@/components/trips/routeGeometry'
+import type { RouteStop } from '@/domain/tripRoute'
 import './TripRouteMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -33,9 +37,11 @@ interface TripRouteMapProps {
   cities: readonly TripCityPoint[]
   /** Trips-tab stamp thumbnail: fixed short height instead of the detail screen's 4:3 block, smaller city dots. */
   compact?: boolean
+  /** Stops in travel order (@/domain/tripRoute). Arrows are drawn between consecutive stops; omitted = no arrows. */
+  route?: readonly RouteStop[]
 }
 
-export function TripRouteMap({ countryCodes, countryStatus, cities, compact = false }: TripRouteMapProps) {
+export function TripRouteMap({ countryCodes, countryStatus, cities, compact = false, route }: TripRouteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
@@ -98,12 +104,29 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
       .filter((p): p is { name: string; x: number; y: number } => p !== null)
   }, [projection, cities])
 
+  const routeLegs = useMemo(() => {
+    if (!projection || !route || route.length < 2) return []
+    const points = route.map((s) => projection([s.lon, s.lat]))
+    const legs: RouteLeg[] = []
+    for (let i = 1; i < points.length; i++) {
+      const from = points[i - 1]
+      const to = points[i]
+      const leg = from && to ? routeLeg(from, to) : null
+      if (leg) legs.push(leg)
+    }
+    return legs
+  }, [projection, route])
+
   return (
     <div className={`trip-route-map${compact ? ' trip-route-map--compact' : ''}`} ref={containerRef}>
       <svg
         viewBox={`0 0 ${size.width || 1} ${size.height || 1}`}
         role="img"
-        aria-label="This trip's places on the world map, other statuses muted"
+        aria-label={
+          routeLegs.length > 0
+            ? "This trip's places on the world map, with arrows showing the order they were visited, other statuses muted"
+            : "This trip's places on the world map, other statuses muted"
+        }
       >
         {spherePath && <path className="trip-route-map__ocean" d={spherePath} />}
         {countryPaths.map((p) => {
@@ -119,6 +142,16 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
             </path>
           )
         })}
+        {routeLegs.length > 0 && (
+          <g className="trip-route-map__route" aria-hidden="true">
+            {routeLegs.map((leg, i) => (
+              <g key={i}>
+                <path d={`M${leg.from[0]},${leg.from[1]} Q${leg.control[0]},${leg.control[1]} ${leg.to[0]},${leg.to[1]}`} />
+                {leg.chevron && <polyline points={leg.chevron.map((p) => p.join(',')).join(' ')} />}
+              </g>
+            ))}
+          </g>
+        )}
         {cityPoints.map((p) => (
           <circle key={p.name} className="trip-route-map__city" cx={p.x} cy={p.y} r={compact ? 2.5 : 4}>
             <title>{p.name}</title>

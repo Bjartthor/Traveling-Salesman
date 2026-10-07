@@ -201,6 +201,21 @@ describe('visitedDates (per-trip dates, independent of the entry\'s own lastVisi
   })
 })
 
+describe('addedAts (when the place joined this trip, independent of the entry\'s own createdAt)', () => {
+  it('reports the trip-specific addedAt from the map', () => {
+    const entries: Entry[] = [mkEntry({ kind: 'city', refId: '20', createdAt: 5 })]
+    const addedAts = new Map([[entries[0]!.id, 900]])
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES, addedAts })
+    expect(tripCityRows(groups)[0]!.addedAt).toBe(900)
+  })
+
+  it('falls back to the entry\'s own createdAt when no addedAts map is given', () => {
+    const entries: Entry[] = [mkEntry({ kind: 'city', refId: '20', createdAt: 5 })]
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES })
+    expect(tripCityRows(groups)[0]!.addedAt).toBe(5)
+  })
+})
+
 describe('tripCountryCodes / tripCityRows', () => {
   it('returns exactly the countries with something attached under them', () => {
     expect(tripCountryCodes(build()).sort()).toEqual(['DE', 'JP', 'MC'])

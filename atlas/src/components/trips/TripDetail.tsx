@@ -12,6 +12,7 @@ import { buildStatusIndex } from '@/stats/coverage'
 import { tripCityRows, tripCountryCodes, type TripCountryGroup, type TripPlaceRow } from '@/domain/tripPlaces'
 import { loadCountryFirstVisited, loadTripCountryCodesBatch, loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { newCountriesByTrip, tripDurationDays } from '@/domain/tripStats'
+import { tripRoute } from '@/domain/tripRoute'
 import { closeTrip, getCapturingTrip, reopenTrip, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
@@ -99,6 +100,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
   const cityPoints = cityRows
     .filter((r): r is typeof r & { lat: number; lon: number } => r.lat !== null && r.lon !== null)
     .map((r) => ({ name: r.name, lat: r.lat, lon: r.lon }))
+  const route = tripRoute(cityRows)
   const duration = tripDurationDays(trip)
 
   async function run(action: () => Promise<void>) {
@@ -128,7 +130,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
           {trip.endDate ? formatLongDate(trip.endDate) : trip.isActive ? 'ONGOING' : trip.isBackfilling ? 'BACKFILLING' : '—'}
         </p>
 
-        <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cityPoints} />
+        <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cityPoints} route={route} />
 
         <dl className="trip-detail__stats">
           <div className="trip-detail__stat">

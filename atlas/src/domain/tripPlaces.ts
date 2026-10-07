@@ -26,6 +26,8 @@ export interface TripPlaceRow {
   lat: number | null
   lon: number | null
   createdAt: number
+  /** When the place was attached to *this* trip (`TripEntry.addedAt`) — see `TripPlacesInput.addedAts`. */
+  addedAt: number
 }
 
 export interface TripSubdivisionGroup {
@@ -57,12 +59,19 @@ export interface TripPlacesInput {
    * `lastVisited`, which keeps every existing caller/test working unchanged.
    */
   visitedDates?: ReadonlyMap<string, string | null>
+  /**
+   * entryId -> when that entry was attached to this trip, from its
+   * `TripEntry.addedAt`. Absent (map omitted, or entry missing from it) falls
+   * back to the entry's own `createdAt`, same contract as `visitedDates`.
+   */
+  addedAts?: ReadonlyMap<string, number>
 }
 
 function toRow(
   entry: Entry,
   name: string,
   visitedDates: TripPlacesInput['visitedDates'],
+  addedAts: TripPlacesInput['addedAts'],
   lat: number | null = null,
   lon: number | null = null,
 ): TripPlaceRow {
@@ -76,6 +85,7 @@ function toRow(
     lat,
     lon,
     createdAt: entry.createdAt,
+    addedAt: addedAts?.get(entry.id) ?? entry.createdAt,
   }
 }
 
@@ -132,7 +142,7 @@ function sortRanked<T extends { name: string }>(ranked: Ranked<T>[]): T[] {
 }
 
 export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
-  const { entries, countries, subdivisions, cities, visitedDates } = input
+  const { entries, countries, subdivisions, cities, visitedDates, addedAts } = input
   const countryByCode = new Map(countries.map((c) => [c.code, c]))
   const subdivisionById = new Map(subdivisions.map((s) => [s.id, s]))
 
@@ -176,7 +186,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (entry.deletedAt !== null) continue // defence in depth — callers pass active entries only
     if (entry.kind === 'country') {
       const bucket = bucketFor(entry.refId)
-      if (bucket) bucket.row = toRow(entry, bucket.country.name, visitedDates)
+      if (bucket) bucket.row = toRow(entry, bucket.country.name, visitedDates, addedAts)
       continue
     }
     if (entry.kind === 'subdivision') {
@@ -184,7 +194,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
       if (!sub) continue
       const bucket = bucketFor(sub.countryCode)
       if (!bucket) continue
-      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name, visitedDates)
+      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name, visitedDates, addedAts)
       continue
     }
     // city
@@ -192,7 +202,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (!city) continue
     const bucket = bucketFor(city.countryCode)
     if (!bucket) continue
-    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, visitedDates, city.lat, city.lon))
+    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, visitedDates, addedAts, city.lat, city.lon))
   }
 
   const rankedGroups: Ranked<TripCountryGroup>[] = []

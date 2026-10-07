@@ -33,6 +33,20 @@
   opacity: 0.35;
 }
 
+.trip-route-map__route {
+  fill: none;
+  stroke: var(--chalk);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+.trip-route-map__route path,
+.trip-route-map__route polyline {
+  vector-effect: non-scaling-stroke;
+}
+
 .trip-route-map__city {
   fill: var(--chalk);
   stroke: var(--abyss);
