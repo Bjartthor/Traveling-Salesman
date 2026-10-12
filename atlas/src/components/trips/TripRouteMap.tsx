@@ -1,7 +1,7 @@
 // The trip detail screen's route map (05-trips.md task 4): the trip's places
-// drawn on the world map, zoomed to fit, with every other status muted so the
-// trip stands out. Fit-to-container, no pan/zoom — same "just render the
-// space available" precedent as @/components/places/CountryAdmin1Map, at
+// drawn on the world map, zoomed to fit (to its cities on the detail screen),
+// with every other status muted so the trip stands out. Fit-to-container, no
+// pan/zoom — same "just render the space available" precedent as @/components/places/CountryAdmin1Map, at
 // world scope instead of one country's admin-1 regions. Read-only: editing a
 // place always happens through the status sheet, never from a map.
 // Optionally draws the route the trip was traveled in — thin arcs with a
@@ -15,6 +15,7 @@ import { loadWorldTopology, type TopoJson } from '@/geo/loader'
 import { decodeLayer } from '@/components/map/topo'
 import { colorForStatus } from '@/components/map/statusColor'
 import { routeLeg, type RouteLeg } from '@/components/trips/routeGeometry'
+import { cityFitBox } from '@/components/trips/tripMapFit'
 import type { RouteStop } from '@/domain/tripRoute'
 import './TripRouteMap.css'
 
@@ -39,9 +40,17 @@ interface TripRouteMapProps {
   compact?: boolean
   /** Stops in travel order (@/domain/tripRoute). Arrows are drawn between consecutive stops; omitted = no arrows. */
   route?: readonly RouteStop[]
+  /**
+   * Zoom to the trip's cities rather than the whole of every country they're
+   * in (@/components/trips/tripMapFit) — the detail screen, so a route between
+   * nearby cities is legible. `citylessCountryCodes` are trip countries with
+   * no city of their own on the map; their whole outline stays in view.
+   * Omitted = fit every trip country's outline (the stamps).
+   */
+  zoomToCities?: { citylessCountryCodes: readonly string[] }
 }
 
-export function TripRouteMap({ countryCodes, countryStatus, cities, compact = false, route }: TripRouteMapProps) {
+export function TripRouteMap({ countryCodes, countryStatus, cities, compact = false, route, zoomToCities }: TripRouteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
@@ -72,11 +81,29 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
   const tripCodeSet = useMemo(() => new Set(countryCodes), [countryCodes])
   const tripFeatures = useMemo(() => features.filter((f) => tripCodeSet.has(f.id)), [features, tripCodeSet])
 
+  // Keyed by content, not identity: callers rebuild `cities`/`zoomToCities`
+  // every render (e.g. each keystroke in the trip's notes), and a new fit
+  // target means a new projection and every country path recomputed.
+  const zoomCitiesKey = zoomToCities ? cities.map((c) => `${c.lat},${c.lon}`).join(';') : null
+  const citylessKey = zoomToCities?.citylessCountryCodes.join(',') ?? ''
+  const fitTarget = useMemo((): FeatureCollection<Geometry> | GeoSphere => {
+    if (zoomCitiesKey) {
+      const points = zoomCitiesKey.split(';').map((p) => {
+        const [lat, lon] = p.split(',').map(Number)
+        return { lat: lat!, lon: lon! }
+      })
+      const cityless = new Set(citylessKey.split(','))
+      return {
+        type: 'FeatureCollection',
+        features: [cityFitBox(points), ...tripFeatures.filter((f) => cityless.has(f.id)).map((f) => f.feature)],
+      }
+    }
+    // No countries attached yet — fit the whole sphere rather than an empty collection (undefined bounds).
+    return tripFeatures.length > 0 ? { type: 'FeatureCollection', features: tripFeatures.map((f) => f.feature) } : SPHERE
+  }, [zoomCitiesKey, citylessKey, tripFeatures])
+
   const projection = useMemo(() => {
     if (size.width === 0 || size.height === 0 || features.length === 0) return null
-    // No countries attached yet — fit the whole sphere rather than an empty collection (undefined bounds).
-    const fitTarget: FeatureCollection<Geometry> | GeoSphere =
-      tripFeatures.length > 0 ? { type: 'FeatureCollection', features: tripFeatures.map((f) => f.feature) } : SPHERE
     return geoNaturalEarth1().fitExtent(
       [
         [12, 12],
@@ -84,7 +111,7 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
       ],
       fitTarget,
     )
-  }, [size.width, size.height, features.length, tripFeatures])
+  }, [size.width, size.height, features.length, fitTarget])
 
   const pathGen = useMemo(() => (projection ? geoPath(projection) : null), [projection])
   const spherePath = useMemo(() => pathGen?.(SPHERE) ?? '', [pathGen])

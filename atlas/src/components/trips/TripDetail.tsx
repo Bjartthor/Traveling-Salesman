@@ -101,6 +101,11 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
     .filter((r): r is typeof r & { lat: number; lon: number } => r.lat !== null && r.lon !== null)
     .map((r) => ({ name: r.name, lat: r.lat, lon: r.lon }))
   const route = tripRoute(cityRows)
+  // Trip countries with no mapped city of their own (attached directly, e.g.
+  // a drive-through) — the map zooms to the cities but keeps these in view.
+  const citylessCountryCodes = groups
+    .filter((g) => ![...g.looseCities, ...g.subdivisions.flatMap((s) => s.cities)].some((c) => c.lat !== null && c.lon !== null))
+    .map((g) => g.code)
   const duration = tripDurationDays(trip)
 
   async function run(action: () => Promise<void>) {
@@ -130,7 +135,13 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
           {trip.endDate ? formatLongDate(trip.endDate) : trip.isActive ? 'ONGOING' : trip.isBackfilling ? 'BACKFILLING' : '—'}
         </p>
 
-        <TripRouteMap countryCodes={countryCodes} countryStatus={countryStatus} cities={cityPoints} route={route} />
+        <TripRouteMap
+          countryCodes={countryCodes}
+          countryStatus={countryStatus}
+          cities={cityPoints}
+          route={route}
+          zoomToCities={{ citylessCountryCodes }}
+        />
 
         <dl className="trip-detail__stats">
           <div className="trip-detail__stat">
