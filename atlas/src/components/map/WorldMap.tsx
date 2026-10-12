@@ -11,6 +11,9 @@ import { registerCensusCounter } from '@/debug/census'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
 import { CITY_MIN_SCALE, selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
+import { flatFitTransform, type TripOverlay } from '@/components/map/tripMapView'
+import { routeLeg, type RouteLeg } from '@/components/trips/routeGeometry'
+import { cityFitBox } from '@/components/trips/tripMapFit'
 import './WorldMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -71,6 +74,8 @@ interface WorldMapProps {
   onSelectSubdivision: (subdivisionId: string, name: string) => void
   onSelectCity: (refId: string) => void
   onDeselect: () => void
+  /** A trip shown on its own (@/components/map/tripMapView): its cities always drawn, its route as arrows, the view opened on it. */
+  trip?: TripOverlay | null
 }
 
 export function WorldMap({
@@ -82,6 +87,7 @@ export function WorldMap({
   onSelectSubdivision,
   onSelectCity,
   onDeselect,
+  trip = null,
 }: WorldMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -246,6 +252,68 @@ export function WorldMap({
     // projection would visibly misalign (e.g. after an orientation change).
   }, [zoomBehavior, size.width, size.height])
 
+  // --- trip view: open framed on the trip's cities, once per trip (and per
+  // re-fit after a resize, which resets the zoom above) — never on every
+  // live update, so adding a place while looking around doesn't yank the
+  // view. Clearing the trip goes back to the whole world. ---
+  const fittedTripRef = useRef<string | null>(null)
+  useEffect(() => {
+    const svgEl = svgRef.current
+    if (!svgEl || !projection || size.width === 0 || size.height === 0) return
+    const key = trip && trip.cities.length > 0 ? `${trip.id}:${size.width}x${size.height}` : null
+    if (key === fittedTripRef.current) return
+    const hadFit = fittedTripRef.current !== null
+    fittedTripRef.current = key
+    if (!trip || !key) {
+      if (hadFit) select(svgEl).call(zoomBehavior.transform, zoomIdentity)
+      return
+    }
+    const corners = cityFitBox(trip.cities)
+      .geometry.coordinates.map((c) => projection(c as [number, number]))
+      .filter((p): p is [number, number] => p !== null)
+    if (corners.length === 0) return
+    const xs = corners.map((p) => p[0])
+    const ys = corners.map((p) => p[1])
+    const t = flatFitTransform(
+      [
+        [Math.min(...xs), Math.min(...ys)],
+        [Math.max(...xs), Math.max(...ys)],
+      ],
+      size,
+    )
+    select(svgEl).call(zoomBehavior.transform, zoomIdentity.translate(t.x, t.y).scale(t.k))
+  }, [trip, projection, size, zoomBehavior])
+
+  // Route legs are computed in *screen* units (points scaled by the settled
+  // zoom) and drawn in a group scaled back by 1/k inside the zoom group, so
+  // arrowheads and the short-leg cut-offs (@/components/trips/routeGeometry)
+  // stay a constant on-screen size. Mid-gesture the group scales with the
+  // map until 'end' updates transform.k — same settle-then-recompute
+  // precedent as the city layer.
+  const tripLegs = useMemo(() => {
+    if (!projection || !trip || trip.route.length < 2) return []
+    const k = transform.k
+    const points = trip.route.map((s) => projection([s.lon, s.lat]))
+    const legs: RouteLeg[] = []
+    for (let i = 1; i < points.length; i++) {
+      const from = points[i - 1]
+      const to = points[i]
+      const leg = from && to ? routeLeg([from[0] * k, from[1] * k], [to[0] * k, to[1] * k]) : null
+      if (leg) legs.push(leg)
+    }
+    return legs
+  }, [projection, trip, transform.k])
+
+  const tripCityPoints = useMemo(() => {
+    if (!projection || !trip) return []
+    return trip.cities
+      .map((c) => {
+        const p = projection([c.lon, c.lat])
+        return p ? { ...c, x: p[0], y: p[1] } : null
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+  }, [projection, trip])
+
   // --- admin-1 overlay: only for the selected country, only once zoomed past
   // the threshold. Loads lazily and resolves null gracefully for countries
   // with no admin-1 file (Bouvet Island etc.) — no error, no overlay. ---
@@ -394,7 +462,7 @@ export function WorldMap({
         className="world-map__svg"
         viewBox={`0 0 ${size.width || 1} ${size.height || 1}`}
         role="img"
-        aria-label="World map coloured by visit status"
+        aria-label={trip ? "Map of this trip's places, with arrows showing the order they were visited" : 'World map coloured by visit status'}
         onClick={onDeselect}
       >
         <g className="world-map__grid" aria-hidden="true">
@@ -515,6 +583,42 @@ export function WorldMap({
                         {c.name}
                       </text>
                     )}
+                  </g>
+                </g>
+              ))}
+            </g>
+          )}
+          {tripLegs.length > 0 && (
+            <g className="world-map__route" transform={`scale(${1 / transform.k})`} aria-hidden="true">
+              {tripLegs.map((leg, i) => (
+                <g key={i}>
+                  <path d={`M${leg.from[0]},${leg.from[1]} Q${leg.control[0]},${leg.control[1]} ${leg.to[0]},${leg.to[1]}`} />
+                  {leg.chevron && <polyline points={leg.chevron.map((p) => p.join(',')).join(' ')} />}
+                </g>
+              ))}
+            </g>
+          )}
+          {tripCityPoints.length > 0 && (
+            <g className="world-map__cities">
+              {tripCityPoints.map((c) => (
+                // Same marker markup as the city layer above (see its note on
+                // why position and counter-scale live on separate elements),
+                // always labelled — a trip has few enough cities to name them all.
+                <g
+                  key={c.refId}
+                  transform={`translate(${c.x},${c.y})`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSelectCity(c.refId)
+                  }}
+                >
+                  <title>{c.name}</title>
+                  <g className="world-map__city">
+                    <circle className="world-map__city-hit" r={22} />
+                    <circle className="world-map__city-dot" r={3.5} style={{ fill: colorForStatus(c.status) }} />
+                    <text className="world-map__city-label mono" x={7} y={3}>
+                      {c.name}
+                    </text>
                   </g>
                 </g>
               ))}

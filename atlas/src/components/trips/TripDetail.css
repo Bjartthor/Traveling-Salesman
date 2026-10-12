@@ -48,6 +48,23 @@
   text-transform: uppercase;
 }
 
+.trip-detail__show-on-map {
+  align-self: flex-end;
+  min-height: var(--tap-target-min);
+  padding: 0 var(--space-3);
+  margin-top: calc(-1 * var(--space-2));
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--chalk);
+  border-radius: var(--radius-sm);
+}
+
+.trip-detail__show-on-map:hover {
+  background: var(--shelf);
+}
+
 .trip-detail__action--secondary {
   background: var(--shelf);
   color: var(--chalk);

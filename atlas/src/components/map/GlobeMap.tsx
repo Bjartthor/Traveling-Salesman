@@ -10,6 +10,8 @@ import { STATUS_ORDER, colorForStatus, UNVISITED_COLOR_VAR } from '@/components/
 import { CITY_MIN_SCALE, selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
 import { ADMIN1_ZOOM_THRESHOLD } from '@/components/map/WorldMap'
 import { clampScale, isFrontFacing, rotateByDrag, rotationTowardPoint, type Rotation } from '@/components/map/globeMath'
+import { globeFitView, type TripOverlay } from '@/components/map/tripMapView'
+import { routeLeg } from '@/components/trips/routeGeometry'
 import './GlobeMap.css'
 
 const SPHERE: GeoSphere = { type: 'Sphere' }
@@ -109,6 +111,8 @@ interface GlobeMapProps {
   onSelectSubdivision: (subdivisionId: string, name: string) => void
   onSelectCity: (refId: string) => void
   onDeselect: () => void
+  /** A trip shown on its own (@/components/map/tripMapView): its cities always drawn, its route as arrows, the globe turned to face it. */
+  trip?: TripOverlay | null
 }
 
 export function GlobeMap({
@@ -120,6 +124,7 @@ export function GlobeMap({
   onSelectSubdivision,
   onSelectCity,
   onDeselect,
+  trip = null,
 }: GlobeMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -156,6 +161,7 @@ export function GlobeMap({
   const onSelectSubdivisionRef = useRef(onSelectSubdivision)
   const onSelectCityRef = useRef(onSelectCity)
   const onDeselectRef = useRef(onDeselect)
+  const tripRef = useRef(trip)
   const frameRef = useRef<number | null>(null)
 
   countryStatusRef.current = countryStatus
@@ -166,6 +172,7 @@ export function GlobeMap({
   onSelectSubdivisionRef.current = onSelectSubdivision
   onSelectCityRef.current = onSelectCity
   onDeselectRef.current = onDeselect
+  tripRef.current = trip
 
   // --- container size ---
   useEffect(() => {
@@ -328,7 +335,51 @@ export function GlobeMap({
       viewRect: { x0: 0, y0: 0, x1: width, y1: height },
       project: (lon, lat) => (isFrontFacing(rotation, [lon, lat]) ? proj([lon, lat]) : null),
     })
+    // A shown trip's cities: every one on the visible hemisphere, at any zoom,
+    // always labelled — appended to the regular markers (empty in a trip view)
+    // so they're drawn and hit-tested exactly the same way.
+    const shownTrip = tripRef.current
+    for (const c of shownTrip?.cities ?? []) {
+      const p = isFrontFacing(rotation, [c.lon, c.lat]) ? proj([c.lon, c.lat]) : null
+      if (p) markers.push({ refId: c.refId, name: c.name, x: p[0], y: p[1], population: 0, isCapital: false, status: c.status, labeled: true })
+    }
     cityMarkersRef.current = markers
+
+    // A shown trip's route, under the city dots: the same screen-space arcs
+    // and chevrons as the flat map (@/components/trips/routeGeometry), from
+    // the projected stops. Zoom is baked into the projection here, so they
+    // are constant on-screen size for free. A leg with an end on the far
+    // hemisphere is skipped until rotating brings it round.
+    if (shownTrip && shownTrip.route.length > 1) {
+      ctx.save()
+      ctx.strokeStyle = palette.labelText
+      ctx.globalAlpha = 0.75
+      ctx.lineWidth = 1.5
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      for (let i = 1; i < shownTrip.route.length; i++) {
+        const a = shownTrip.route[i - 1]!
+        const b = shownTrip.route[i]!
+        if (!isFrontFacing(rotation, [a.lon, a.lat]) || !isFrontFacing(rotation, [b.lon, b.lat])) continue
+        const pa = proj([a.lon, a.lat])
+        const pb = proj([b.lon, b.lat])
+        const leg = pa && pb ? routeLeg(pa, pb) : null
+        if (!leg) continue
+        ctx.beginPath()
+        ctx.moveTo(leg.from[0], leg.from[1])
+        ctx.quadraticCurveTo(leg.control[0], leg.control[1], leg.to[0], leg.to[1])
+        ctx.stroke()
+        if (leg.chevron) {
+          const [armA, tip, armB] = leg.chevron
+          ctx.beginPath()
+          ctx.moveTo(armA[0], armA[1])
+          ctx.lineTo(tip[0], tip[1])
+          ctx.lineTo(armB[0], armB[1])
+          ctx.stroke()
+        }
+      }
+      ctx.restore()
+    }
 
     // Feed the non-heap watch (@/debug/renderVitals): the canvas backing store
     // is device-pixel sized (width/height set in the sizing effect), so on a
@@ -813,7 +864,32 @@ export function GlobeMap({
   // repaint — same cost either way, unlike the flat map's per-path fill.
   useEffect(() => {
     draw()
-  }, [countryStatus, subdivisionStatus, cityStatus, selectedCode, draw])
+  }, [countryStatus, subdivisionStatus, cityStatus, selectedCode, trip, draw])
+
+  // --- trip view: turn to face the trip and zoom to fit its cities, once
+  // per trip — never on every live update, so adding a place while looking
+  // around doesn't spin the globe. Clearing the trip goes back to the
+  // opening view. (Unlike the flat map, a resize never resets rotation/zoom
+  // here, so there's nothing to re-fit after one.) ---
+  const fittedTripRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!projectionRef.current || size.width === 0 || size.height === 0) return
+    const key = trip && trip.cities.length > 0 ? trip.id : null
+    if (key === fittedTripRef.current) return
+    const hadFit = fittedTripRef.current !== null
+    fittedTripRef.current = key
+    if (trip && key) {
+      const view = globeFitView(trip.cities)
+      rotationRef.current = view.rotation
+      zoomRef.current = view.zoom
+      setSettledZoom(view.zoom)
+    } else if (hadFit) {
+      rotationRef.current = INITIAL_ROTATION
+      zoomRef.current = 1
+      setSettledZoom(1)
+    }
+    draw()
+  }, [trip, size.width, size.height, worldFeatures.length, draw])
 
   // --- canvas context loss: the GPU can drop a 2D context out from under us
   // (driver reset, the compositor reclaiming memory under pressure) — the
@@ -855,7 +931,12 @@ export function GlobeMap({
 
   return (
     <div className="globe-map" ref={containerRef}>
-      <canvas ref={canvasRef} className="globe-map__canvas" role="img" aria-label="World globe coloured by visit status" />
+      <canvas
+        ref={canvasRef}
+        className="globe-map__canvas"
+        role="img"
+        aria-label={trip ? "Globe showing this trip's places, with arrows showing the order they were visited" : 'World globe coloured by visit status'}
+      />
     </div>
   )
 }

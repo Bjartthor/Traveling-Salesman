@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useNavigate } from 'react-router-dom'
 import { db } from '@/db/schema'
 import type { EntryKind, Status, Trip } from '@/db/types'
 import { buildStatusIndex } from '@/stats/coverage'
@@ -16,6 +17,7 @@ import { tripRoute } from '@/domain/tripRoute'
 import { closeTrip, endBackfill, getCapturingTrip, reopenTrip, resumeBackfill, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { useTripMapStore } from '@/domain/tripMapStore'
 import { formatLongDate, todayISO } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { colorForStatus } from '@/components/map/statusColor'
@@ -65,6 +67,8 @@ async function loadDetail(tripId: string): Promise<TripDetailData | null> {
 
 function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () => void }) {
   const openPlaceSheet = usePlaceSheetStore((s) => s.open)
+  const showTripOnMap = useTripMapStore((s) => s.show)
+  const navigate = useNavigate()
   const data = useLiveQuery(() => loadDetail(tripId), [tripId])
 
   const [showEdit, setShowEdit] = useState(false)
@@ -143,6 +147,18 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
           route={route}
           zoomToCities={{ citylessCountryCodes }}
         />
+        <button
+          type="button"
+          className="trip-detail__show-on-map"
+          onClick={() => {
+            // The main map, showing only this trip, framed on it — pan, zoom and the globe all work there.
+            showTripOnMap(trip.id)
+            onClose()
+            navigate('/')
+          }}
+        >
+          Show on map
+        </button>
 
         <dl className="trip-detail__stats">
           <div className="trip-detail__stat">

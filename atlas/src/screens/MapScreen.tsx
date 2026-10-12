@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
@@ -11,6 +11,13 @@ import { Legend } from '@/components/map/Legend'
 import { CountrySheet } from '@/components/map/CountrySheet'
 import { MapIcon } from '@/components/nav/BottomNav'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { useTripMapStore } from '@/domain/tripMapStore'
+import { loadTripPlaces } from '@/domain/tripPlacesRepo'
+import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
+import { tripRoute } from '@/domain/tripRoute'
+import { formatLongDate } from '@/domain/dateFormat'
+import type { TripOverlay } from '@/components/map/tripMapView'
+import type { Status } from '@/db/types'
 import { countedQuery } from '@/debug/census'
 import './MapScreen.css'
 
@@ -23,6 +30,14 @@ import './MapScreen.css'
 const queryCountries = countedQuery('lqCountries', () => db.countries.toArray())
 const queryEntries = countedQuery('lqEntries', () => db.entries.filter((e) => e.deletedAt === null).toArray())
 const queryMapSettings = countedQuery('lqMapSettings', () => db.settings.get(1))
+
+// In a trip view the regular zoom-gated city layer shows nothing — the trip's
+// own cities come through the maps' `trip` overlay instead, at every zoom.
+const NO_CITIES: ReadonlyMap<string, Status> = new Map()
+
+function onlyKeys(statuses: Map<string, Status>, keep: ReadonlySet<string>): Map<string, Status> {
+  return new Map([...statuses].filter(([key]) => keep.has(key)))
+}
 
 function GlobeIcon() {
   return (
@@ -44,9 +59,54 @@ export function MapScreen() {
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const openPlaceSheet = usePlaceSheetStore((s) => s.open)
 
+  // --- trip view (docs/superpowers/specs/2026-10-12-trip-on-main-map-design.md):
+  // one trip shown on its own — its countries/regions keep their colours,
+  // everything else goes grey, its cities and route are drawn on top. ---
+  const shownTripId = useTripMapStore((s) => s.tripId)
+  const clearShownTrip = useTripMapStore((s) => s.clear)
+  const shownTrip = useLiveQuery(async () => {
+    if (!shownTripId) return null
+    const trip = await db.trips.get(shownTripId)
+    if (!trip || trip.deletedAt !== null) return null
+    return { trip, groups: await loadTripPlaces(shownTripId) }
+  }, [shownTripId])
+  // A trip deleted while shown (or never found) just drops back to the normal map.
+  useEffect(() => {
+    if (shownTripId && shownTrip === null) clearShownTrip()
+  }, [shownTripId, shownTrip, clearShownTrip])
+  // Entering or leaving a trip view starts with no country selected.
+  useEffect(() => setSelectedCode(null), [shownTripId])
+
+  const tripView = useMemo(() => {
+    if (!shownTrip) return null
+    const { trip, groups } = shownTrip
+    const rows = tripCityRows(groups)
+    const overlay: TripOverlay = {
+      id: trip.id,
+      cities: rows
+        .filter((r): r is typeof r & { lat: number; lon: number } => r.lat !== null && r.lon !== null)
+        .map((r) => ({ refId: r.refId, name: r.name, lat: r.lat, lon: r.lon, status: r.status })),
+      route: tripRoute(rows),
+    }
+    return {
+      trip,
+      countryCodes: new Set(tripCountryCodes(groups)),
+      subdivisionIds: new Set(groups.flatMap((g) => g.subdivisions.map((s) => s.key))),
+      overlay,
+    }
+  }, [shownTrip])
+
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
   const subdivisionStatus = useMemo(() => buildStatusIndex(entries ?? [], 'subdivision'), [entries])
   const cityStatus = useMemo(() => buildStatusIndex(entries ?? [], 'city'), [entries])
+
+  // What the maps actually paint: everything, or in a trip view only the trip's own places.
+  const mapCountryStatus = useMemo(() => (tripView ? onlyKeys(countryStatus, tripView.countryCodes) : countryStatus), [tripView, countryStatus])
+  const mapSubdivisionStatus = useMemo(
+    () => (tripView ? onlyKeys(subdivisionStatus, tripView.subdivisionIds) : subdivisionStatus),
+    [tripView, subdivisionStatus],
+  )
+  const mapCityStatus = tripView ? NO_CITIES : cityStatus
 
   const metric = useMemo(
     () =>
@@ -83,11 +143,25 @@ export function MapScreen() {
   return (
     <div className="map-screen">
       <div className="map-screen__header">
-        <CoverageHeadline
-          metric={metric}
-          mode={settings.statMode}
-          onCycle={() => void settingsRepo.update({ statMode: nextStatMode(settings.statMode) })}
-        />
+        {tripView ? (
+          <div className="map-screen__trip-header">
+            <button type="button" className="map-screen__trip-close" onClick={clearShownTrip} aria-label="Close trip view" title="Close trip view">
+              ✕
+            </button>
+            <p className="map-screen__trip-eyebrow mono">Trip</p>
+            <h1 className="map-screen__trip-name">{tripView.trip.name}</h1>
+            <p className="map-screen__trip-dates mono">
+              {tripView.trip.startDate ? formatLongDate(tripView.trip.startDate) : '—'} –{' '}
+              {tripView.trip.endDate ? formatLongDate(tripView.trip.endDate) : 'ongoing'}
+            </p>
+          </div>
+        ) : (
+          <CoverageHeadline
+            metric={metric}
+            mode={settings.statMode}
+            onCycle={() => void settingsRepo.update({ statMode: nextStatMode(settings.statMode) })}
+          />
+        )}
         <button
           type="button"
           className="map-screen__view-toggle"
@@ -101,9 +175,10 @@ export function MapScreen() {
       <div className="map-screen__map-wrap">
         {isGlobe ? (
           <GlobeMap
-            countryStatus={countryStatus}
-            subdivisionStatus={subdivisionStatus}
-            cityStatus={cityStatus}
+            countryStatus={mapCountryStatus}
+            subdivisionStatus={mapSubdivisionStatus}
+            cityStatus={mapCityStatus}
+            trip={tripView?.overlay}
             selectedCode={selectedCode}
             onSelectCountry={selectCountry}
             onSelectSubdivision={selectSubdivision}
@@ -112,9 +187,10 @@ export function MapScreen() {
           />
         ) : (
           <WorldMap
-            countryStatus={countryStatus}
-            subdivisionStatus={subdivisionStatus}
-            cityStatus={cityStatus}
+            countryStatus={mapCountryStatus}
+            subdivisionStatus={mapSubdivisionStatus}
+            cityStatus={mapCityStatus}
+            trip={tripView?.overlay}
             selectedCode={selectedCode}
             onSelectCountry={selectCountry}
             onSelectSubdivision={selectSubdivision}
@@ -122,9 +198,9 @@ export function MapScreen() {
             onDeselect={() => setSelectedCode(null)}
           />
         )}
-        {!hasAnyEntries && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}
+        {!hasAnyEntries && !tripView && <p className="map-screen__hint">Log a place on the Places tab to see it here.</p>}
       </div>
-      <CoverageStrip metric={metric} mode={settings.statMode} />
+      {!tripView && <CoverageStrip metric={metric} mode={settings.statMode} />}
       <Legend />
       {selectedCode && <CountrySheet code={selectedCode} onClose={() => setSelectedCode(null)} />}
     </div>
