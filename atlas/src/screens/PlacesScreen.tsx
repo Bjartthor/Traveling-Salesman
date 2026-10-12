@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import type { City } from '@/db/types'
 import { buildPlacesTree, type CityLookup, type PlacesFilter, type PlacesSort } from '@/domain/placesList'
+import { loadEntriesWithTripDates } from '@/domain/visitDates'
 import { PlaceSearch } from '@/components/places/PlaceSearch'
 import { PlacesList } from '@/components/places/PlacesList'
 import { BulkAddScreen } from '@/components/places/BulkAddScreen'
@@ -27,7 +28,8 @@ export function PlacesScreen() {
   const [sort, setSort] = useState<PlacesSort>('alphabetical')
   const [showBulkAdd, setShowBulkAdd] = useState(false)
 
-  const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
+  // Dates as shown include each place's trips (minus any deleted since) — see @/domain/visitDates.
+  const entries = useLiveQuery(loadEntriesWithTripDates)
   const countries = useLiveQuery(() => db.countries.toArray())
   const subdivisions = useLiveQuery(() => db.subdivisions.toArray())
 

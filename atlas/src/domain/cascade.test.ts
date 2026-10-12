@@ -319,34 +319,21 @@ describe('captureRequest — touching a place while a trip is capturing', () => 
     expect(captureRequest(iceland, { kind: 'country', refId: 'IS', status: 'visited' }).status).toBe('visited')
   })
 
-  it("only widens the place's own date span — a later trip leaves firstVisited alone", () => {
-    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
-    const out = captureRequest(lived, { ...reykjavik, status: 'visited', firstVisited: '2026-05-01', lastVisited: '2026-05-01' })
-    expect(out.firstVisited).toBe('2010-01-01')
-    expect(out.lastVisited).toBe('2026-05-01')
-  })
-
-  it('an earlier trip pulls firstVisited back and leaves lastVisited alone', () => {
-    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
-    const out = captureRequest(lived, { ...reykjavik, status: 'visited', firstVisited: '2005-03-02', lastVisited: '2005-03-02' })
-    expect(out.firstVisited).toBe('2005-03-02')
-    expect(out.lastVisited).toBe('2015-06-30')
-  })
-
-  it('fills in dates on a place that had none', () => {
-    const undated = mkEntry({ ...reykjavik, status: 'lived' })
-    const out = captureRequest(undated, { ...reykjavik, status: 'visited', firstVisited: '2026-05-01', lastVisited: '2026-05-01' })
-    expect(out.firstVisited).toBe('2026-05-01')
-    expect(out.lastVisited).toBe('2026-05-01')
-  })
-
-  it("never clears the place's own dates — no date, or an explicit null, leaves them as they are", () => {
-    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
-    for (const dates of [{}, { firstVisited: null, lastVisited: null }]) {
-      const out = captureRequest(lived, { ...reykjavik, status: 'visited', ...dates })
-      expect(out.firstVisited).toBeUndefined()
-      expect(out.lastVisited).toBeUndefined()
+  it("never writes a trip's date onto the place — the trip keeps it on its own TripEntry", () => {
+    // Deleting the trip later must take its date with it, which only works if
+    // the date was never folded into the place's own fields (see @/domain/visitDates).
+    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2005-04-03', lastVisited: '2005-04-03' })
+    for (const date of ['2026-10-01', '2001-01-01', null]) {
+      const out = captureRequest(lived, { ...reykjavik, status: 'visited', firstVisited: date, lastVisited: date })
+      expect(out).not.toHaveProperty('firstVisited')
+      expect(out).not.toHaveProperty('lastVisited')
     }
+  })
+
+  it('leaves an undated place undated, too', () => {
+    const undated = mkEntry({ ...reykjavik, status: 'wishlist' })
+    const out = captureRequest(undated, { ...reykjavik, status: 'visited', firstVisited: '2026-10-01', lastVisited: '2026-10-01' })
+    expect(out).toEqual({ ...reykjavik, status: 'visited' })
   })
 })
 

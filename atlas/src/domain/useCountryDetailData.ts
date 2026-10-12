@@ -10,6 +10,7 @@ import type { City, Country, Entry, Status } from '@/db/types'
 import { explainStatus } from '@/domain/cascade'
 import { loadCascadeState } from '@/domain/cascadeRepo'
 import { resolvePlaceInfo } from '@/domain/placeInfo'
+import { withTripVisitDates } from '@/domain/visitDates'
 
 export interface CountryDetailData {
   country: Country
@@ -27,15 +28,22 @@ export function useCountryDetailData(code: string): CountryDetailData | null | u
     const country = await db.countries.get(code)
     if (!country) return null
 
-    const [entryRow, subdivisionRows, allEntries] = await Promise.all([
+    const [entryRow, subdivisionRows, allEntries, tripEntries, trips] = await Promise.all([
       db.entries.where('[kind+refId]').equals(['country', code]).first(),
       db.subdivisions.where('countryCode').equals(code).toArray(),
       db.entries.toArray(),
+      db.tripEntries.toArray(),
+      db.trips.toArray(),
     ])
     const subdivisionTotal = subdivisionRows.length
     const subdivisionIds = new Set(subdivisionRows.map((s) => s.id))
     const entry = entryRow && entryRow.deletedAt === null ? entryRow : null
-    const active = allEntries.filter((e) => e.deletedAt === null)
+    // City dates as shown include each city's trips — see @/domain/visitDates.
+    const active = withTripVisitDates(
+      allEntries.filter((e) => e.deletedAt === null),
+      tripEntries,
+      trips,
+    )
 
     const subdivisionEntries = active.filter((e) => e.kind === 'subdivision' && e.refId.startsWith(`${code}.`))
     const subdivisionStatus = new Map(subdivisionEntries.map((e) => [e.refId, e.status]))

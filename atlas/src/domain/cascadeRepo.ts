@@ -129,8 +129,9 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
  * the *target* entry (never the ancestors this implies) to it, carrying this
  * call's own date along as *that trip's* visit date — see
  * @/domain/tripRepo.autoAttachToCapturingTrip. While capturing, an
- * already-logged place is only ever upgraded and its own dates only ever
- * widened (@/domain/cascade.captureRequest), never overwritten by the trip.
+ * already-logged place is only ever upgraded, and its own dates are left
+ * alone (@/domain/cascade.captureRequest) — the trip's date lives only on
+ * the trip, and displays fold it in (@/domain/visitDates).
  */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
   void logInfo(`place: set ${request.kind}/${request.refId} → ${request.status}`, breadcrumbDetail())

@@ -338,22 +338,17 @@ export function setStatus(state: CascadeState, request: SetStatusRequest): Mutat
  * already-known place on a trip never rewrites what the place already says
  * about itself (a city lived in years ago, visited again on a trip, is still
  * lived). Against an existing entry, the user's own choice only ever moves
- * *up* the ladder, and the entry's own first/last dates only ever *widen* to
- * take in the request's date — the trip keeps that exact date on its own
- * TripEntry, so nothing is lost. A missing date, or an explicit `null`, never
- * clears the entry's dates here. No active entry → returned unchanged.
+ * *up* the ladder, and the request's date is dropped entirely: the trip keeps
+ * that exact date on its own TripEntry, and every display folds it back in
+ * from there (@/domain/visitDates). Never storing it on the entry is what lets
+ * deleting the trip take its date with it. No active entry → returned
+ * unchanged (a brand-new place takes the date as its own).
  */
 export function captureRequest(existing: Entry | null, request: SetStatusRequest): SetStatusRequest {
   if (!existing || existing.deletedAt !== null) return request
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { firstVisited, lastVisited, ...rest } = request
-  const out: SetStatusRequest = { ...rest, status: maxStatus(existing.explicitStatus, request.status) ?? request.status }
-  if (firstVisited) {
-    out.firstVisited = existing.firstVisited && existing.firstVisited < firstVisited ? existing.firstVisited : firstVisited
-  }
-  if (lastVisited) {
-    out.lastVisited = existing.lastVisited && existing.lastVisited > lastVisited ? existing.lastVisited : lastVisited
-  }
-  return out
+  return { ...rest, status: maxStatus(existing.explicitStatus, request.status) ?? request.status }
 }
 
 /**

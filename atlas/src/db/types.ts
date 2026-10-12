@@ -99,8 +99,9 @@ export interface TripEntry extends SyncedRecord {
   entryId: string
   addedAt: number
   // This specific trip's own visit date for this place — distinct from the
-  // place's `Entry.firstVisited` (the date it was first ever visited, across
-  // any trip). The same place can sit on several trips, each at a different
+  // place's `Entry.firstVisited`/`lastVisited`, which hold only what was set
+  // on the place itself; displays combine the two (@/domain/visitDates), so
+  // deleting the trip drops its date. The same place can sit on several trips, each at a different
   // time; without this, every trip sharing a place would be stuck reading the
   // one global date off its entry. Not indexed, so no Dexie migration needed
   // (same precedent as `explicitStatus`/`isBackfilling`).
