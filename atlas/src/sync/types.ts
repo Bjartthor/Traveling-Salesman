@@ -24,7 +24,11 @@ import type {
 // v3 dropped `photos`: a v2 client reads that array unguarded and would fail
 // every sync on a doc without it, so it's told to update instead. A v3 client
 // reading a v2 doc just ignores the field.
-export const SYNC_SCHEMA_VERSION = 3 as const
+// v4 lets a trip hold several visits to one place (one tripEntry per visit,
+// deduped on [tripId, entryId, visitedDate]). A v3 client still dedupes on
+// [tripId, entryId] and would collapse those visits back to one on its next
+// push, so it's told to update instead.
+export const SYNC_SCHEMA_VERSION = 4 as const
 
 /**
  * The subset of `settings` that syncs. Everything else on the Settings row is

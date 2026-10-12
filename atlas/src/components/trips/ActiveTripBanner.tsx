@@ -5,8 +5,7 @@
 // @/components/places/CountryDetail's global overlay).
 
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db/schema'
-import { getCapturingTrip } from '@/domain/tripRepo'
+import { countTripPlaces, getCapturingTrip } from '@/domain/tripRepo'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useActiveTripBannerStore } from '@/domain/activeTripBannerStore'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
@@ -26,7 +25,7 @@ export function ActiveTripBanner() {
   // keyed by name, not by closure, so it stays cumulative across those re-wraps.
   const placeCount = useLiveQuery(
     countedQuery('lqTripPlaces', () =>
-      trip ? db.tripEntries.filter((te) => te.tripId === trip.id && te.deletedAt === null).count() : Promise.resolve(0),
+      trip ? countTripPlaces(trip.id) : Promise.resolve(0),
     ),
     [trip?.id],
   )

@@ -11,7 +11,7 @@ import { settingsRepo } from '@/db/repo'
 import type { Entry, Status } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
-import { detachEntryFromTrip, getCapturingTrip, nextBackfillDate, tripAttachmentsForEntry } from '@/domain/tripRepo'
+import { addVisit, getCapturingTrip, nextBackfillDate, removeVisit, tripAttachmentsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
 import { formatLongDate, todayISO } from '@/domain/dateFormat'
@@ -32,10 +32,9 @@ export function PlaceStatusSheet() {
 interface SheetData {
   entry: Entry | null
   explanation: { status: Status; becauseName: string } | null
-  // While a trip is capturing: whether this place is already on *that* trip,
-  // and the trip's own date for it. Read in the same query as `entry` so the
-  // date effect below never sees an entry without knowing this yet.
-  capturingTripVisit: { visitedDate: string | null } | null
+  // While a trip is capturing: whether this place already has a visit on
+  // *that* trip — which is what offers "Add another visit" instead.
+  onCapturingTrip: boolean
 }
 
 // A real touchscreen tap reliably produces a trailing `click` 70-77ms after
@@ -87,19 +86,18 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     const entry = row && row.deletedAt === null ? row : null
 
     const capturing = entry ? await getCapturingTrip() : null
-    const tripRow = capturing
-      ? await db.tripEntries.filter((te) => te.tripId === capturing.id && te.entryId === entry!.id && te.deletedAt === null).first()
-      : undefined
-    const capturingTripVisit = tripRow ? { visitedDate: tripRow.visitedDate } : null
+    const onCapturingTrip = capturing
+      ? (await db.tripEntries.filter((te) => te.tripId === capturing.id && te.entryId === entry!.id && te.deletedAt === null).count()) > 0
+      : false
 
     const state = await loadCascadeState().catch(() => null)
     const cause = state ? explainStatus(state, place.kind, place.refId) : null
-    if (!cause) return { entry, explanation: null, capturingTripVisit }
+    if (!cause) return { entry, explanation: null, onCapturingTrip }
     const becauseInfo = await resolvePlaceInfo(cause.because.kind, cause.because.refId)
     return {
       entry,
       explanation: { status: cause.status, becauseName: becauseInfo?.name ?? 'a place inside it' },
-      capturingTripVisit,
+      onCapturingTrip,
     }
   }, [place.kind, place.refId])
 
@@ -108,11 +106,10 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   const capturingTrip = useLiveQuery(() => getCapturingTrip())
   const backfillingTrip = capturingTrip?.isBackfilling ? capturingTrip : null
 
-  async function removeTripAttachment(tripId: string) {
-    if (!entryId) return
+  async function removeTripVisit(tripEntryId: string) {
     setError(null)
     try {
-      await detachEntryFromTrip(tripId, entryId)
+      await removeVisit(tripEntryId)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -124,24 +121,19 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   useEffect(() => {
     if (dateTouched) return
     if (data === undefined || capturingTrip === undefined) return // still loading — wait, so `defaultDateToToday` below can't race ahead of a real backfilling trip and lock in today's date first
-    if (data.entry && capturingTrip) {
-      // An already-logged place touched while a trip is capturing: the date
-      // here is *this trip's* visit date, never the place's own firstVisited
-      // (a city lived in years ago must not offer that as the trip's date).
-      // Already on this trip → show its date, untouched, so a bare status tap
-      // leaves it as is. Not yet on it → offer the same default a brand-new
-      // place gets, below.
-      if (data.capturingTripVisit) {
-        setDate(data.capturingTripVisit.visitedDate)
-        return
-      }
-    } else if (data.entry) {
+    // While a trip is capturing, the date here is always the date of a *new*
+    // visit on that trip — never the place's own firstVisited (a city lived in
+    // years ago must not offer that as the trip's date), and never an existing
+    // visit's (those are listed under Trips; "Add another visit" records a
+    // second one). So an already-logged place gets the same default a
+    // brand-new one does, below.
+    if (data.entry && !capturingTrip) {
       // existing entry, no trip capturing — show its own date, or leave blank; don't override with today defaults
       if (data.entry.firstVisited) setDate(data.entry.firstVisited)
       return
     }
     if (backfillingTrip?.startDate) {
-      // A place new to this backfilling trip — chain off the last place
+      // A new visit on this backfilling trip — chain off the last place
       // touched in this trip (or its start date if this is the first one),
       // and count it as an explicit choice so a bare status tap saves it
       // without the user re-touching the field. This takes priority over
@@ -152,7 +144,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         setDateTouched(true)
       })
     } else if (settings?.defaultDateToToday) {
-      // A new place (or one new to the capturing trip) — pre-fill and count it as an
+      // A new place (or a new visit on the capturing trip) — pre-fill and count it as an
       // explicit choice, so a bare status tap does save today's date, which
       // is the point of the "default new entries to today" preference.
       setDate(todayISO())
@@ -173,6 +165,21 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         status,
         ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
       })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setPending(false)
+    }
+  }
+
+  // A second (third, …) visit to a place already on the capturing trip — out
+  // and back again. Only ever deliberate: a status tap never adds one.
+  async function addAnotherVisit() {
+    if (!capturingTrip || !entryId || !date) return
+    setError(null)
+    setPending(true)
+    try {
+      await addVisit(capturingTrip.id, entryId, date)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -264,6 +271,16 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
               setDateTouched(true)
             }}
           />
+          {capturingTrip && data?.onCapturingTrip && (
+            <button
+              type="button"
+              className="place-sheet__add-visit"
+              onClick={() => void addAnotherVisit()}
+              disabled={pending || !date}
+            >
+              Add another visit to "{capturingTrip.name}"
+            </button>
+          )}
         </div>
 
         <div className="place-sheet__options">
@@ -291,7 +308,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
             <p className="place-sheet__trips-label">Trips</p>
             <div className="place-sheet__trips-list">
               {attachments.map((a) => (
-                <div key={a.tripId} className="place-sheet__trip-row">
+                <div key={a.tripEntryId} className="place-sheet__trip-row">
                   <div>
                     <p className="place-sheet__trip-name">{a.tripName}</p>
                     <p className="place-sheet__trip-date mono">{a.visitedDate ? formatLongDate(a.visitedDate) : 'No date'}</p>
@@ -299,8 +316,8 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
                   <button
                     type="button"
                     className="place-sheet__trip-remove"
-                    aria-label={`Remove from ${a.tripName}`}
-                    onClick={() => void removeTripAttachment(a.tripId)}
+                    aria-label={`Remove this visit from ${a.tripName}`}
+                    onClick={() => void removeTripVisit(a.tripEntryId)}
                   >
                     ✕
                   </button>

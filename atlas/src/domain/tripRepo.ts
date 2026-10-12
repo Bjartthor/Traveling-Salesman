@@ -116,35 +116,39 @@ export async function softDeleteTrip(tripId: string): Promise<void> {
   await tripsRepo.softDelete(tripId)
 }
 
-async function findTripEntryRow(tripId: string, entryId: string) {
-  return db.tripEntries.filter((te) => te.tripId === tripId && te.entryId === entryId).first()
+/**
+ * A trip holds one `tripEntries` row per *visit*: the same place can be on a
+ * trip more than once (out to San Diego and back to LA), each visit with its
+ * own date (docs/superpowers/specs/2026-10-12-repeat-visits-on-a-trip-design.md).
+ */
+async function liveVisits(tripId: string, entryId: string): Promise<TripEntry[]> {
+  return db.tripEntries.filter((te) => te.tripId === tripId && te.entryId === entryId && te.deletedAt === null).toArray()
 }
 
 /**
- * Idempotent — attaching an already-attached entry updates its visit date
- * (when one is given) rather than duplicating anything; re-attaching a
- * detached one revives its row. `visitedDate` omitted means "don't know yet,
- * leave whatever is there" — only an explicit value (including `null`, to
- * clear it) overwrites.
+ * Puts a place on a trip as its *first* visit, with `visitedDate`. A place
+ * already on the trip is left exactly as it is — a status tap never moves an
+ * existing visit's date or adds a second visit; only `addVisit` does that.
  */
 export async function attachEntryToTrip(tripId: string, entryId: string, visitedDate?: string | null): Promise<void> {
-  const existing = await findTripEntryRow(tripId, entryId)
-  if (existing && existing.deletedAt === null) {
-    if (visitedDate !== undefined && existing.visitedDate !== visitedDate) {
-      await tripEntriesRepo.update(existing.id, { visitedDate })
-    }
-    return
-  }
-  if (existing) {
-    await tripEntriesRepo.restore(existing.id, { tripId, entryId, addedAt: existing.addedAt, visitedDate: visitedDate ?? null })
-    return
-  }
-  await tripEntriesRepo.create({ tripId, entryId, addedAt: Date.now(), visitedDate: visitedDate ?? null })
+  if ((await liveVisits(tripId, entryId)).length > 0) return
+  await addVisit(tripId, entryId, visitedDate ?? null)
 }
 
-export async function detachEntryFromTrip(tripId: string, entryId: string): Promise<void> {
-  const existing = await findTripEntryRow(tripId, entryId)
-  if (existing && existing.deletedAt === null) await tripEntriesRepo.softDelete(existing.id)
+/** Always records a new visit — for a place visited again on the same trip. */
+export async function addVisit(tripId: string, entryId: string, visitedDate: string | null): Promise<void> {
+  await tripEntriesRepo.create({ tripId, entryId, addedAt: Date.now(), visitedDate })
+}
+
+/** Removes one visit (one `tripEntries` row); the place's other visits on that trip stay. */
+export async function removeVisit(tripEntryId: string): Promise<void> {
+  await tripEntriesRepo.softDelete(tripEntryId)
+}
+
+/** How many distinct places a trip has (a place visited twice counts once). */
+export async function countTripPlaces(tripId: string): Promise<number> {
+  const rows = await db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
+  return new Set(rows.map((te) => te.entryId)).size
 }
 
 /**
@@ -154,9 +158,9 @@ export async function detachEntryFromTrip(tripId: string, entryId: string): Prom
  * country added directly" (05-trips.md task 1) resolves to as one rule: the
  * *target* of a direct set attaches (city, subdivision or country alike),
  * whatever it implies upward does not. No-ops when no trip is capturing.
- * Re-touching an existing entry already on this trip (e.g. a second visit to
- * a city already on this trip) updates that trip's own `visitedDate` instead
- * of duplicating anything. Covers a live trip and a backfilling one
+ * Re-touching a place already on this trip changes nothing here — a second
+ * visit is only ever added deliberately (`addVisit`, from the place sheet's
+ * "Add another visit" button). Covers a live trip and a backfilling one
  * identically — the only difference between the two lives in what date
  * `PlaceStatusSheet` offers as a default before calling `setPlaceStatus`,
  * not in attachment itself.
@@ -169,7 +173,7 @@ export async function autoAttachToCapturingTrip(entryId: string, visitedDate?: s
 /**
  * The date offered for the next place touched while backfilling: the trip's
  * start date if nothing has been attached yet, otherwise the `visitedDate`
- * of whichever tripEntry was *most recently attached* (by `addedAt`, not by
+ * of whichever visit was *most recently added* (by `addedAt`, not by
  * date value — chains off the last thing you touched, not the latest date
  * typed), falling back to the start date if that attachment has no date of
  * its own yet.
@@ -181,18 +185,19 @@ export async function nextBackfillDate(tripId: string, startDate: string): Promi
   return latest.visitedDate ?? startDate
 }
 
+/** One visit of a place on a trip — the place sheet lists one per visit. */
 export interface TripAttachment {
+  tripEntryId: string
   tripId: string
   tripName: string
   visitedDate: string | null
 }
 
 /**
- * Every trip a given entry is currently (actively) attached to, each with
- * that trip's own visit date — for the place-status sheet's read-only
- * "Trips" list. Attachment itself only ever happens via
- * `autoAttachToCapturingTrip`; this is display (plus detach), never a manual
- * pick. Most recently dated first; undated attachments last.
+ * Every live visit of a given entry, across all (non-deleted) trips, each
+ * with that visit's own date — for the place-status sheet's "Trips" list,
+ * one line per visit with its own ✕ (`removeVisit`). Most recently dated
+ * first; undated visits last.
  */
 export async function tripAttachmentsForEntry(entryId: string): Promise<TripAttachment[]> {
   const rows = await db.tripEntries.filter((te) => te.entryId === entryId && te.deletedAt === null).toArray()
@@ -201,12 +206,12 @@ export async function tripAttachmentsForEntry(entryId: string): Promise<TripAtta
   const attachments: TripAttachment[] = []
   rows.forEach((row, i) => {
     const trip = trips[i]
-    if (trip && trip.deletedAt === null) attachments.push({ tripId: row.tripId, tripName: trip.name, visitedDate: row.visitedDate })
+    if (trip && trip.deletedAt === null) attachments.push({ tripEntryId: row.id, tripId: row.tripId, tripName: trip.name, visitedDate: row.visitedDate })
   })
   return attachments.sort((a, b) => (b.visitedDate ?? '').localeCompare(a.visitedDate ?? '') || a.tripName.localeCompare(b.tripName))
 }
 
-/** Active (non-deleted) tripEntries rows for one trip — each carries both the entryId to resolve and this trip's own visit date for it. */
+/** Active (non-deleted) tripEntries rows for one trip — one per visit, each carrying the entryId to resolve and that visit's date. */
 export async function tripEntryRowsForTrip(tripId: string): Promise<TripEntry[]> {
   return db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
 }

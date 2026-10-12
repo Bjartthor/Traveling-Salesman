@@ -14,6 +14,12 @@
 
 import type { City, Country, Entry, Status, Subdivision } from '@/db/types'
 
+/** One visit to a place on a trip — one `TripEntry` row. A place can be visited more than once per trip. */
+export interface TripVisit {
+  visitedDate: string | null
+  addedAt: number
+}
+
 export type TripCityLookup = ReadonlyMap<string, Pick<City, 'name' | 'countryCode' | 'subdivisionId' | 'lat' | 'lon'>>
 
 export interface TripPlaceRow {
@@ -28,6 +34,8 @@ export interface TripPlaceRow {
   createdAt: number
   /** When the place was attached to *this* trip (`TripEntry.addedAt`) — see `TripPlacesInput.addedAts`. */
   addedAt: number
+  /** Every visit to this place on this trip, for the route — see `TripPlacesInput.visits`. */
+  visits: readonly TripVisit[]
 }
 
 export interface TripSubdivisionGroup {
@@ -65,17 +73,22 @@ export interface TripPlacesInput {
    * back to the entry's own `createdAt`, same contract as `visitedDates`.
    */
   addedAts?: ReadonlyMap<string, number>
+  /**
+   * entryId -> every visit to that entry on this trip (the same place can be
+   * visited more than once — out and back again). Absent falls back to the
+   * single visit formed from the row's own `visitedDate`/`addedAt`, same
+   * contract as the two maps above. `visitedDates`/`addedAts` stay what the
+   * itinerary sorts by; the caller passes each place's *first* visit there.
+   */
+  visits?: ReadonlyMap<string, readonly TripVisit[]>
 }
 
-function toRow(
-  entry: Entry,
-  name: string,
-  visitedDates: TripPlacesInput['visitedDates'],
-  addedAts: TripPlacesInput['addedAts'],
-  lat: number | null = null,
-  lon: number | null = null,
-): TripPlaceRow {
+type TripMaps = Pick<TripPlacesInput, 'visitedDates' | 'addedAts' | 'visits'>
+
+function toRow(entry: Entry, name: string, maps: TripMaps, lat: number | null = null, lon: number | null = null): TripPlaceRow {
+  const { visitedDates, addedAts, visits } = maps
   const visitedDate = visitedDates ? (visitedDates.get(entry.id) ?? null) : entry.lastVisited
+  const addedAt = addedAts?.get(entry.id) ?? entry.createdAt
   return {
     entryId: entry.id,
     refId: entry.refId,
@@ -85,7 +98,8 @@ function toRow(
     lat,
     lon,
     createdAt: entry.createdAt,
-    addedAt: addedAts?.get(entry.id) ?? entry.createdAt,
+    addedAt,
+    visits: visits?.get(entry.id) ?? [{ visitedDate, addedAt }],
   }
 }
 
@@ -142,7 +156,7 @@ function sortRanked<T extends { name: string }>(ranked: Ranked<T>[]): T[] {
 }
 
 export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
-  const { entries, countries, subdivisions, cities, visitedDates, addedAts } = input
+  const { entries, countries, subdivisions, cities } = input
   const countryByCode = new Map(countries.map((c) => [c.code, c]))
   const subdivisionById = new Map(subdivisions.map((s) => [s.id, s]))
 
@@ -186,7 +200,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (entry.deletedAt !== null) continue // defence in depth — callers pass active entries only
     if (entry.kind === 'country') {
       const bucket = bucketFor(entry.refId)
-      if (bucket) bucket.row = toRow(entry, bucket.country.name, visitedDates, addedAts)
+      if (bucket) bucket.row = toRow(entry, bucket.country.name, input)
       continue
     }
     if (entry.kind === 'subdivision') {
@@ -194,7 +208,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
       if (!sub) continue
       const bucket = bucketFor(sub.countryCode)
       if (!bucket) continue
-      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name, visitedDates, addedAts)
+      subBucketFor(bucket, entry.refId).row = toRow(entry, sub.name, input)
       continue
     }
     // city
@@ -202,7 +216,7 @@ export function groupTripPlaces(input: TripPlacesInput): TripCountryGroup[] {
     if (!city) continue
     const bucket = bucketFor(city.countryCode)
     if (!bucket) continue
-    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, visitedDates, addedAts, city.lat, city.lon))
+    subBucketFor(bucket, city.subdivisionId).cities.push(toRow(entry, city.name, input, city.lat, city.lon))
   }
 
   const rankedGroups: Ranked<TripCountryGroup>[] = []

@@ -6,7 +6,7 @@
 import { db } from '@/db/schema'
 import type { City, Country, Entry, Subdivision } from '@/db/types'
 import { tripEntryRowsForTrip } from '@/domain/tripRepo'
-import { groupTripPlaces, tripCountryCodes, type TripCountryGroup } from '@/domain/tripPlaces'
+import { groupTripPlaces, tripCountryCodes, type TripCountryGroup, type TripVisit } from '@/domain/tripPlaces'
 
 interface RefData {
   countries: Country[]
@@ -21,10 +21,25 @@ async function loadRefData(): Promise<RefData> {
 async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryGroup[]> {
   const tripEntries = await tripEntryRowsForTrip(tripId)
   if (tripEntries.length === 0) return []
-  const visitedDates = new Map(tripEntries.map((te) => [te.entryId, te.visitedDate]))
-  const addedAts = new Map(tripEntries.map((te) => [te.entryId, te.addedAt]))
 
-  const rows = await db.entries.bulkGet(tripEntries.map((te) => te.entryId))
+  // One row per visit; a place visited twice has two. The route uses every
+  // visit; the itinerary sorts each place by its *first* one (earliest dated
+  // visit, else none; earliest addedAt).
+  const visits = new Map<string, TripVisit[]>()
+  for (const te of [...tripEntries].sort((a, b) => a.addedAt - b.addedAt)) {
+    const list = visits.get(te.entryId) ?? []
+    list.push({ visitedDate: te.visitedDate, addedAt: te.addedAt })
+    visits.set(te.entryId, list)
+  }
+  const visitedDates = new Map<string, string | null>()
+  const addedAts = new Map<string, number>()
+  for (const [entryId, list] of visits) {
+    const dates = list.map((v) => v.visitedDate).filter((d): d is string => d !== null)
+    visitedDates.set(entryId, dates.length > 0 ? dates.reduce((a, b) => (b < a ? b : a)) : null)
+    addedAts.set(entryId, list[0]!.addedAt)
+  }
+
+  const rows = await db.entries.bulkGet([...visits.keys()])
   const entries = rows.filter((e): e is Entry => e !== undefined && e.deletedAt === null)
   if (entries.length === 0) return []
 
@@ -36,7 +51,7 @@ async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryG
     if (row) cities.set(e.refId, { name: row.name, countryCode: row.countryCode, subdivisionId: row.subdivisionId, lat: row.lat, lon: row.lon })
   })
 
-  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates, addedAts })
+  return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates, addedAts, visits })
 }
 
 export async function loadTripPlaces(tripId: string): Promise<TripCountryGroup[]> {

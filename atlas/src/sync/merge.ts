@@ -126,14 +126,17 @@ function survivingId(id: string, remap: Map<string, string>): string {
 }
 
 /**
- * After entry ids may have been remapped, collapse tripEntries that now point at
- * the same [tripId, entryId] into one (LWW). Without this, two devices each
- * linking their own duplicate entry to the same trip would leave two rows.
+ * After entry ids may have been remapped, collapse tripEntries that now record
+ * the same visit — same [tripId, entryId, visitedDate] — into one (LWW).
+ * Without this, two devices each linking their own duplicate entry to the same
+ * trip, or logging the same visit offline, would leave two rows. The date is
+ * part of the key because one row is one *visit*: a place visited twice on a
+ * trip (out and back again) is two rows on different dates, and both stay.
  */
 function dedupeTripEntries(rows: readonly TripEntry[]): TripEntry[] {
   const byPair = new Map<string, TripEntry>()
   for (const row of rows) {
-    const pair = `${row.tripId}:${row.entryId}`
+    const pair = `${row.tripId}:${row.entryId}:${row.visitedDate ?? ''}`
     const existing = byPair.get(pair)
     if (!existing) {
       byPair.set(pair, row)

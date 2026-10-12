@@ -204,6 +204,23 @@
   color: var(--lived);
 }
 
+.place-sheet__add-visit {
+  min-height: var(--tap-target-min);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  color: var(--chalk);
+  font-size: var(--text-sm);
+  text-align: left;
+  background: var(--abyss);
+  border: 1px dashed var(--contour);
+  border-radius: var(--radius-sm);
+}
+
+.place-sheet__add-visit:disabled {
+  color: var(--haze);
+  opacity: 0.6;
+}
+
 .place-sheet__backfill-note {
   font-size: var(--text-xs);
   color: var(--haze);

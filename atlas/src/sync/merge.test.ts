@@ -211,7 +211,7 @@ describe('entry natural-key collision (two devices add the SAME place offline)',
     expect(canonicalize(merged)).toBe(canonicalize(legacyRemote))
   })
 
-  it('dedupes tripEntries that collide on [tripId, entryId] after re-pointing', () => {
+  it('dedupes tripEntries that collide on [tripId, entryId, visitedDate] after re-pointing', () => {
     const loser = entry({ id: 'loser', kind: 'country', refId: 'JP', updatedAt: 100 })
     const winner = entry({ id: 'winner', kind: 'country', refId: 'JP', updatedAt: 200 })
 
@@ -229,6 +229,29 @@ describe('entry natural-key collision (two devices add the SAME place offline)',
 
     expect(active(merged.tripEntries)).toHaveLength(1)
     expect(active(merged.tripEntries)[0]!.entryId).toBe('winner')
+  })
+
+  it('collapses the same visit added on two devices, but keeps visits on different dates', () => {
+    // Out to San Diego and back: LA is on the trip twice, on different dates.
+    const la = entry({ id: 'la', kind: 'city', refId: '5368361' })
+    const local = snapshot({
+      entries: [la],
+      tripEntries: [
+        tripEntry({ id: 'first', tripId: 't1', entryId: 'la', visitedDate: '2025-06-01', updatedAt: 100 }),
+        tripEntry({ id: 'again', tripId: 't1', entryId: 'la', visitedDate: '2025-06-16', updatedAt: 100 }),
+      ],
+    })
+    // The other device logged the 1 June visit independently, under its own id.
+    const remote = snapshot({
+      entries: [la],
+      tripEntries: [tripEntry({ id: 'first-elsewhere', tripId: 't1', entryId: 'la', visitedDate: '2025-06-01', updatedAt: 150 })],
+    })
+
+    const dates = active(merge(local, remote).tripEntries)
+      .map((te) => te.visitedDate)
+      .sort()
+    expect(dates).toEqual(['2025-06-01', '2025-06-16'])
+    expect(canonicalize(merge(local, remote))).toBe(canonicalize(merge(remote, local)))
   })
 
   it('a deletion of one duplicate does not resurrect the place via the other id', () => {

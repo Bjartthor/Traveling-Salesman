@@ -9,7 +9,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import type { Status, Trip } from '@/db/types'
 import { buildStatusIndex } from '@/stats/coverage'
-import { createTrip, getCapturingTrip, type ActiveTripConflictResolution, type CaptureMode } from '@/domain/tripRepo'
+import { countTripPlaces, createTrip, getCapturingTrip, type ActiveTripConflictResolution, type CaptureMode } from '@/domain/tripRepo'
 import { loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
@@ -39,7 +39,7 @@ export function TripsScreen() {
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
 
   const capturingPlaceCount = useLiveQuery(
-    () => (capturing ? db.tripEntries.filter((te) => te.tripId === capturing.id && te.deletedAt === null).count() : Promise.resolve(0)),
+    () => (capturing ? countTripPlaces(capturing.id) : Promise.resolve(0)),
     [capturing?.id],
   )
 

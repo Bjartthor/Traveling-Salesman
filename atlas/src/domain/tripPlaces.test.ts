@@ -216,6 +216,33 @@ describe('addedAts (when the place joined this trip, independent of the entry\'s
   })
 })
 
+describe('visits (every visit to a place on this trip — a place can be visited more than once)', () => {
+  it('carries every visit from the map through, in the order given', () => {
+    const entries: Entry[] = [mkEntry({ kind: 'city', refId: '20' })]
+    const visits = new Map([
+      [
+        entries[0]!.id,
+        [
+          { visitedDate: '2025-06-01', addedAt: 1 },
+          { visitedDate: '2025-06-16', addedAt: 3 },
+        ],
+      ],
+    ])
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES, visits })
+    expect(tripCityRows(groups)[0]!.visits).toEqual([
+      { visitedDate: '2025-06-01', addedAt: 1 },
+      { visitedDate: '2025-06-16', addedAt: 3 },
+    ])
+  })
+
+  it("defaults to the row's own single visit when no visits map is given", () => {
+    const entries: Entry[] = [mkEntry({ kind: 'city', refId: '20', createdAt: 5 })]
+    const visitedDates = new Map([[entries[0]!.id, '2025-06-01']])
+    const groups = groupTripPlaces({ entries, countries: COUNTRIES, subdivisions: SUBDIVISIONS, cities: CITIES, visitedDates })
+    expect(tripCityRows(groups)[0]!.visits).toEqual([{ visitedDate: '2025-06-01', addedAt: 5 }])
+  })
+})
+
 describe('tripCountryCodes / tripCityRows', () => {
   it('returns exactly the countries with something attached under them', () => {
     expect(tripCountryCodes(build()).sort()).toEqual(['DE', 'JP', 'MC'])
