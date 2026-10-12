@@ -13,7 +13,7 @@ import { tripCityRows, tripCountryCodes, type TripCountryGroup, type TripPlaceRo
 import { loadCountryFirstVisited, loadTripCountryCodesBatch, loadTripPlaces } from '@/domain/tripPlacesRepo'
 import { newCountriesByTrip, tripDurationDays } from '@/domain/tripStats'
 import { tripRoute } from '@/domain/tripRoute'
-import { closeTrip, getCapturingTrip, reopenTrip, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
+import { closeTrip, endBackfill, getCapturingTrip, reopenTrip, resumeBackfill, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { formatLongDate, todayISO } from '@/domain/dateFormat'
@@ -70,7 +70,8 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
   const [showEdit, setShowEdit] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showEndBackfill, setShowEndBackfill] = useState(false)
-  const [conflictTripName, setConflictTripName] = useState<string | null>(null)
+  // Which action ran into another capturing trip — the conflict dialog resumes it once resolved.
+  const [conflict, setConflict] = useState<{ tripName: string; action: 'reopen' | 'addPlaces' } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
   const [notes, setNotes] = useState('')
@@ -117,10 +118,10 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
     }
   }
 
-  async function handleReopenTapped() {
+  async function handleCaptureTapped(action: 'reopen' | 'addPlaces') {
     const capturing = await getCapturingTrip()
-    if (capturing && capturing.id !== trip.id) setConflictTripName(capturing.name)
-    else await run(() => reopenTrip(trip.id))
+    if (capturing && capturing.id !== trip.id) setConflict({ tripName: capturing.name, action })
+    else await run(() => (action === 'reopen' ? reopenTrip(trip.id) : resumeBackfill(trip.id)))
   }
 
   function commitNotes() {
@@ -163,14 +164,25 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
             <button type="button" className="trip-detail__action" onClick={() => void run(() => closeTrip(trip.id))}>
               Close trip
             </button>
+          ) : trip.isBackfilling && trip.endDate ? (
+            // A past trip resumed via "Add places" already has its end date
+            // (stretched as needed) — nothing to ask, just hand it back.
+            <button type="button" className="trip-detail__action" onClick={() => void run(() => endBackfill(trip.id, trip.endDate!))}>
+              Done adding places
+            </button>
           ) : trip.isBackfilling ? (
             <button type="button" className="trip-detail__action" onClick={() => setShowEndBackfill(true)}>
               End past trip
             </button>
           ) : (
-            <button type="button" className="trip-detail__action" onClick={() => void handleReopenTapped()}>
-              Reopen trip
-            </button>
+            <>
+              <button type="button" className="trip-detail__action" onClick={() => void handleCaptureTapped('addPlaces')}>
+                Add places
+              </button>
+              <button type="button" className="trip-detail__action trip-detail__action--secondary" onClick={() => void handleCaptureTapped('reopen')}>
+                Reopen trip
+              </button>
+            </>
           )}
           <button type="button" className="trip-detail__action trip-detail__action--secondary" onClick={() => setShowEdit(true)}>
             Edit
@@ -232,14 +244,15 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
         />
       )}
 
-      {conflictTripName && (
+      {conflict && (
         <TripConflictDialog
-          activeTripName={conflictTripName}
+          activeTripName={conflict.tripName}
           onResolve={(resolution) => {
-            setConflictTripName(null)
-            void run(() => reopenTrip(trip.id, resolution))
+            const { action } = conflict
+            setConflict(null)
+            void run(() => (action === 'reopen' ? reopenTrip(trip.id, resolution) : resumeBackfill(trip.id, resolution)))
           }}
-          onCancel={() => setConflictTripName(null)}
+          onCancel={() => setConflict(null)}
         />
       )}
 

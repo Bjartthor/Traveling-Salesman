@@ -13,6 +13,7 @@ import { db } from '@/db/schema'
 import { tripEntriesRepo, tripsRepo } from '@/db/repo'
 import type { Trip, TripEntry } from '@/db/types'
 import { logInfo } from '@/debug/log'
+import { stretchTripDates } from '@/domain/tripDates'
 
 export type ActiveTripConflictResolution = 'close' | 'leaveOpen'
 
@@ -98,6 +99,22 @@ export async function reopenTrip(tripId: string, resolution?: ActiveTripConflict
   await tripsRepo.update(tripId, { isActive: true, endDate: null })
 }
 
+/**
+ * "Add places" on a past trip: back into backfill mode so places can be
+ * added exactly as when it was first logged, at any date. Unlike
+ * `reopenTrip`, the end date is kept — `endBackfill(tripId, trip.endDate)`
+ * hands it straight back as a past trip ("Done adding places"), and the
+ * dates stretch on their own if a visit lands outside them.
+ */
+export async function resumeBackfill(tripId: string, resolution?: ActiveTripConflictResolution): Promise<void> {
+  const capturing = await getCapturingTrip()
+  if (capturing && capturing.id !== tripId) {
+    if (!resolution) throw new Error('Another trip is capturing — resolve the conflict first')
+    await resolveConflict(capturing, resolution)
+  }
+  await tripsRepo.update(tripId, { isActive: false, isBackfilling: true })
+}
+
 export async function updateTrip(
   tripId: string,
   patch: Partial<Pick<Trip, 'name' | 'startDate' | 'endDate' | 'notes'>>,
@@ -135,9 +152,33 @@ export async function attachEntryToTrip(tripId: string, entryId: string, visited
   await addVisit(tripId, entryId, visitedDate ?? null)
 }
 
-/** Always records a new visit — for a place visited again on the same trip. */
+/**
+ * Always records a new visit — for a place visited again on the same trip,
+ * or one added to a past trip at any date, mid-trip included (a visit's
+ * place in the route comes from its date, not from when it was added). The
+ * trip's dates stretch to cover it (@/domain/tripDates).
+ */
 export async function addVisit(tripId: string, entryId: string, visitedDate: string | null): Promise<void> {
-  await tripEntriesRepo.create({ tripId, entryId, addedAt: Date.now(), visitedDate })
+  await db.transaction('rw', db.trips, db.tripEntries, db.syncState, async () => {
+    await tripEntriesRepo.create({ tripId, entryId, addedAt: Date.now(), visitedDate })
+    if (visitedDate) await stretchTripToInclude(tripId, visitedDate)
+  })
+}
+
+/** Change one visit's date (null = undated: stays on the trip, drops out of the route); the trip's dates stretch to cover it. */
+export async function setVisitDate(tripEntryId: string, visitedDate: string | null): Promise<void> {
+  await db.transaction('rw', db.trips, db.tripEntries, db.syncState, async () => {
+    const visit = await db.tripEntries.get(tripEntryId)
+    if (!visit || visit.visitedDate === visitedDate) return
+    await tripEntriesRepo.update(tripEntryId, { visitedDate })
+    if (visitedDate) await stretchTripToInclude(visit.tripId, visitedDate)
+  })
+}
+
+async function stretchTripToInclude(tripId: string, date: string): Promise<void> {
+  const trip = await db.trips.get(tripId)
+  const patch = trip ? stretchTripDates(trip, date) : null
+  if (patch) await tripsRepo.update(tripId, patch)
 }
 
 /** Removes one visit (one `tripEntries` row); the place's other visits on that trip stay. */

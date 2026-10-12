@@ -11,10 +11,10 @@ import { settingsRepo } from '@/db/repo'
 import type { Entry, Status } from '@/db/types'
 import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
-import { addVisit, getCapturingTrip, nextBackfillDate, removeVisit, tripAttachmentsForEntry } from '@/domain/tripRepo'
+import { addVisit, getCapturingTrip, nextBackfillDate, removeVisit, setVisitDate, tripAttachmentsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
-import { formatLongDate, todayISO } from '@/domain/dateFormat'
+import { todayISO } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
 import { STATUS_COLOR_VAR, STATUS_DESCRIPTION, STATUS_LABEL } from '@/components/map/statusColor'
 import { DateField } from '@/components/shared/DateField'
@@ -105,6 +105,17 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   const attachments = useLiveQuery(() => (entryId ? tripAttachmentsForEntry(entryId) : Promise.resolve([])), [entryId])
   const capturingTrip = useLiveQuery(() => getCapturingTrip())
   const backfillingTrip = capturingTrip?.isBackfilling ? capturingTrip : null
+
+  // Saves on change, for any trip (past or capturing) — the trip's dates
+  // stretch to cover the new one, and its route re-orders by it.
+  async function changeVisitDate(tripEntryId: string, visitedDate: string | null) {
+    setError(null)
+    try {
+      await setVisitDate(tripEntryId, visitedDate)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   async function removeTripVisit(tripEntryId: string) {
     setError(null)
@@ -309,9 +320,16 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
             <div className="place-sheet__trips-list">
               {attachments.map((a) => (
                 <div key={a.tripEntryId} className="place-sheet__trip-row">
-                  <div>
+                  <div className="place-sheet__trip-main">
                     <p className="place-sheet__trip-name">{a.tripName}</p>
-                    <p className="place-sheet__trip-date mono">{a.visitedDate ? formatLongDate(a.visitedDate) : 'No date'}</p>
+                    <div className="place-sheet__trip-date">
+                      <DateField
+                        value={a.visitedDate}
+                        placeholder="No date"
+                        ariaLabel={`Date of this visit on ${a.tripName}`}
+                        onChange={(v) => void changeVisitDate(a.tripEntryId, v)}
+                      />
+                    </div>
                   </div>
                   <button
                     type="button"
