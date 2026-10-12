@@ -30,7 +30,6 @@ interface TripStampProps {
   countryCodes: readonly string[]
   countryStatus: ReadonlyMap<string, Status>
   cities: readonly TripStampCity[]
-  coverPhotoUrl?: string | null // wired for Phase 6; always null until photos exist
   onClick?: () => void
 }
 
@@ -42,7 +41,6 @@ export function TripStamp({
   countryCodes,
   countryStatus,
   cities,
-  coverPhotoUrl,
   onClick,
 }: TripStampProps) {
   const rotation = stampRotationDeg(tripId)
@@ -58,8 +56,6 @@ export function TripStamp({
       onClick={onClick}
       aria-label={`${name}, ${dateRange}`}
     >
-      {coverPhotoUrl && <div className="trip-stamp__cover" style={{ backgroundImage: `url(${coverPhotoUrl})` }} aria-hidden="true" />}
-
       <svg width="0" height="0" aria-hidden="true">
         <filter id={filterId} x="-20%" y="-20%" width="140%" height="140%">
           <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed={inkSeed} result="noise" />

@@ -13,7 +13,6 @@ import type { City } from '@/db/types'
 import { resolveSubdivisionByPoint } from '@/geo/photon'
 import { rebuildDerivedEntries } from '@/domain/cascadeRepo'
 import { invalidateSearchIndex } from '@/geo/search'
-import { invalidateNearestCityIndex } from '@/geo/nearestCity'
 import { invalidateMapCityIndex } from '@/geo/mapCities'
 
 export interface RegionBackfillResult {
@@ -33,7 +32,6 @@ export async function backfillCityRegions(): Promise<RegionBackfillResult> {
   if (updated.length > 0) {
     await db.cities.bulkPut(updated)
     invalidateSearchIndex()
-    invalidateNearestCityIndex()
     invalidateMapCityIndex()
     // The cascade only creates a subdivision-level derived entry from
     // `city.subdivisionId` at write time — these cities were already saved

@@ -1,5 +1,5 @@
 // Trip create/edit form (05-trips.md task 1 "start a trip"/"retroactive
-// trips" + task 4 "edit name, dates, cover photo"). Full-screen overlay,
+// trips" + task 4 "edit name, dates"). Full-screen overlay,
 // reusing the same shell as ManualPlaceForm/CountryDetail/BulkAddScreen.
 //
 // Two variants, one component: `showEndDate=false` is "starting a capture
@@ -10,8 +10,7 @@
 // depending on `mode`, purely cosmetic. `showEndDate=true` is plain editing
 // of an existing trip's name/dates (TripDetail's "Edit"), which never
 // touches `isActive`/`isBackfilling` at all (only the dedicated
-// close/reopen/end-backfill actions do that) — the cover photo slot lives in
-// TripDetail itself, wired but empty per 00-PLAN.md's Phase 6 hold-off.
+// close/reopen/end-backfill actions do that).
 //
 // The only-one-trip-capturing conflict is resolved by the caller *before*
 // opening this form (see TripsScreen/TripDetail) — that keeps this component

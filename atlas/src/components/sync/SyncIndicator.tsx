@@ -17,7 +17,6 @@ export function SyncIndicator() {
   const connected = useLiveQuery(queryConnected, [])
   const phase = useSyncStore((s) => s.phase)
   const error = useSyncStore((s) => s.error)
-  const pendingUploads = useSyncStore((s) => s.pendingUploads)
 
   if (!connected || phase === 'idle') return null
 
@@ -26,9 +25,7 @@ export function SyncIndicator() {
       {phase === 'syncing' && (
         <span className="sync-indicator__body">
           <span className="sync-indicator__spinner" aria-hidden="true" />
-          <span className="sync-indicator__text mono">
-            Syncing{pendingUploads > 0 ? ` · ${pendingUploads} photo${pendingUploads === 1 ? '' : 's'} left` : '…'}
-          </span>
+          <span className="sync-indicator__text mono">Syncing…</span>
         </span>
       )}
 

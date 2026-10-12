@@ -51,15 +51,6 @@
   }
 }
 
-.trip-stamp__cover {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: center;
-  filter: grayscale(1) brightness(0.5);
-  opacity: 0.5;
-}
-
 .trip-stamp__border {
   position: absolute;
   border-style: dashed;

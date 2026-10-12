@@ -1,10 +1,9 @@
 // In-memory city index for the world map's zoom-revealed city layer
 // (@/components/map/cityLayer). Same "build once, memoise, invalidate on
-// reseed" shape @/geo/search and @/geo/nearestCity already established over
-// this same ~170k-row reference table — a third small, purpose-built index
-// rather than a shared one, matching how those two already diverged from
-// each other (search needs substring-searchable strings, nearestCity needs a
-// spatial grid; this one needs population + capital ranking).
+// reseed" shape @/geo/search already established over this same ~170k-row
+// reference table — a second small, purpose-built index rather than a shared
+// one, since the two need different things (search needs substring-searchable
+// strings; this one needs population + capital ranking).
 
 import { db } from '@/db/schema'
 import { normalize } from '@/geo/search'

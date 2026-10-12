@@ -18,10 +18,10 @@
 // active row. Two devices adding the same place offline mint two ids for one
 // key; merging by id would keep both and the local write would then throw. So
 // entries collapse by natural key, the surviving id wins deterministically, and
-// any tripEntries/photos that referenced a dropped duplicate id are re-pointed
+// any tripEntries that referenced a dropped duplicate id are re-pointed
 // to the survivor. All of that is pure and convergent, so it's testable here.
 
-import type { City, Entry, Photo, TripEntry } from '@/db/types'
+import type { City, Entry, TripEntry } from '@/db/types'
 import type { SyncableSettings, SyncSnapshot } from '@/sync/types'
 import { SYNCABLE_SETTING_KEYS } from '@/sync/types'
 
@@ -56,7 +56,7 @@ function pickWinner<T extends Tombstoneable>(a: T, b: T): T {
   return a.id >= b.id ? a : b
 }
 
-/** Last-write-wins union keyed by `id`. Used for trips, tripEntries, photos. */
+/** Last-write-wins union keyed by `id`. Used for trips and tripEntries. */
 function mergeById<T extends Tombstoneable>(local: readonly T[], remote: readonly T[]): T[] {
   const winners = new Map<string, T>()
   for (const record of [...local, ...remote]) {
@@ -202,19 +202,13 @@ export function mergeSnapshots({ local, remote, settingsBase }: MergeInput): Syn
   )
   const tripEntries = dedupeTripEntries(mergedTripEntries)
 
-  const photos = mergeById(local.photos, remote.photos).map((row) =>
-    row.entryId !== null && idRemap.has(row.entryId)
-      ? { ...row, entryId: survivingId(row.entryId, idRemap) }
-      : row,
-  ) as Photo[]
-
   // `?? []` tolerates a v1 Drive doc (no `cities` field) being read by a v2
   // client — the schema guard in sync.ts only blocks the reverse direction.
   const cities = mergeCities(local.cities ?? [], remote.cities ?? [])
 
   const settings = mergeSettings(settingsBase, local.settings, remote.settings)
 
-  return { entries, trips, tripEntries, photos, cities, settings }
+  return { entries, trips, tripEntries, cities, settings }
 }
 
 // Exposed for the orchestrator's "did anything actually change?" check and for
@@ -233,7 +227,6 @@ export function canonicalize(snapshot: SyncSnapshot): string {
     entries: sortRecords(snapshot.entries),
     trips: sortRecords(snapshot.trips),
     tripEntries: sortRecords(snapshot.tripEntries),
-    photos: sortRecords(snapshot.photos),
     cities,
     settings,
   })

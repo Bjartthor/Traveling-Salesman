@@ -4,8 +4,6 @@ import type {
   Country,
   Entry,
   LogEntry,
-  Photo,
-  PhotoBlob,
   Settings,
   Subdivision,
   SyncState,
@@ -21,8 +19,6 @@ export class AtlasDB extends Dexie {
   entries!: EntityTable<Entry, 'id'>
   trips!: EntityTable<Trip, 'id'>
   tripEntries!: EntityTable<TripEntry, 'id'>
-  photos!: EntityTable<Photo, 'id'>
-  photoBlobs!: EntityTable<PhotoBlob, 'photoId'>
 
   settings!: EntityTable<Settings, 'id'>
   syncState!: EntityTable<SyncState, 'id'>
@@ -67,6 +63,16 @@ export class AtlasDB extends Dexie {
       syncState: 'id',
 
       debugLog: '++id, ts',
+    })
+
+    // Photos were removed from the app. `null` tells Dexie to delete both
+    // stores on upgrade — reclaiming the device storage their blobs held.
+    // Deliberately local only: any photo files already uploaded to Drive are
+    // left untouched (nothing reads them any more). Every other table is
+    // inherited unchanged from version 2.
+    this.version(3).stores({
+      photos: null,
+      photoBlobs: null,
     })
   }
 }

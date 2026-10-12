@@ -2,12 +2,11 @@
 //
 // Seeds the committed artefacts in public/geo/ into IndexedDB on first run, and
 // lazily loads map topology. Reference-data (re)seeds ONLY touch the reference
-// tables (countries / subdivisions / cities) — never entries / trips / photos.
+// tables (countries / subdivisions / cities) — never entries / trips.
 
 import { db } from '@/db/schema'
 import type { City, Country, Subdivision } from '@/db/types'
 import { invalidateSearchIndex } from '@/geo/search'
-import { invalidateNearestCityIndex } from '@/geo/nearestCity'
 import { invalidateMapCityIndex } from '@/geo/mapCities'
 import { registerCensusCounter } from '@/debug/census'
 
@@ -175,7 +174,6 @@ export async function ensureReferenceData(
   // --- 3. mark seeded (device-local; leaves user tables untouched) ---
   await db.settings.update(1, { geoDataVersion: GEO_DATA_VERSION })
   invalidateSearchIndex()
-  invalidateNearestCityIndex()
   invalidateMapCityIndex()
   console.info(`[geo] reference data seeded in ${Math.round(performance.now() - startedAt)} ms (${total} cities)`)
   onProgress?.({ phase: 'done', loaded: total, total })

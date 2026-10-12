@@ -75,37 +75,6 @@ export async function createTrip(input: CreateTripInput, resolution?: ActiveTrip
     isActive: input.mode === 'live',
     isBackfilling: input.mode === 'backfill',
     notes: input.notes ?? '',
-    coverPhotoId: null,
-  })
-}
-
-export interface CreateClosedTripInput {
-  name: string
-  startDate: string
-  endDate: string
-  notes?: string
-}
-
-/**
- * A trip whose full date range is already known at creation — used by the
- * photo-import flow (`PhotoImportFlow.tsx`), which infers a trip's start and
- * end dates directly from photo EXIF timestamps, so there's nothing to
- * "capture" or backfill: never sets `isActive`/`isBackfilling`, so no
- * conflict with whatever else is capturing is possible. This is the one
- * remaining piece of the old (pre-backfill-mode) `createTrip`'s "`endDate`
- * present at creation" branch — split out on its own now that `createTrip`
- * itself is exclusively about starting a capturing session.
- */
-export async function createClosedTrip(input: CreateClosedTripInput): Promise<Trip> {
-  void logInfo(`trip: create closed "${input.name}"`)
-  return tripsRepo.create({
-    name: input.name,
-    startDate: input.startDate,
-    endDate: input.endDate,
-    isActive: false,
-    isBackfilling: false,
-    notes: input.notes ?? '',
-    coverPhotoId: null,
   })
 }
 
@@ -131,7 +100,7 @@ export async function reopenTrip(tripId: string, resolution?: ActiveTripConflict
 
 export async function updateTrip(
   tripId: string,
-  patch: Partial<Pick<Trip, 'name' | 'startDate' | 'endDate' | 'notes' | 'coverPhotoId'>>,
+  patch: Partial<Pick<Trip, 'name' | 'startDate' | 'endDate' | 'notes'>>,
 ): Promise<void> {
   await tripsRepo.update(tripId, patch)
 }

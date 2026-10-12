@@ -1,11 +1,9 @@
 // The Google Drive section of the You/Settings screen (07-sync-and-deploy.md
-// tasks 1, 4, 5): connect / disconnect, last-synced time, a manual "Sync now",
-// the pending-upload count, honest error messages, and the two device-local
-// toggles (auto-sync, upload-on-cellular).
+// tasks 1, 4): connect / disconnect, last-synced time, a manual "Sync now",
+// honest error messages, and the device-local auto-sync toggle.
 
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
 import { AuthError, describeAuthError, isConfigured, signIn, signOut } from '@/sync/auth'
 import { syncNow } from '@/sync/sync'
@@ -25,10 +23,6 @@ function formatRelative(ts: number | null): string {
 
 export function GoogleDriveSettings() {
   const settings = useLiveQuery(() => settingsRepo.get(), [])
-  const pendingCount = useLiveQuery(
-    async () => (await db.photos.where('uploadState').equals('pending').toArray()).filter((p) => p.deletedAt === null).length,
-    [],
-  )
   const phase = useSyncStore((s) => s.phase)
   const storeError = useSyncStore((s) => s.error)
 
@@ -80,7 +74,7 @@ export function GoogleDriveSettings() {
     try {
       await signOut()
       setConfirmingDisconnect(false)
-      setNotice('Signed out. Your places, trips and photos stay on this device.')
+      setNotice('Signed out. Your places and trips stay on this device.')
     } finally {
       setBusy(null)
     }
@@ -98,7 +92,7 @@ export function GoogleDriveSettings() {
       {!connected && (
         <>
           <p className="settings-screen__hint">
-            Mirror your data and photos to your own Google Drive, so they survive losing this phone. No one else can
+            Mirror your data to your own Google Drive, so it survives losing this phone. No one else can
             see it — it lives in a private app folder.
           </p>
           <button type="button" className="settings-screen__action" disabled={busy !== null} onClick={() => void handleConnect()}>
@@ -114,12 +108,6 @@ export function GoogleDriveSettings() {
               <dt>Last synced</dt>
               <dd className="mono">{phase === 'syncing' ? 'syncing…' : formatRelative(settings?.lastSyncAt ?? null)}</dd>
             </div>
-            {typeof pendingCount === 'number' && pendingCount > 0 && (
-              <div className="settings-screen__stat">
-                <dt>Photos to upload</dt>
-                <dd className="mono">{pendingCount}</dd>
-              </div>
-            )}
           </dl>
 
           <button type="button" className="settings-screen__action" disabled={busy !== null || phase === 'syncing'} onClick={() => void handleSyncNow()}>
@@ -135,18 +123,6 @@ export function GoogleDriveSettings() {
             <span>Sync automatically after changes</span>
           </label>
 
-          <label className="drive__toggle">
-            <input
-              type="checkbox"
-              checked={settings?.photoUploadOnCellular === true}
-              onChange={(e) => void settingsRepo.update({ photoUploadOnCellular: e.target.checked })}
-            />
-            <span>
-              Upload photos on mobile data
-              <span className="drive__toggle-sub">Off = Wi-Fi only. Protects you from a big upload on a foreign SIM.</span>
-            </span>
-          </label>
-
           {!confirmingDisconnect ? (
             <button
               type="button"
@@ -158,7 +134,7 @@ export function GoogleDriveSettings() {
             </button>
           ) : (
             <div className="drive__confirm">
-              <p className="settings-screen__hint">Sign out of Google Drive? Your places, trips and photos stay on this device.</p>
+              <p className="settings-screen__hint">Sign out of Google Drive? Your places and trips stay on this device.</p>
               <div className="drive__confirm-actions">
                 <button type="button" className="settings-screen__action settings-screen__action--secondary" disabled={busy !== null} onClick={() => void handleDisconnect()}>
                   {busy === 'disconnect' ? 'Signing out…' : 'Sign out'}

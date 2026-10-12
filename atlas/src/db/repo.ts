@@ -4,7 +4,7 @@
 // possible without a server.
 import type { EntityTable, IDType } from 'dexie'
 import { db } from '@/db/schema'
-import type { Entry, Photo, PhotoBlob, Settings, SyncedRecord, SyncState, Trip, TripEntry } from '@/db/types'
+import type { Entry, Settings, SyncedRecord, SyncState, Trip, TripEntry } from '@/db/types'
 
 async function bumpRevision(): Promise<void> {
   // Touch only `revision` — a whole-row put here would wipe the sync bookkeeping
@@ -76,21 +76,6 @@ function makeRepo<T extends SyncedRecord>(table: EntityTable<T, 'id'>) {
 export const entriesRepo = makeRepo<Entry>(db.entries)
 export const tripsRepo = makeRepo<Trip>(db.trips)
 export const tripEntriesRepo = makeRepo<TripEntry>(db.tripEntries)
-export const photosRepo = makeRepo<Photo>(db.photos)
-
-// Device-only binary cache. Not part of the synced JSON document — deleting
-// a blob is fine even though `deletedAt` fields never get hard-deleted.
-export const photoBlobsRepo = {
-  put(photoId: string, full: Blob, thumb: Blob): Promise<string> {
-    return db.photoBlobs.put({ photoId, full, thumb })
-  },
-  get(photoId: string): Promise<PhotoBlob | undefined> {
-    return db.photoBlobs.get(photoId)
-  },
-  delete(photoId: string): Promise<void> {
-    return db.photoBlobs.delete(photoId)
-  },
-}
 
 // Singletons — no id generation, no soft delete.
 export const settingsRepo = {

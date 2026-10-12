@@ -16,11 +16,10 @@ import type { SyncSnapshot } from '@/sync/types'
  * `applyMergedSnapshot` on the one edge this trades away.
  */
 export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
-  const [entries, trips, tripEntries, photos, cities, settings] = await Promise.all([
+  const [entries, trips, tripEntries, cities, settings] = await Promise.all([
     db.entries.filter((e) => e.explicit || e.deletedAt !== null).toArray(),
     db.trips.toArray(),
     db.tripEntries.toArray(),
-    db.photos.toArray(),
     // Only the non-bundled rows (negative geonameId). Bundled cities are seeded
     // from committed data on every device, so syncing all ~170k would bloat the
     // doc for nothing; these are the handful an entry might dangle without.
@@ -31,7 +30,6 @@ export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
     entries,
     trips,
     tripEntries,
-    photos,
     cities,
     settings: {
       statMode: settings?.statMode ?? 'countries',
@@ -51,13 +49,13 @@ export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
  *     clearing frees every slot, and rebuildAllDerived recreates the derived rows.
  *   - tripEntries can be de-duplicated by the merge (two ids collapsing to one),
  *     so a stale local id must not linger.
- * trips and photos never lose an id in the merge (pure union by id), so a plain
- * upsert is complete for them and keeps their rows (and photo blobs) untouched.
+ * trips never lose an id in the merge (pure union by id), so a plain upsert is
+ * complete for them.
  */
 export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
   await db.transaction(
     'rw',
-    [db.entries, db.trips, db.tripEntries, db.photos, db.settings, db.cities, db.syncState],
+    [db.entries, db.trips, db.tripEntries, db.settings, db.cities, db.syncState],
     async () => {
       // Non-bundled cities first, so a freshly-pulled city entry can resolve its
       // row when rebuildDerivedEntries runs below — otherwise the cascade throws
@@ -75,10 +73,8 @@ export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
       await db.tripEntries.clear()
       await db.tripEntries.bulkAdd(merged.tripEntries)
 
-      await db.photos.bulkPut(merged.photos)
-
       // Only the synced fields; device-local settings (deviceId, geoDataVersion,
-      // autoSync, driveConnected, photoUploadOnCellular, mapView, lastSyncAt) are untouched.
+      // autoSync, driveConnected, mapView, lastSyncAt) are untouched.
       await settingsRepo.update({
         statMode: merged.settings.statMode,
         countryDenominator: merged.settings.countryDenominator,

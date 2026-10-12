@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { City, Entry, Photo, Trip, TripEntry } from '@/db/types'
+import type { City, Entry, Trip, TripEntry } from '@/db/types'
 import type { SyncableSettings, SyncSnapshot } from '@/sync/types'
 import { canonicalize, mergeSettings, mergeSnapshots, snapshotsEqual } from '@/sync/merge'
 
@@ -35,7 +35,6 @@ function trip(over: Partial<Trip> = {}): Trip {
     isActive: false,
     isBackfilling: false,
     notes: '',
-    coverPhotoId: null,
     createdAt: 1000,
     updatedAt: 1000,
     deletedAt: null,
@@ -50,27 +49,6 @@ function tripEntry(over: Partial<TripEntry> = {}): TripEntry {
     entryId: 'e1',
     addedAt: 1000,
     visitedDate: null,
-    createdAt: 1000,
-    updatedAt: 1000,
-    deletedAt: null,
-    ...over,
-  }
-}
-
-function photo(over: Partial<Photo> = {}): Photo {
-  return {
-    id: over.id ?? uid(),
-    entryId: null,
-    tripId: null,
-    caption: '',
-    takenAt: null,
-    lat: null,
-    lon: null,
-    width: 100,
-    height: 100,
-    bytes: 1000,
-    driveFileId: null,
-    uploadState: 'pending',
     createdAt: 1000,
     updatedAt: 1000,
     deletedAt: null,
@@ -102,7 +80,7 @@ const settings = (over: Partial<SyncableSettings> = {}): SyncableSettings => ({
 })
 
 function snapshot(over: Partial<SyncSnapshot> = {}): SyncSnapshot {
-  return { entries: [], trips: [], tripEntries: [], photos: [], cities: [], settings: settings(), ...over }
+  return { entries: [], trips: [], tripEntries: [], cities: [], settings: settings(), ...over }
 }
 
 const merge = (local: SyncSnapshot, remote: SyncSnapshot, settingsBase: SyncableSettings | null = null) =>
@@ -205,14 +183,13 @@ describe('entry natural-key collision (two devices add the SAME place offline)',
     expect(canonicalize(ab)).toBe(canonicalize(ba))
   })
 
-  it('re-points a tripEntry and a photo from the dropped id to the survivor', () => {
+  it('re-points a tripEntry from the dropped id to the survivor', () => {
     const loser = entry({ id: 'loser', kind: 'country', refId: 'JP', updatedAt: 100 })
     const winner = entry({ id: 'winner', kind: 'country', refId: 'JP', updatedAt: 200 })
 
     const local = snapshot({
       entries: [loser],
       tripEntries: [tripEntry({ id: 'te1', tripId: 't1', entryId: 'loser' })],
-      photos: [photo({ id: 'p1', entryId: 'loser' })],
     })
     const remote = snapshot({ entries: [winner] })
 
@@ -221,7 +198,17 @@ describe('entry natural-key collision (two devices add the SAME place offline)',
     expect(merged.entries).toHaveLength(1)
     expect(merged.entries[0]!.id).toBe('winner')
     expect(merged.tripEntries[0]!.entryId).toBe('winner')
-    expect(merged.photos[0]!.entryId).toBe('winner')
+  })
+
+  it('ignores the photos array a pre-v3 doc still carries — merges cleanly and sees nothing to push', () => {
+    const shared = { entries: [entry({ id: 'e1', kind: 'country', refId: 'IS' })], trips: [trip({ id: 't1' })] }
+    const local = snapshot(shared)
+    const legacyRemote = { ...snapshot(shared), photos: [{ id: 'p1', entryId: 'e1' }] } as SyncSnapshot
+
+    const merged = merge(local, legacyRemote)
+
+    expect(merged).not.toHaveProperty('photos')
+    expect(canonicalize(merged)).toBe(canonicalize(legacyRemote))
   })
 
   it('dedupes tripEntries that collide on [tripId, entryId] after re-pointing', () => {

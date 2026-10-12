@@ -21,7 +21,7 @@ function formatDate(ts: number): string {
 }
 
 function summaryLine(s: BackupSummary): string {
-  return `${s.places} place${s.places === 1 ? '' : 's'} · ${s.trips} trip${s.trips === 1 ? '' : 's'} · ${s.photos} photo${s.photos === 1 ? '' : 's'}`
+  return `${s.places} place${s.places === 1 ? '' : 's'} · ${s.trips} trip${s.trips === 1 ? '' : 's'}`
 }
 
 export function BackupSettings() {
@@ -102,7 +102,7 @@ export function BackupSettings() {
     <section className="settings-screen__section">
       <h2 className="settings-screen__section-title">Backup</h2>
       <p className="settings-screen__hint">
-        An independent copy of your places, trips and photos as one file — works with no Google account. Good for
+        An independent copy of your places and trips as one file — works with no Google account. Good for
         moving to a new phone, or just knowing your data isn’t only ever in one place.
       </p>
 
@@ -150,7 +150,7 @@ export function BackupSettings() {
           ) : (
             <div className="backup__confirm">
               <p className="settings-screen__hint">
-                This replaces every place, trip and photo on this device with the backup’s contents. Anything changed
+                This replaces every place and trip on this device with the backup’s contents. Anything changed
                 since this backup was taken — and not also in Google Drive — will be lost.
               </p>
               <div className="backup__confirm-actions">

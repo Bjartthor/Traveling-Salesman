@@ -1,16 +1,15 @@
 // Shared data-fetching for "everything about one country" — status, its
-// subdivisions' statuses, its cities, why its status is what it is, and its
-// rolled-up photos. Used by both the full-screen CountryDetail (opened from
-// the Places list) and the map's own CountrySheet (opened from the Map tab) —
-// same data, two different presentations.
+// subdivisions' statuses, its cities, and why its status is what it is. Used
+// by both the full-screen CountryDetail (opened from the Places list) and the
+// map's own CountrySheet (opened from the Map tab) — same data, two different
+// presentations.
 
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
-import type { City, Country, Entry, Photo, Status } from '@/db/types'
+import type { City, Country, Entry, Status } from '@/db/types'
 import { explainStatus } from '@/domain/cascade'
 import { loadCascadeState } from '@/domain/cascadeRepo'
 import { resolvePlaceInfo } from '@/domain/placeInfo'
-import { listPhotosForEntries } from '@/domain/photoRepo'
 
 export interface CountryDetailData {
   country: Country
@@ -20,7 +19,6 @@ export interface CountryDetailData {
   subdivisionStatus: Map<string, Status>
   cities: { entry: Entry; city: City }[]
   explanation: { status: Status; becauseName: string } | null
-  photos: Photo[]
 }
 
 // undefined = still loading, null = code isn't a real country
@@ -51,21 +49,12 @@ export function useCountryDetailData(code: string): CountryDetailData | null | u
     })
     cities.sort((a, b) => a.city.name.localeCompare(b.city.name))
 
-    // A country has no dedicated per-subdivision/per-city photo screen (see
-    // PROGRESS.md) — photos tagged anywhere in the country still need
-    // somewhere real to surface, so this rolls up every descendant's photos
-    // onto the one place that shows them.
-    const photoEntryIds = [entry?.id, ...subdivisionEntries.map((e) => e.id), ...cities.map((c) => c.entry.id)].filter(
-      (id): id is string => id !== undefined,
-    )
-    const photos = await listPhotosForEntries(photoEntryIds)
-
     const state = await loadCascadeState().catch(() => null)
     const cause = state ? explainStatus(state, 'country', code) : null
     const explanation = cause
       ? { status: cause.status, becauseName: (await resolvePlaceInfo(cause.because.kind, cause.because.refId))?.name ?? 'a place inside it' }
       : null
 
-    return { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation, photos }
+    return { country, entry, subdivisionTotal, subdivisionIds, subdivisionStatus, cities, explanation }
   }, [code])
 }

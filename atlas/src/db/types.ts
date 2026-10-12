@@ -3,7 +3,6 @@
 export type Status = 'wishlist' | 'transit' | 'visited' | 'lived'
 export type EntryKind = 'country' | 'subdivision' | 'city'
 export type CitySource = 'bundled' | 'online' | 'manual'
-export type UploadState = 'pending' | 'uploaded' | 'error'
 export type StatMode = 'countries' | 'area' | 'population'
 export type CountryDenominator = 'all' | 'unMember'
 export type Theme = 'dark' | 'light'
@@ -93,7 +92,6 @@ export interface Trip extends SyncedRecord {
   // in db/schema.ts), same precedent as `explicitStatus` above.
   isBackfilling: boolean
   notes: string
-  coverPhotoId: string | null
 }
 
 export interface TripEntry extends SyncedRecord {
@@ -107,27 +105,6 @@ export interface TripEntry extends SyncedRecord {
   // one global date off its entry. Not indexed, so no Dexie migration needed
   // (same precedent as `explicitStatus`/`isBackfilling`).
   visitedDate: string | null
-}
-
-export interface Photo extends SyncedRecord {
-  entryId: string | null
-  tripId: string | null
-  caption: string
-  takenAt: number | null
-  lat: number | null
-  lon: number | null
-  width: number
-  height: number
-  bytes: number
-  driveFileId: string | null
-  uploadState: UploadState
-}
-
-// Binary blobs, device-only — never serialised into the sync JSON.
-export interface PhotoBlob {
-  photoId: string
-  full: Blob
-  thumb: Blob
 }
 
 export interface Settings {
@@ -148,10 +125,6 @@ export interface Settings {
   // can silently re-acquire a token (tokens themselves are memory-only) instead
   // of popping consent every launch. Cleared on sign-out.
   driveConnected: boolean
-  // Upload photo binaries over a cellular connection. Default false = Wi-Fi
-  // only, so a photo-library import over a foreign SIM can't happen by accident
-  // (07-sync-and-deploy.md task 5). Per-device network policy, not synced.
-  photoUploadOnCellular: boolean
   // Flat (choropleth) vs 3D-look rotatable globe for the Map tab. Per-device
   // display preference, not synced — like theme could arguably be synced, but
   // unlike theme this was a deliberate call (asked, confirmed): a phone worth

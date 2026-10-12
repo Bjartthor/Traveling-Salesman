@@ -6,7 +6,6 @@ import type { Settings, SyncState } from '@/db/types'
 // without needing a Dexie version bump (none of them are indexed).
 const SETTINGS_ADDED_DEFAULTS = {
   driveConnected: false,
-  photoUploadOnCellular: false,
   mapView: 'flat',
   defaultDateToToday: true,
   regionBackfillDone: false,

@@ -14,7 +14,6 @@ function mkTrip(o: { name: string; startDate: string | null; endDate?: string | 
     isActive: o.isActive ?? endDate === null,
     isBackfilling: false,
     notes: '',
-    coverPhotoId: null,
     createdAt: o.createdAt ?? 0,
     updatedAt: 0,
     deletedAt: null,

@@ -1,6 +1,6 @@
-// Sync orchestration (07-sync-and-deploy.md task 4). Pull, merge, write, push,
-// photos — always safe to run twice, and never reports success for a run that
-// didn't finish.
+// Sync orchestration (07-sync-and-deploy.md task 4). Pull, merge, write, push —
+// always safe to run twice, and never reports success for a run that didn't
+// finish.
 
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
@@ -9,7 +9,6 @@ import { AuthError, describeAuthError, getAccessToken, isConfigured } from '@/sy
 import { DriveError, DriveUnavailableError, findFile, uploadJson, downloadJson } from '@/sync/drive'
 import { applyMergedSnapshot, buildLocalSnapshot } from '@/sync/snapshot'
 import { canonicalize, mergeSnapshots } from '@/sync/merge'
-import { pendingPhotoCounts, syncPhotos } from '@/sync/photos'
 import { SYNC_SCHEMA_VERSION, type AtlasDoc, type SyncSnapshot } from '@/sync/types'
 import { useSyncStore } from '@/sync/syncStore'
 import { heapSummary } from '@/debug/memory'
@@ -29,7 +28,7 @@ function withHeap(detail?: string): string | undefined {
 
 /** Compact per-table counts for a snapshot, for a breadcrumb's detail. */
 function snapshotSizes(s: SyncSnapshot): string {
-  return `entries=${s.entries.length} trips=${s.trips.length} tripEntries=${s.tripEntries.length} photos=${s.photos.length}`
+  return `entries=${s.entries.length} trips=${s.trips.length} tripEntries=${s.tripEntries.length}`
 }
 
 export type SyncOutcome = 'ok' | 'not-connected' | 'not-configured' | 'offline' | 'auth' | 'error'
@@ -110,13 +109,12 @@ async function runSync(): Promise<SyncResult> {
     const remoteSnapshot: SyncSnapshot | null = remoteDoc?.data ?? null
 
     const bookkeeping = await readSyncState()
-    const photoWork = await pendingPhotoCounts()
 
-    // 2. Skip the merge/push if nothing changed on either side and no photo work
-    //    is outstanding (task 4 step 2). Still records the sync time.
+    // 2. Skip the merge/push if nothing changed on either side (task 4 step 2).
+    //    Still records the sync time.
     const remoteUnchanged = remoteDoc !== null && remoteDoc.revision === bookkeeping.remoteRevision
     const noLocalChanges = bookkeeping.revision === bookkeeping.pushedRevision
-    if (remoteUnchanged && noLocalChanges && photoWork.uploads === 0 && photoWork.cleanups === 0) {
+    if (remoteUnchanged && noLocalChanges) {
       await settingsRepo.update({ lastSyncAt: Date.now() })
       queued = false
       store.setIdle()
@@ -125,11 +123,7 @@ async function runSync(): Promise<SyncResult> {
 
     void logInfo('sync: state read', withHeap())
 
-    // 3. Photo pass first, so new/cleared driveFileIds ride along in the doc.
-    await syncPhotos()
-    void logInfo('sync: photos done', withHeap())
-
-    // 4. Merge (photo metadata is now current in the local snapshot).
+    // 3. Merge.
     // These breadcrumbs split the heaviest window of a sync — the ~1.3 GB heap
     // runaway in a captured OOM (2026-08-18) all happened between `sync: pulled`
     // and `sync: merged`, which used to be one un-instrumented gap spanning the
@@ -151,13 +145,13 @@ async function runSync(): Promise<SyncResult> {
     const mergedCanon = canonicalize(merged)
     void logInfo('sync: canonicalized', withHeap())
 
-    // 5. Write locally only if the merge actually changed local state.
+    // 4. Write locally only if the merge actually changed local state.
     if (mergedCanon !== canonicalize(local)) {
       await applyMergedSnapshot(merged)
       void logInfo('sync: applied merge locally', withHeap())
     }
 
-    // 6. Push only if the remote is missing or differs — keeps re-syncing an
+    // 5. Push only if the remote is missing or differs — keeps re-syncing an
     //    unchanged payload from bumping the revision forever (idempotence).
     const remoteChanged = remoteSnapshot === null || mergedCanon !== canonicalize(remoteSnapshot)
     let pushed = false
@@ -175,7 +169,7 @@ async function runSync(): Promise<SyncResult> {
       void logInfo('sync: pushed', withHeap(`rev=${newRemoteRevision}`))
     }
 
-    // 7. Bookkeeping. finalRevision includes bumps from applyMergedSnapshot's
+    // 6. Bookkeeping. finalRevision includes bumps from applyMergedSnapshot's
     //    derived rebuild — those are local-only, so treating them as "pushed"
     //    is correct and stops a phantom re-push next time.
     const finalRevision = (await db.syncState.get(1))?.revision ?? bookkeeping.revision
