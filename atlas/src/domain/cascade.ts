@@ -334,6 +334,29 @@ export function setStatus(state: CascadeState, request: SetStatusRequest): Mutat
 }
 
 /**
+ * Reshape a status request made while a trip is capturing, so logging an
+ * already-known place on a trip never rewrites what the place already says
+ * about itself (a city lived in years ago, visited again on a trip, is still
+ * lived). Against an existing entry, the user's own choice only ever moves
+ * *up* the ladder, and the entry's own first/last dates only ever *widen* to
+ * take in the request's date — the trip keeps that exact date on its own
+ * TripEntry, so nothing is lost. A missing date, or an explicit `null`, never
+ * clears the entry's dates here. No active entry → returned unchanged.
+ */
+export function captureRequest(existing: Entry | null, request: SetStatusRequest): SetStatusRequest {
+  if (!existing || existing.deletedAt !== null) return request
+  const { firstVisited, lastVisited, ...rest } = request
+  const out: SetStatusRequest = { ...rest, status: maxStatus(existing.explicitStatus, request.status) ?? request.status }
+  if (firstVisited) {
+    out.firstVisited = existing.firstVisited && existing.firstVisited < firstVisited ? existing.firstVisited : firstVisited
+  }
+  if (lastVisited) {
+    out.lastVisited = existing.lastVisited && existing.lastVisited > lastVisited ? existing.lastVisited : lastVisited
+  }
+  return out
+}
+
+/**
  * Remove one entry and settle the consequences upward (§5.5): derived ancestors
  * that nothing justifies any more go too, explicit ones stay and recompute.
  *

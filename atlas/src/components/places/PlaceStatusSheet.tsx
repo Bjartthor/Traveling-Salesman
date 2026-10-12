@@ -32,6 +32,10 @@ export function PlaceStatusSheet() {
 interface SheetData {
   entry: Entry | null
   explanation: { status: Status; becauseName: string } | null
+  // While a trip is capturing: whether this place is already on *that* trip,
+  // and the trip's own date for it. Read in the same query as `entry` so the
+  // date effect below never sees an entry without knowing this yet.
+  capturingTripVisit: { visitedDate: string | null } | null
 }
 
 // A real touchscreen tap reliably produces a trailing `click` 70-77ms after
@@ -82,11 +86,21 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     const row = await db.entries.where('[kind+refId]').equals([place.kind, place.refId]).first()
     const entry = row && row.deletedAt === null ? row : null
 
+    const capturing = entry ? await getCapturingTrip() : null
+    const tripRow = capturing
+      ? await db.tripEntries.filter((te) => te.tripId === capturing.id && te.entryId === entry!.id && te.deletedAt === null).first()
+      : undefined
+    const capturingTripVisit = tripRow ? { visitedDate: tripRow.visitedDate } : null
+
     const state = await loadCascadeState().catch(() => null)
     const cause = state ? explainStatus(state, place.kind, place.refId) : null
-    if (!cause) return { entry, explanation: null }
+    if (!cause) return { entry, explanation: null, capturingTripVisit }
     const becauseInfo = await resolvePlaceInfo(cause.because.kind, cause.because.refId)
-    return { entry, explanation: { status: cause.status, becauseName: becauseInfo?.name ?? 'a place inside it' } }
+    return {
+      entry,
+      explanation: { status: cause.status, becauseName: becauseInfo?.name ?? 'a place inside it' },
+      capturingTripVisit,
+    }
   }, [place.kind, place.refId])
 
   const entryId = data?.entry?.id
@@ -109,14 +123,25 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
   const [dateTouched, setDateTouched] = useState(false)
   useEffect(() => {
     if (dateTouched) return
-    if (data?.entry?.firstVisited) {
-      setDate(data.entry.firstVisited)
+    if (data === undefined || capturingTrip === undefined) return // still loading — wait, so `defaultDateToToday` below can't race ahead of a real backfilling trip and lock in today's date first
+    if (data.entry && capturingTrip) {
+      // An already-logged place touched while a trip is capturing: the date
+      // here is *this trip's* visit date, never the place's own firstVisited
+      // (a city lived in years ago must not offer that as the trip's date).
+      // Already on this trip → show its date, untouched, so a bare status tap
+      // leaves it as is. Not yet on it → offer the same default a brand-new
+      // place gets, below.
+      if (data.capturingTripVisit) {
+        setDate(data.capturingTripVisit.visitedDate)
+        return
+      }
+    } else if (data.entry) {
+      // existing entry, no trip capturing — show its own date, or leave blank; don't override with today defaults
+      if (data.entry.firstVisited) setDate(data.entry.firstVisited)
       return
     }
-    if (data?.entry) return // existing entry, no date on it — leave blank, don't override with backfill/today defaults
-    if (capturingTrip === undefined) return // still loading — wait, so `defaultDateToToday` below can't race ahead of a real backfilling trip and lock in today's date first
     if (backfillingTrip?.startDate) {
-      // A genuinely new place while backfilling — chain off the last place
+      // A place new to this backfilling trip — chain off the last place
       // touched in this trip (or its start date if this is the first one),
       // and count it as an explicit choice so a bare status tap saves it
       // without the user re-touching the field. This takes priority over
@@ -127,7 +152,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
         setDateTouched(true)
       })
     } else if (settings?.defaultDateToToday) {
-      // A genuinely new place (no entry yet) — pre-fill and count it as an
+      // A new place (or one new to the capturing trip) — pre-fill and count it as an
       // explicit choice, so a bare status tap does save today's date, which
       // is the point of the "default new entries to today" preference.
       setDate(todayISO())

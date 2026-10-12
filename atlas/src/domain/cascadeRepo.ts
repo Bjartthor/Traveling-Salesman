@@ -11,6 +11,7 @@ import { entriesRepo } from '@/db/repo'
 import { logError, logInfo } from '@/debug/log'
 import { breadcrumbDetail } from '@/debug/breadcrumb'
 import {
+  captureRequest,
   rebuildAllDerived,
   removeEntry,
   setStatus,
@@ -19,7 +20,7 @@ import {
   type Mutation,
   type SetStatusRequest,
 } from '@/domain/cascade'
-import { autoAttachToCapturingTrip } from '@/domain/tripRepo'
+import { autoAttachToCapturingTrip, getCapturingTrip } from '@/domain/tripRepo'
 
 /**
  * A city entry points at a `cities` row that is not there. Loud on purpose: the
@@ -126,15 +127,18 @@ async function applyMutations(mutations: readonly Mutation[]): Promise<void> {
  * Set a place's status, creating and recomputing whatever it implies above
  * it. If a trip is currently capturing (live or backfilling), also attaches
  * the *target* entry (never the ancestors this implies) to it, carrying this
- * call's own date along as *that trip's* visit date (not the entry's
- * `firstVisited`, which stays whatever the user set standalone) — see
- * @/domain/tripRepo.autoAttachToCapturingTrip.
+ * call's own date along as *that trip's* visit date — see
+ * @/domain/tripRepo.autoAttachToCapturingTrip. While capturing, an
+ * already-logged place is only ever upgraded and its own dates only ever
+ * widened (@/domain/cascade.captureRequest), never overwritten by the trip.
  */
 export async function setPlaceStatus(request: SetStatusRequest): Promise<void> {
   void logInfo(`place: set ${request.kind}/${request.refId} → ${request.status}`, breadcrumbDetail())
   await db.transaction('rw', db.entries, db.cities, db.syncState, db.trips, db.tripEntries, async () => {
     const state = await loadCascadeState(request.kind === 'city' ? [request.refId] : [])
-    await applyMutations(setStatus(state, request))
+    const capturing = await getCapturingTrip()
+    const existing = state.entries.find((e) => e.kind === request.kind && e.refId === request.refId) ?? null
+    await applyMutations(setStatus(state, capturing ? captureRequest(existing, request) : request))
     const target = await db.entries.where('[kind+refId]').equals([request.kind, request.refId]).first()
     if (target) await autoAttachToCapturingTrip(target.id, request.firstVisited)
   })

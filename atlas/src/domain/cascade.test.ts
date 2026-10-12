@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest'
 import type { Entry, EntryKind, Status } from '@/db/types'
 import {
   ancestorsOf,
+  captureRequest,
   effectiveStatus,
   explainStatus,
   maxStatus,
@@ -287,6 +288,67 @@ describe('setStatus — parent and child interaction', () => {
 })
 
 // --- §5.5: removal -----------------------------------------------------------
+
+describe('captureRequest — touching a place while a trip is capturing', () => {
+  const reykjavik = { kind: 'city' as const, refId: '9' }
+
+  it('passes a request for a place with no entry through unchanged', () => {
+    const request = { ...reykjavik, status: 'visited' as const, firstVisited: '2026-05-01', lastVisited: '2026-05-01' }
+    expect(captureRequest(null, request)).toEqual(request)
+  })
+
+  it('treats a soft-deleted entry as no entry at all', () => {
+    const gone = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', deletedAt: 5 })
+    const request = { ...reykjavik, status: 'visited' as const, firstVisited: '2026-05-01', lastVisited: '2026-05-01' }
+    expect(captureRequest(gone, request)).toEqual(request)
+  })
+
+  it("never lowers a place's own status — lived stays lived when a trip logs it as visited", () => {
+    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
+    expect(captureRequest(lived, { ...reykjavik, status: 'visited' }).status).toBe('lived')
+  })
+
+  it('still raises it — visited becomes lived', () => {
+    const visited = mkEntry({ ...reykjavik, status: 'visited' })
+    expect(captureRequest(visited, { ...reykjavik, status: 'lived' }).status).toBe('lived')
+  })
+
+  it("compares against the user's own choice, not a status derived from children", () => {
+    // Iceland derived as lived from a lived city — the user never chose a status for it, so the tap is the choice.
+    const iceland = derived('country', 'IS', 'lived')
+    expect(captureRequest(iceland, { kind: 'country', refId: 'IS', status: 'visited' }).status).toBe('visited')
+  })
+
+  it("only widens the place's own date span — a later trip leaves firstVisited alone", () => {
+    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
+    const out = captureRequest(lived, { ...reykjavik, status: 'visited', firstVisited: '2026-05-01', lastVisited: '2026-05-01' })
+    expect(out.firstVisited).toBe('2010-01-01')
+    expect(out.lastVisited).toBe('2026-05-01')
+  })
+
+  it('an earlier trip pulls firstVisited back and leaves lastVisited alone', () => {
+    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
+    const out = captureRequest(lived, { ...reykjavik, status: 'visited', firstVisited: '2005-03-02', lastVisited: '2005-03-02' })
+    expect(out.firstVisited).toBe('2005-03-02')
+    expect(out.lastVisited).toBe('2015-06-30')
+  })
+
+  it('fills in dates on a place that had none', () => {
+    const undated = mkEntry({ ...reykjavik, status: 'lived' })
+    const out = captureRequest(undated, { ...reykjavik, status: 'visited', firstVisited: '2026-05-01', lastVisited: '2026-05-01' })
+    expect(out.firstVisited).toBe('2026-05-01')
+    expect(out.lastVisited).toBe('2026-05-01')
+  })
+
+  it("never clears the place's own dates — no date, or an explicit null, leaves them as they are", () => {
+    const lived = mkEntry({ ...reykjavik, status: 'lived', firstVisited: '2010-01-01', lastVisited: '2015-06-30' })
+    for (const dates of [{}, { firstVisited: null, lastVisited: null }]) {
+      const out = captureRequest(lived, { ...reykjavik, status: 'visited', ...dates })
+      expect(out.firstVisited).toBeUndefined()
+      expect(out.lastVisited).toBeUndefined()
+    }
+  })
+})
 
 describe('removeEntry', () => {
   it('removes the derived subdivision and country when the only city goes', () => {
