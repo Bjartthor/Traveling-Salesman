@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import { clearLog } from '@/debug/log'
+import { extraDiagnosticsEnabled, setExtraDiagnostics } from '@/debug/diagnostics'
 import type { LogEntry } from '@/db/types'
 import './DebugLogSettings.css'
 
@@ -18,6 +19,7 @@ function formatEntry(e: LogEntry): string {
 export function DebugLogSettings() {
   const entries = useLiveQuery(() => db.debugLog.orderBy('id').reverse().toArray(), [])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [extraDiagnostics, setExtraDiagnosticsState] = useState(extraDiagnosticsEnabled)
 
   async function handleCopy() {
     // entries is already newest-first (matches the on-screen list) — keep
@@ -54,6 +56,23 @@ export function DebugLogSettings() {
           Clear log
         </button>
       </div>
+
+      <label className="settings-screen__toggle">
+        <input
+          type="checkbox"
+          checked={extraDiagnostics}
+          onChange={(e) => {
+            setExtraDiagnostics(e.target.checked)
+            setExtraDiagnosticsState(e.target.checked)
+          }}
+        />
+        <span>
+          Extra crash diagnostics
+          <span className="settings-screen__toggle-sub">
+            Also counts timers and animation frames in the log. Slightly slower; takes effect the next time you open the app.
+          </span>
+        </span>
+      </label>
 
       {entries && entries.length > 0 ? (
         <ul className="debug-log__list">

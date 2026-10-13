@@ -8,12 +8,13 @@ import { installGlobalErrorLogging } from '@/debug/globalHandlers'
 import { installMemoryWatch } from '@/debug/memoryWatch'
 import { installCrashSentinel } from '@/debug/crashSentinel'
 import { installScheduleWatch } from '@/debug/scheduleWatch'
+import { extraDiagnosticsEnabled } from '@/debug/diagnostics'
 import { ErrorBoundary } from '@/debug/ErrorBoundary'
 import App from './App.tsx'
 
 registerUpdatePrompt()
 installGlobalErrorLogging()
-installScheduleWatch()
+installScheduleWatch({ wrapScheduling: extraDiagnosticsEnabled() })
 installMemoryWatch()
 installCrashSentinel()
 

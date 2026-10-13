@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import { loadRefData } from '@/geo/refData'
 import { settingsRepo } from '@/db/repo'
 import { buildStatusIndex, metricCoverage, nextStatMode } from '@/stats/coverage'
 import { WorldMap } from '@/components/map/WorldMap'
-import { GlobeMap } from '@/components/map/GlobeMap'
 import { CoverageHeadline } from '@/components/map/CoverageHeadline'
 import { CoverageStrip } from '@/components/map/CoverageStrip'
 import { Legend } from '@/components/map/Legend'
@@ -31,6 +30,9 @@ import './MapScreen.css'
 const queryCountries = countedQuery('lqCountries', () => loadRefData().then((r) => r.countries))
 const queryEntries = countedQuery('lqEntries', () => db.entries.filter((e) => e.deletedAt === null).toArray())
 const queryMapSettings = countedQuery('lqMapSettings', () => db.settings.get(1))
+
+// The globe only loads for those who switch to it.
+const GlobeMap = lazy(() => import('@/components/map/GlobeMap').then((m) => ({ default: m.GlobeMap })))
 
 // In a trip view the regular zoom-gated city layer shows nothing — the trip's
 // own cities come through the maps' `trip` overlay instead, at every zoom.
@@ -175,17 +177,19 @@ export function MapScreen() {
       </div>
       <div className="map-screen__map-wrap">
         {isGlobe ? (
-          <GlobeMap
-            countryStatus={mapCountryStatus}
-            subdivisionStatus={mapSubdivisionStatus}
-            cityStatus={mapCityStatus}
-            trip={tripView?.overlay}
-            selectedCode={selectedCode}
-            onSelectCountry={selectCountry}
-            onSelectSubdivision={selectSubdivision}
-            onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
-            onDeselect={() => setSelectedCode(null)}
-          />
+          <Suspense fallback={null}>
+            <GlobeMap
+              countryStatus={mapCountryStatus}
+              subdivisionStatus={mapSubdivisionStatus}
+              cityStatus={mapCityStatus}
+              trip={tripView?.overlay}
+              selectedCode={selectedCode}
+              onSelectCountry={selectCountry}
+              onSelectSubdivision={selectSubdivision}
+              onSelectCity={(refId) => openPlaceSheet({ kind: 'city', refId })}
+              onDeselect={() => setSelectedCode(null)}
+            />
+          </Suspense>
         ) : (
           <WorldMap
             countryStatus={mapCountryStatus}

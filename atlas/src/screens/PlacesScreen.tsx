@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
 import type { City } from '@/db/types'
@@ -7,7 +7,6 @@ import { loadEntriesWithTripDates } from '@/domain/visitDates'
 import { loadRefData } from '@/geo/refData'
 import { PlaceSearch } from '@/components/places/PlaceSearch'
 import { PlacesList } from '@/components/places/PlacesList'
-import { BulkAddScreen } from '@/components/places/BulkAddScreen'
 import './PlacesScreen.css'
 
 const FILTERS: { value: PlacesFilter; label: string }[] = [
@@ -23,6 +22,8 @@ const SORTS: { value: PlacesSort; label: string }[] = [
   { value: 'recent', label: 'Most recent' },
   { value: 'mostCities', label: 'Most cities' },
 ]
+
+const BulkAddScreen = lazy(() => import('@/components/places/BulkAddScreen').then((m) => ({ default: m.BulkAddScreen })))
 
 export function PlacesScreen() {
   const [filter, setFilter] = useState<PlacesFilter>('all')
@@ -63,7 +64,11 @@ export function PlacesScreen() {
         Quick add — paste a list of places
       </button>
 
-      {showBulkAdd && <BulkAddScreen onClose={() => setShowBulkAdd(false)} />}
+      {showBulkAdd && (
+        <Suspense fallback={null}>
+          <BulkAddScreen onClose={() => setShowBulkAdd(false)} />
+        </Suspense>
+      )}
 
       {!hasAnyEntries ? (
         <p className="places-screen__hint">

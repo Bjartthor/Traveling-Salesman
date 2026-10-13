@@ -26,11 +26,17 @@ let timeoutCount = 0
 let messageCount = 0
 let installed = false
 
-export function installScheduleWatch(): void {
+/**
+ * `wrapScheduling` (off unless Settings → Debug log's extra diagnostics are
+ * on, @/debug/diagnostics) wraps the global rAF/setTimeout to count them —
+ * a cost on every timer and frame app-wide, so not paid by default. The
+ * message counter is a passive listener and always installed.
+ */
+export function installScheduleWatch({ wrapScheduling = false }: { wrapScheduling?: boolean } = {}): void {
   if (installed || typeof window === 'undefined') return
   installed = true
 
-  if (typeof window.requestAnimationFrame === 'function') {
+  if (wrapScheduling && typeof window.requestAnimationFrame === 'function') {
     const nativeRaf = window.requestAnimationFrame.bind(window)
     window.requestAnimationFrame = (cb: FrameRequestCallback): number => {
       rafCount++
@@ -39,7 +45,7 @@ export function installScheduleWatch(): void {
     registerCensusCounter('rafN', () => rafCount)
   }
 
-  if (typeof window.setTimeout === 'function') {
+  if (wrapScheduling && typeof window.setTimeout === 'function') {
     const nativeSetTimeout = window.setTimeout.bind(window)
     window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]): number => {
       timeoutCount++
