@@ -10,7 +10,7 @@
 // fully offline. The rows are pre-sorted by population at build time.
 
 import { db } from '@/db/schema'
-import type { City } from '@/db/types'
+import type { City, Country, Subdivision } from '@/db/types'
 import { loadRefData } from '@/geo/refData'
 
 /** Lowercase + strip diacritics (NFD, drop combining marks). */
@@ -195,4 +195,73 @@ export async function searchCities(query: string, limit = 20): Promise<CityResul
     lon: row.lon,
     population: row.pop,
   }))
+}
+
+// --- countries + subdivisions ---
+
+export interface RegionResult {
+  kind: 'country' | 'subdivision'
+  refId: string // Country.code | Subdivision.id
+  name: string
+  countryCode: string
+  /** The country's name for a subdivision; the subdivision's type label (or nothing) otherwise. */
+  meta: string
+}
+
+interface RegionSearchInput {
+  countries: readonly Pick<Country, 'code' | 'code3' | 'name' | 'population'>[]
+  subdivisions: readonly Pick<Subdivision, 'id' | 'countryCode' | 'name' | 'type'>[]
+  countryNames: ReadonlyMap<string, string>
+}
+
+function nameWeight(name: string, q: string): number {
+  const hay = normalize(name)
+  if (hay.startsWith(q)) return 3
+  const pos = hay.indexOf(q)
+  if (pos === -1) return 0
+  return hay[pos - 1] === ' ' || hay[pos - 1] === '-' ? 2 : 1
+}
+
+/**
+ * Countries and subdivisions whose name matches an already-normalized query —
+ * so "japan" or "bavaria" can be logged from search, not only by finding it on
+ * the map. Countries also match their exact ISO alpha-2/alpha-3 code ("us",
+ * "gbr"). Best match first: match quality, then (countries) population or
+ * (subdivisions) name. Pure — the caller passes the reference tables.
+ */
+export function rankRegions(q: string, input: RegionSearchInput, limits = { countries: 3, subdivisions: 4 }): RegionResult[] {
+  if (q.length < 2) return []
+  const countries = input.countries
+    .map((c) => ({ c, w: q === c.code.toLowerCase() || q === c.code3.toLowerCase() ? 3 : nameWeight(c.name, q) }))
+    .filter((x) => x.w > 0)
+    .sort((a, b) => b.w - a.w || b.c.population - a.c.population)
+    .slice(0, limits.countries)
+    .map(({ c }): RegionResult => ({ kind: 'country', refId: c.code, name: c.name, countryCode: c.code, meta: 'Country' }))
+  const subdivisions = input.subdivisions
+    .map((s) => ({ s, w: nameWeight(s.name, q) }))
+    .filter((x) => x.w > 0)
+    .sort((a, b) => b.w - a.w || a.s.name.localeCompare(b.s.name))
+    .slice(0, limits.subdivisions)
+    .map(
+      ({ s }): RegionResult => ({
+        kind: 'subdivision',
+        refId: s.id,
+        name: s.name,
+        countryCode: s.countryCode,
+        meta: [s.type, input.countryNames.get(s.countryCode) ?? s.countryCode].filter(Boolean).join(' · '),
+      }),
+    )
+  return [...countries, ...subdivisions]
+}
+
+/** rankRegions over the cached reference tables. */
+export async function searchRegions(query: string): Promise<RegionResult[]> {
+  const q = normalize(query).trim()
+  if (q.length < 2) return []
+  const ref = await loadRefData()
+  return rankRegions(q, {
+    countries: ref.countries,
+    subdivisions: ref.subdivisions,
+    countryNames: new Map(ref.countries.map((c) => [c.code, c.name])),
+  })
 }

@@ -1,12 +1,12 @@
 // The search field at the top of the Places tab (04-places.md task 2). Local
-// results appear as you type; once they're thin, an online (Photon) fallback
+// results — matching countries and regions first, then cities — appear as you type; once they're thin, an online (Photon) fallback
 // joins in after a debounce, under its own divider, never blocking the local
 // half. Picking a result opens the global status sheet so setting a status
 // is always the very next step, whether the place was already known locally
 // or just resolved from the network for the first time.
 
 import { useEffect, useState } from 'react'
-import { normalize, searchCities, type CityResult } from '@/geo/search'
+import { normalize, searchCities, searchRegions, type CityResult, type RegionResult } from '@/geo/search'
 import { commitPhotonResult, searchPhoton, type PhotonResult } from '@/geo/photon'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { CountryFlag } from '@/components/places/CountryFlag'
@@ -16,6 +16,7 @@ import './PlaceSearch.css'
 export function PlaceSearch() {
   const [query, setQuery] = useState('')
   const [localResults, setLocalResults] = useState<CityResult[]>([])
+  const [regionResults, setRegionResults] = useState<RegionResult[]>([])
   const [onlineResults, setOnlineResults] = useState<PhotonResult[]>([])
   const [onlineLoading, setOnlineLoading] = useState(false)
   const [committingId, setCommittingId] = useState<string | null>(null)
@@ -30,11 +31,14 @@ export function PlaceSearch() {
   useEffect(() => {
     if (!active) {
       setLocalResults([])
+      setRegionResults([])
       return
     }
     let cancelled = false
-    void searchCities(query).then((r) => {
-      if (!cancelled) setLocalResults(r)
+    void Promise.all([searchRegions(query), searchCities(query)]).then(([regions, cities]) => {
+      if (cancelled) return
+      setRegionResults(regions)
+      setLocalResults(cities)
     })
     return () => {
       cancelled = true
@@ -44,7 +48,7 @@ export function PlaceSearch() {
   // --- online fallback: only once local results are thin, after a 500ms
   // debounce, only while online. Never blocks the local list above. ---
   useEffect(() => {
-    if (!active || localResults.length >= 3 || !navigator.onLine) {
+    if (!active || localResults.length + regionResults.length >= 3 || !navigator.onLine) {
       setOnlineResults([])
       setOnlineLoading(false)
       return
@@ -62,12 +66,17 @@ export function PlaceSearch() {
       controller.abort()
       setOnlineLoading(false)
     }
-  }, [query, active, localResults.length])
+  }, [query, active, localResults.length, regionResults.length])
 
   // A place already surfaced locally (including one added online in an
   // earlier search) shouldn't also show up in the "from online search" list.
   const localKeys = new Set(localResults.map((r) => `${normalize(r.name)}|${r.countryCode}`))
   const dedupedOnline = onlineResults.filter((r) => !localKeys.has(`${normalize(r.name)}|${r.countryCode}`))
+
+  function pickRegion(r: RegionResult) {
+    openSheet({ kind: r.kind, refId: r.refId })
+    setQuery('')
+  }
 
   function pickLocal(r: CityResult) {
     openSheet({ kind: 'city', refId: String(r.geonameId) })
@@ -93,7 +102,7 @@ export function PlaceSearch() {
       <input
         type="search"
         className="place-search__input"
-        placeholder="Search for a city, town or village…"
+        placeholder="Search for a country, region or city…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         aria-label="Search for a place"
@@ -101,6 +110,22 @@ export function PlaceSearch() {
 
       {active && (
         <div className="place-search__results">
+          {regionResults.length > 0 && (
+            <ul className="place-search__list" aria-label="Countries and regions">
+              {regionResults.map((r) => (
+                <li key={`${r.kind}:${r.refId}`}>
+                  <button type="button" className="place-search__result" onClick={() => pickRegion(r)}>
+                    <span className="place-search__result-text">
+                      <span className="place-search__result-name">{r.name}</span>
+                      <span className="place-search__result-meta">{r.meta}</span>
+                    </span>
+                    <CountryFlag code={r.countryCode} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
           {localResults.length > 0 && (
             <ul className="place-search__list">
               {localResults.map((r) => (
@@ -150,7 +175,7 @@ export function PlaceSearch() {
             </>
           )}
 
-          {localResults.length === 0 && dedupedOnline.length === 0 && !onlineLoading && (
+          {regionResults.length === 0 && localResults.length === 0 && dedupedOnline.length === 0 && !onlineLoading && (
             <p className="place-search__status">No matches yet. Try a different spelling, or add it manually.</p>
           )}
 

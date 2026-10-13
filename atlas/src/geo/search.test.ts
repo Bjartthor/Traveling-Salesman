@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toIndexRow, topMatches, type IndexRow } from '@/geo/search'
+import { rankRegions, toIndexRow, topMatches, type IndexRow } from '@/geo/search'
 
 function city(id: number, name: string, population: number, asciiName = name): IndexRow {
   return toIndexRow({ geonameId: id, name, asciiName, countryCode: 'XX', subdivisionId: null, population, lat: 0, lon: 0 })
@@ -59,5 +59,47 @@ describe('topMatches', () => {
     for (const q of ['an', 'vik', 'ton', 'la k', 'osber']) {
       expect(topMatches(big, q, 20).map((r) => r.id)).toEqual(bruteForce(big, q, 20))
     }
+  })
+})
+
+describe('rankRegions', () => {
+  const input = {
+    countries: [
+      { code: 'JP', code3: 'JPN', name: 'Japan', population: 125_000_000 },
+      { code: 'US', code3: 'USA', name: 'United States', population: 330_000_000 },
+      { code: 'GB', code3: 'GBR', name: 'United Kingdom', population: 67_000_000 },
+      { code: 'IS', code3: 'ISL', name: 'Iceland', population: 370_000 },
+    ],
+    subdivisions: [
+      { id: 'DE.02', countryCode: 'DE', name: 'Bavaria', type: 'State' },
+      { id: 'JP.40', countryCode: 'JP', name: 'Tokyo', type: '' },
+      { id: 'US.CA', countryCode: 'US', name: 'California', type: 'State' },
+      { id: 'IT.03', countryCode: 'IT', name: 'Lower Bavaria Lookalike', type: '' },
+    ],
+    countryNames: new Map([
+      ['DE', 'Germany'],
+      ['JP', 'Japan'],
+      ['US', 'United States'],
+    ]),
+  }
+
+  it('finds a country by name and by ISO code', () => {
+    expect(rankRegions('japan', input).map((r) => r.refId)).toEqual(['JP'])
+    expect(rankRegions('usa', input).map((r) => r.refId)).toEqual(['US'])
+    expect(rankRegions('gb', input).map((r) => r.refId)).toEqual(['GB'])
+  })
+
+  it('ranks countries by match quality, then population', () => {
+    expect(rankRegions('united', input).map((r) => r.refId)).toEqual(['US', 'GB'])
+  })
+
+  it('finds subdivisions with their type and country as meta, prefix matches first', () => {
+    const results = rankRegions('bavaria', input)
+    expect(results.map((r) => r.refId)).toEqual(['DE.02', 'IT.03'])
+    expect(results[0]).toMatchObject({ kind: 'subdivision', name: 'Bavaria', countryCode: 'DE', meta: 'State · Germany' })
+  })
+
+  it('needs at least two characters', () => {
+    expect(rankRegions('j', input)).toEqual([])
   })
 })
