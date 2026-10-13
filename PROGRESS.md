@@ -5215,3 +5215,66 @@ correctness fix; the 3-tier idea is parked, not built.
   re-verified live** — only GB (the reported case) and DE (an unaffected control) were driven end-to-end in
   the browser; the rest rely on the build-time diff check (zero orphan shapes post-build) rather than a
   per-country manual click-through.
+
+## 2026-10-13 — Review pass: one sync bug, efficiency, and UX fixes (branch `app-improvements`, not merged/pushed)
+
+The user asked for a whole-app review, then for every bug/efficiency/experience item it found to be done
+unattended. Eight commits on `app-improvements` (branched from `deb6ba7`); `main` and the deployed site are
+untouched until it's merged and pushed.
+
+### What was built
+
+- **Bug: synced settings never pushed on their own** (`6399cea`). `settingsRepo.update` didn't bump
+  `syncState.revision`, so cycling the headline stat hit sync's "nothing changed locally" exit. Now bumps
+  when a synced field (`SYNCABLE_SETTING_KEYS`) actually changes (`changesSyncedSettings`, tested).
+- **Efficiency** (`a169b9e`, `d9ed695`):
+  - `geo/refData.ts` — countries + subdivisions read once and cached (invalidated by the reseed).
+  - Trips tab: one batched `loadTripPlacesBatch` instead of a live query per stamp; stamp maps build only
+    when scrolled near (IntersectionObserver), clip to their frame, and drop sub-pixel vertices
+    (`components/trips/pixelSimplify.ts`). Measured ~1.4 MB → ~140 KB of path data per stamp.
+  - `geo/mapCities.ts` now loads **only logged cities** (the layer never shows anything else) instead of a
+    second 170k-row index that `selectVisibleCities` walked on every globe frame. Relevant to the open
+    low-heap Aw-snap: one fewer 170k-object structure resident.
+  - Search: `topMatches` top-K with early exit (pop-sorted rows ⇒ stop once `(pop+1)×3` can't beat last
+    place; tested against a brute-force reference); index built from paged primary-key reads; new
+    online/manual/synced-in cities are spliced in (`addToSearchIndex`) instead of invalidating the index.
+  - Non-bundled cities read as a negative-key range (`nonBundledCities`), tripEntries by index.
+  - Lazy chunks: Places/Trips/You tabs, Country/Trip overlays, GlobeMap, Quick add (main 570 → 498 kB).
+  - `rafN`/`tmoN` wrappers behind Settings → Debug log → "Extra crash diagnostics" (localStorage
+    `atlas:extraDiagnostics`, off by default). memoryWatch, crashSentinel and `msgN` stay always-on.
+    Debug log trims every 25 writes instead of counting on every write.
+- **Experience** (`04c1205` … `e153d85`):
+  - Places search lists matching countries (name or ISO-2/3 code) and subdivisions above cities.
+  - Undo toast (`domain/undo.ts`, `components/undo/UndoToast.tsx`): actions run between two snapshots of
+    entries/trips/tripEntries; undo reverts the changed rows via repo `revert` (stamped now, so sync's LWW
+    keeps the revert), tombstones created rows, then `rebuildDerivedEntries`. Wired into status taps,
+    "Remove from places", removing a trip visit, Quick add (one undo for the batch), trip deletion.
+  - Settings → Storage: "Download map detail for offline" (443 files listed at build time via the
+    `__GEO_DETAIL_FILES__` define), geo cache `maxEntries` 100 → 600, and offline topology fetch failures
+    are no longer memoised for the session.
+  - Trip statistics show flag + country name, rows open the trip.
+  - Drive: token in localStorage (was sessionStorage → re-login every PWA launch), account email
+    remembered from Drive `about` and passed as GIS `login_hint`. See memory "drive-relogin-every-launch".
+
+### Verified
+
+- `vitest` 258 passing, `tsc -b` and `eslint` clean after every commit.
+- In the dev preview (sandbox IndexedDB, Drive not connected) with 6 generated test trips: Trips tab
+  stamps, lazy chunks (settings, trip detail, globe, Quick add), region search → status sheet, undo of a
+  new country / an upgrade that re-ranks ancestors / a removal / a trip delete (entries compared before
+  vs after, identical), trip-stats rows at 375px.
+- Offline download against a production build (`atlas-preview` launch config, service worker active):
+  0 → "All countries", 442/442 detail files in `atlas-geo-cache-v3`.
+
+### Left undone / needs a real device
+
+- **The Drive `login_hint` path was not exercised** — it needs a real Google sign-in. Check on the phone:
+  sign in once, close the app, reopen within the hour (should sync with no popup); after an hour, tap
+  Sync now (popup should skip the account chooser). If `about` turns out to be refused for the appdata
+  scope, the only effect is no hint (same as before).
+- The globe/flat map city markers were verified at the module level (`loadMapCities` resolves every logged
+  city, capitals flagged) — the hidden preview pane doesn't run rAF, so the zoomed-in markers themselves
+  weren't seen on screen.
+- Not done from the review's list: the new-feature ideas ("I'm here" GPS logging, place notes UI, stats
+  screen, share-map image, light theme, wishlist planning). The user asked for bug + efficiency +
+  experience items only.
