@@ -64,6 +64,20 @@ function makeRepo<T extends SyncedRecord>(table: EntityTable<T, 'id'>) {
       })
     },
 
+    /**
+     * Put rows back exactly as they were (an undo), stamped `updatedAt = now`
+     * so sync's last-write-wins treats the revert as the newest change rather
+     * than an old version to be overwritten by the one it replaced.
+     */
+    async revert(rows: readonly T[]): Promise<void> {
+      if (rows.length === 0) return
+      const now = Date.now()
+      await db.transaction('rw', table, db.syncState, async () => {
+        await table.bulkPut(rows.map((row) => ({ ...row, updatedAt: now })))
+        await bumpRevision()
+      })
+    },
+
     get(id: string): Promise<T | undefined> {
       return table.get(id as IDType<T, 'id'>)
     },

@@ -8,6 +8,7 @@ import type { Status } from '@/db/types'
 import { STATUS_ORDER } from '@/domain/cascade'
 import { defaultPick, resolveLines, splitLines, type LineResolution } from '@/domain/bulkResolve'
 import { setPlaceStatus } from '@/domain/cascadeRepo'
+import { withUndo } from '@/domain/undo'
 import type { CityResult } from '@/geo/search'
 import { STATUS_COLOR_VAR, STATUS_LABEL } from '@/components/map/statusColor'
 import { FullScreenOverlay } from '@/components/layout/FullScreenOverlay'
@@ -44,16 +45,22 @@ export function BulkAddScreen({ onClose }: { onClose: () => void }) {
     setBusy(true)
     let added = 0
     const failed: string[] = []
-    for (const [i, r] of resolutions.entries()) {
-      const pick = pickFor(i, r)
-      if (!pick) continue
-      try {
-        await setPlaceStatus({ kind: 'city', refId: String(pick.geonameId), status })
-        added += 1
-      } catch (e) {
-        failed.push(`${r.line}: ${e instanceof Error ? e.message : String(e)}`)
-      }
-    }
+    // The whole batch undoes as one.
+    await withUndo(
+      () => `Added ${added} ${added === 1 ? 'place' : 'places'}`,
+      async () => {
+        for (const [i, r] of resolutions.entries()) {
+          const pick = pickFor(i, r)
+          if (!pick) continue
+          try {
+            await setPlaceStatus({ kind: 'city', refId: String(pick.geonameId), status })
+            added += 1
+          } catch (e) {
+            failed.push(`${r.line}: ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
+      },
+    )
     setBusy(false)
     setSummary({ added, failed })
     setStep('done')

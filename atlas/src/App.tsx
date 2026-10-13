@@ -7,6 +7,7 @@ import { BottomNav } from '@/components/nav/BottomNav'
 import { MapScreen } from '@/screens/MapScreen'
 import { PlaceStatusSheet } from '@/components/places/PlaceStatusSheet'
 import { ActiveTripBanner } from '@/components/trips/ActiveTripBanner'
+import { UndoToast } from '@/components/undo/UndoToast'
 import { useCountryDetailStore } from '@/domain/countryDetailStore'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { SyncIndicator } from '@/components/sync/SyncIndicator'
@@ -66,6 +67,7 @@ function App() {
           <BottomNav />
         </div>
         <Overlays />
+        <UndoToast />
         <PlaceStatusSheet />
       </GeoGate>
     </HashRouter>

@@ -13,6 +13,7 @@ import { STATUS_ORDER, explainStatus, type PlaceRef } from '@/domain/cascade'
 import { removePlaceEntry, setPlaceStatus, loadCascadeState } from '@/domain/cascadeRepo'
 import { addVisit, getCapturingTrip, nextBackfillDate, removeVisit, setVisitDate, tripAttachmentsForEntry } from '@/domain/tripRepo'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
+import { withUndo } from '@/domain/undo'
 import { resolvePlaceInfo, type PlaceInfo } from '@/domain/placeInfo'
 import { todayISO } from '@/domain/dateFormat'
 import { flagEmoji } from '@/geo/flags'
@@ -117,10 +118,10 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     }
   }
 
-  async function removeTripVisit(tripEntryId: string) {
+  async function removeTripVisit(tripEntryId: string, tripName: string) {
     setError(null)
     try {
-      await removeVisit(tripEntryId)
+      await withUndo(`Visit removed from ${tripName}`, () => removeVisit(tripEntryId))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -170,12 +171,14 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     setError(null)
     setPending(true)
     try {
-      await setPlaceStatus({
-        kind: place.kind,
-        refId: place.refId,
-        status,
-        ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
-      })
+      await withUndo(`${info?.name ?? 'Place'} set to ${STATUS_LABEL[status]}`, () =>
+        setPlaceStatus({
+          kind: place.kind,
+          refId: place.refId,
+          status,
+          ...(dateTouched ? { firstVisited: date, lastVisited: date } : {}),
+        }),
+      )
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -203,7 +206,8 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
     setError(null)
     setPending(true)
     try {
-      await removePlaceEntry(data.entry.id)
+      const entryId = data.entry.id
+      await withUndo(`${info?.name ?? 'Place'} removed`, () => removePlaceEntry(entryId))
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -335,7 +339,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
                     type="button"
                     className="place-sheet__trip-remove"
                     aria-label={`Remove this visit from ${a.tripName}`}
-                    onClick={() => void removeTripVisit(a.tripEntryId)}
+                    onClick={() => void removeTripVisit(a.tripEntryId, a.tripName)}
                   >
                     ✕
                   </button>

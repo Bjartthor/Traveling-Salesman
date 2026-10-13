@@ -15,6 +15,7 @@ import { loadCountryFirstVisited, loadTripCountryCodesBatch, loadTripPlaces } fr
 import { newCountriesByTrip, tripDurationDays } from '@/domain/tripStats'
 import { tripRoute } from '@/domain/tripRoute'
 import { closeTrip, endBackfill, getCapturingTrip, reopenTrip, resumeBackfill, softDeleteTrip, updateTrip } from '@/domain/tripRepo'
+import { withUndo } from '@/domain/undo'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { usePlaceSheetStore } from '@/domain/placeSheetStore'
 import { useTripMapStore } from '@/domain/tripMapStore'
@@ -294,7 +295,7 @@ function TripDetailContent({ tripId, onClose }: { tripId: string; onClose: () =>
               className="trip-detail__confirm-delete"
               onClick={() =>
                 void run(async () => {
-                  await softDeleteTrip(trip.id)
+                  await withUndo(`Deleted "${trip.name}"`, () => softDeleteTrip(trip.id))
                   setShowDeleteConfirm(false)
                   onClose()
                 })
