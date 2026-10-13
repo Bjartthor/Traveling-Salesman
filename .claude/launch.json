@@ -4,9 +4,29 @@
     {
       "name": "atlas",
       "runtimeExecutable": "/home/bjartthor/.nvm/versions/node/v20.20.2/bin/npm",
-      "runtimeArgs": ["--prefix", "atlas", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "atlas",
+        "run",
+        "dev"
+      ],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "atlas-preview",
+      "runtimeExecutable": "/home/bjartthor/.nvm/versions/node/v20.20.2/bin/npm",
+      "runtimeArgs": [
+        "--prefix",
+        "atlas",
+        "run",
+        "preview",
+        "--",
+        "--port",
+        "4173",
+        "--strictPort"
+      ],
+      "port": 4173
     }
   ]
 }

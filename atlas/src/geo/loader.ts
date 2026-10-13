@@ -27,7 +27,7 @@ import { registerCensusCounter } from '@/debug/census'
 export const GEO_DATA_VERSION = 3
 
 const base = import.meta.env.BASE_URL // './' for the GitHub Pages build
-const geoUrl = (p: string) => `${base}geo/${p}`
+export const geoUrl = (p: string) => `${base}geo/${p}`
 
 export type GeoLoadPhase = 'countries' | 'cities' | 'done'
 export interface GeoProgress {
@@ -211,7 +211,12 @@ export function loadCountryTopology(code: string): Promise<TopoJson | null> {
   if (!promise) {
     promise = fetch(geoUrl(`admin1/${code}.topo.json`))
       .then((r) => (r.ok ? (r.json() as Promise<TopoJson>) : null))
-      .catch(() => null)
+      .catch(() => {
+        // Offline and not cached yet: don't remember the miss, so the next
+        // open retries instead of staying blank until the app restarts.
+        countryTopoPromises.delete(code)
+        return null
+      })
     countryTopoPromises.set(code, promise)
   }
   return promise
@@ -237,7 +242,10 @@ export function loadCountryDetailTopology(code: string): Promise<TopoJson | null
   if (!promise) {
     promise = fetch(geoUrl(`countryDetail/${code}.topo.json`))
       .then((r) => (r.ok ? (r.json() as Promise<TopoJson>) : null))
-      .catch(() => null)
+      .catch(() => {
+        countryDetailTopoPromises.delete(code) // see loadCountryTopology
+        return null
+      })
     countryDetailTopoPromises.set(code, promise)
   }
   return promise

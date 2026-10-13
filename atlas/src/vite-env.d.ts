@@ -19,3 +19,5 @@ interface ImportMeta {
 declare const __APP_COMMIT__: string
 /** ISO timestamp of when this bundle was built (vite.config.ts `define`). */
 declare const __APP_BUILT_AT__: string
+/** Every per-country geo detail file (paths under `geo/`) and their total size — vite.config.ts `define`. */
+declare const __GEO_DETAIL_FILES__: { files: string[]; bytes: number }

@@ -13,6 +13,7 @@ import type { Trip } from '@/db/types'
 import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
 import { BackupSettings } from '@/components/backup/BackupSettings'
 import { DebugLogSettings } from '@/components/debug/DebugLogSettings'
+import { countCachedDetailFiles, detailBytes, detailFileCount, downloadDetailFiles } from '@/geo/offlineDetail'
 import './SettingsScreen.css'
 
 interface TripStatsData {
@@ -59,6 +60,57 @@ function formatBytes(bytes: number): string {
     i++
   }
   return `${value.toFixed(1)} ${units[i]}`
+}
+
+/**
+ * Region outlines are only fetched (and so only kept for offline use) when a
+ * country is first opened — this downloads them all ahead of a trip.
+ */
+function OfflineMapDetail() {
+  const [cached, setCached] = useState<number | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    void countCachedDetailFiles().then(setCached)
+  }, [])
+
+  async function download() {
+    setMessage(null)
+    if (!navigator.onLine) {
+      setMessage('You’re offline — connect first, then download.')
+      return
+    }
+    const failed = await downloadDetailFiles((done, total) => setProgress({ done, total }))
+    // The service worker writes each file to its cache just after handing it
+    // over, so give the last few writes a moment before counting.
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    setProgress(null)
+    setCached(await countCachedDetailFiles())
+    setMessage(failed > 0 ? `${failed} files couldn’t be downloaded — try again on a better connection.` : 'Map detail is saved for offline use.')
+  }
+
+  if (detailFileCount === 0) return null
+  const complete = cached !== null && cached >= detailFileCount
+  return (
+    <>
+      <dl className="settings-screen__stats">
+        <div className="settings-screen__stat">
+          <dt>Offline map detail</dt>
+          <dd>
+            {cached === null ? '—' : complete ? 'All countries' : `${cached} of ${detailFileCount} files`}
+            <span className="settings-screen__stat-sub"> · region outlines, about {formatBytes(detailBytes)}</span>
+          </dd>
+        </div>
+      </dl>
+      {!complete && (
+        <button type="button" className="settings-screen__action" onClick={() => void download()} disabled={progress !== null}>
+          {progress ? `Downloading… ${progress.done} / ${progress.total}` : 'Download map detail for offline'}
+        </button>
+      )}
+      {message && <p className="settings-screen__toggle-sub">{message}</p>}
+    </>
+  )
 }
 
 export function SettingsScreen() {
@@ -139,6 +191,7 @@ export function SettingsScreen() {
             )}
           </>
         )}
+        <OfflineMapDetail />
       </section>
 
       {data && data.stats.totalTrips > 0 && (

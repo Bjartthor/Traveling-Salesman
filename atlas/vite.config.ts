@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process'
+import { readdirSync, statSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -23,12 +24,30 @@ function getCommitSha(): string {
   }
 }
 
+// The per-country map detail files (admin-1 regions, sharper outlines) that
+// are otherwise only fetched — and so only cached for offline use — when a
+// country is first opened. Listed at build time so Settings → Storage can
+// download them all ahead of a trip (@/geo/offlineDetail).
+function geoDetailFiles(): { files: string[]; bytes: number } {
+  const files: string[] = []
+  let bytes = 0
+  for (const dir of ['admin1', 'countryDetail']) {
+    const abs = fileURLToPath(new URL(`./public/geo/${dir}/`, import.meta.url))
+    for (const name of readdirSync(abs).filter((n) => n.endsWith('.topo.json')).sort()) {
+      files.push(`${dir}/${name}`)
+      bytes += statSync(abs + name).size
+    }
+  }
+  return { files, bytes }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: repoName ? `/${repoName}/` : './',
   define: {
     __APP_COMMIT__: JSON.stringify(getCommitSha()),
     __APP_BUILT_AT__: JSON.stringify(new Date().toISOString()),
+    __GEO_DETAIL_FILES__: JSON.stringify(geoDetailFiles()),
   },
   // Default stays 5173 — plan §9 registers http://localhost:5173 as an OAuth
   // origin — but honour PORT so a second dev server can run alongside.
@@ -96,7 +115,11 @@ export default defineConfig({
             options: {
               cacheName: 'atlas-geo-cache-v3',
               expiration: {
-                maxEntries: 100,
+                // Room for every geo file: ~190 admin-1 + ~250 country-detail
+                // files + the world/reference files. At the old 100, a phone
+                // that had opened many countries silently evicted most of them,
+                // and "Download map detail" (Settings) needs them all to stick.
+                maxEntries: 600,
                 maxAgeSeconds: 60 * 60 * 24 * 365,
               },
             },
