@@ -5,6 +5,7 @@
 import type { EntityTable, IDType } from 'dexie'
 import { db } from '@/db/schema'
 import type { Entry, Settings, SyncedRecord, SyncState, Trip, TripEntry } from '@/db/types'
+import { changesSyncedSettings } from '@/sync/types'
 
 async function bumpRevision(): Promise<void> {
   // Touch only `revision` — a whole-row put here would wipe the sync bookkeeping
@@ -83,7 +84,13 @@ export const settingsRepo = {
     return db.settings.get(1)
   },
   async update(patch: Partial<Omit<Settings, 'id'>>): Promise<void> {
-    await db.settings.update(1, patch)
+    // Synced fields count as an authored change, like any other user-table
+    // write — otherwise the sync's "nothing changed locally" shortcut skips them.
+    await db.transaction('rw', db.settings, db.syncState, async () => {
+      const current = await db.settings.get(1)
+      await db.settings.update(1, patch)
+      if (changesSyncedSettings(current, patch)) await bumpRevision()
+    })
   },
 }
 

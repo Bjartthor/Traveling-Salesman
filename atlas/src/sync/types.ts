@@ -49,6 +49,16 @@ export const SYNCABLE_SETTING_KEYS: readonly (keyof SyncableSettings)[] = [
 ]
 
 /**
+ * Does writing `patch` over `current` change any synced setting? Used by
+ * @/db/repo settingsRepo.update to bump `syncState.revision` — without that a
+ * settings-only change (e.g. cycling the headline stat) looks like "no local
+ * changes" to the sync and never reaches Drive until some unrelated edit does.
+ */
+export function changesSyncedSettings(current: Partial<SyncableSettings> | undefined, patch: Partial<Record<string, unknown>>): boolean {
+  return SYNCABLE_SETTING_KEYS.some((key) => key in patch && patch[key] !== current?.[key])
+}
+
+/**
  * Everything the merge operates on. `entries` carries **explicit entries only** —
  * derived ones are excluded from the document and recomputed locally with
  * `rebuildAllDerived()` after every merge (plan §7.3), so two devices never
