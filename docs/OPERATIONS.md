@@ -11,7 +11,7 @@ the apt Node 18, which the PWA build tooling refuses).
 ## 1. When sync fails: what to check first
 
 Local data is **never** at risk from a sync failure or from signing out — a failed sync leaves the
-device untouched, and sign-out clears only the in-memory token and the sync bookkeeping. So triage
+device untouched, and sign-out clears only the stored access token, the remembered account hint and the sync bookkeeping. So triage
 calmly, in this order.
 
 **Where to look first**
