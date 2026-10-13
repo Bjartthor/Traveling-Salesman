@@ -14,21 +14,27 @@ import { GoogleDriveSettings } from '@/components/sync/GoogleDriveSettings'
 import { BackupSettings } from '@/components/backup/BackupSettings'
 import { DebugLogSettings } from '@/components/debug/DebugLogSettings'
 import { countCachedDetailFiles, detailBytes, detailFileCount, downloadDetailFiles } from '@/geo/offlineDetail'
+import { loadRefData } from '@/geo/refData'
+import { flagEmoji } from '@/geo/flags'
+import { useTripDetailStore } from '@/domain/tripDetailStore'
 import './SettingsScreen.css'
 
 interface TripStatsData {
   stats: TripStats
-  perTrip: { trip: Trip; newCountries: string[] }[]
+  perTrip: { trip: Trip; newCountries: { code: string; name: string }[] }[]
 }
 
 async function loadTripStatsData(): Promise<TripStatsData> {
   const trips = await db.trips.filter((t) => t.deletedAt === null).toArray()
-  const countriesByTrip = await loadTripCountryCodesBatch(trips.map((t) => t.id))
+  const [countriesByTrip, ref] = await Promise.all([loadTripCountryCodesBatch(trips.map((t) => t.id)), loadRefData()])
   const stats = computeTripStats({ trips, countriesByTrip })
   const newByTrip = newCountriesByTrip({ trips, countriesByTrip })
 
   const perTrip = trips
-    .map((trip) => ({ trip, newCountries: newByTrip.get(trip.id) ?? [] }))
+    .map((trip) => ({
+      trip,
+      newCountries: (newByTrip.get(trip.id) ?? []).map((code) => ({ code, name: ref.countryByCode.get(code)?.name ?? code })),
+    }))
     .filter((r) => r.newCountries.length > 0)
     .sort((a, b) => (a.trip.startDate ?? '').localeCompare(b.trip.startDate ?? ''))
 
@@ -115,6 +121,7 @@ function OfflineMapDetail() {
 
 export function SettingsScreen() {
   const data = useLiveQuery(loadTripStatsData)
+  const openTrip = useTripDetailStore((s) => s.open)
   const settings = useLiveQuery(() => settingsRepo.get())
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [persistError, setPersistError] = useState<string | null>(null)
@@ -232,8 +239,16 @@ export function SettingsScreen() {
               <ul className="settings-screen__new-countries-list">
                 {data.perTrip.map(({ trip, newCountries }) => (
                   <li key={trip.id}>
-                    <span className="settings-screen__new-countries-trip">{trip.name}</span>
-                    <span className="settings-screen__new-countries-codes mono">{newCountries.join(', ')}</span>
+                    <button type="button" className="settings-screen__new-countries-row" onClick={() => openTrip(trip.id)}>
+                      <span className="settings-screen__new-countries-trip">{trip.name}</span>
+                      <span className="settings-screen__new-countries-codes">
+                        {newCountries.map((c) => (
+                          <span key={c.code} className="settings-screen__new-country">
+                            <span aria-hidden="true">{flagEmoji(c.code)}</span> {c.name}
+                          </span>
+                        ))}
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>

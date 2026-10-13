@@ -98,11 +98,19 @@
 }
 
 .settings-screen__new-countries-list li {
+  border-bottom: 1px solid var(--contour);
+}
+
+.settings-screen__new-countries-row {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: var(--space-3);
+  width: 100%;
+  min-height: var(--tap-target-min);
   padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--contour);
+  text-align: left;
+  cursor: pointer;
 }
 
 .settings-screen__new-countries-trip {
@@ -111,9 +119,17 @@
 }
 
 .settings-screen__new-countries-codes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-3);
   color: var(--haze);
   font-size: var(--text-xs);
   text-align: right;
+}
+
+.settings-screen__new-country {
+  white-space: nowrap;
 }
 
 .settings-screen__action {
