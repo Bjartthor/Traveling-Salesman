@@ -10,8 +10,8 @@ import { db } from '@/db/schema'
 import type { Status, Trip } from '@/db/types'
 import { buildStatusIndex } from '@/stats/coverage'
 import { countTripPlaces, createTrip, getCapturingTrip, type ActiveTripConflictResolution, type CaptureMode } from '@/domain/tripRepo'
-import { loadTripPlaces } from '@/domain/tripPlacesRepo'
-import { tripCityRows, tripCountryCodes } from '@/domain/tripPlaces'
+import { loadTripPlacesBatch } from '@/domain/tripPlacesRepo'
+import { tripCityRows, tripCountryCodes, type TripCountryGroup } from '@/domain/tripPlaces'
 import { tripDurationDays } from '@/domain/tripStats'
 import { useTripDetailStore } from '@/domain/tripDetailStore'
 import { formatLongDate } from '@/domain/dateFormat'
@@ -38,6 +38,9 @@ export function TripsScreen() {
   const entries = useLiveQuery(() => db.entries.filter((e) => e.deletedAt === null).toArray())
   const countryStatus = useMemo(() => buildStatusIndex(entries ?? [], 'country'), [entries])
 
+  // Every past stamp's places in one batched query, not one live query per stamp.
+  const pastIdsKey = past.map((t) => t.id).join(',')
+  const pastGroups = useLiveQuery(() => loadTripPlacesBatch(pastIdsKey ? pastIdsKey.split(',') : []), [pastIdsKey])
   const capturingPlaceCount = useLiveQuery(
     () => (capturing ? countTripPlaces(capturing.id) : Promise.resolve(0)),
     [capturing?.id],
@@ -98,7 +101,13 @@ export function TripsScreen() {
         {past.length > 0 ? (
           <div className="trips-screen__stamps">
             {past.map((trip) => (
-              <TripPastStamp key={trip.id} trip={trip} countryStatus={countryStatus} onOpen={() => openTrip(trip.id)} />
+              <TripPastStamp
+                key={trip.id}
+                trip={trip}
+                groups={pastGroups?.get(trip.id)}
+                countryStatus={countryStatus}
+                onOpen={() => openTrip(trip.id)}
+              />
             ))}
           </div>
         ) : (
@@ -139,14 +148,15 @@ export function TripsScreen() {
 
 function TripPastStamp({
   trip,
+  groups,
   countryStatus,
   onOpen,
 }: {
   trip: Trip
+  groups: readonly TripCountryGroup[] | undefined
   countryStatus: ReadonlyMap<string, Status>
   onOpen: () => void
 }) {
-  const groups = useLiveQuery(() => loadTripPlaces(trip.id), [trip.id])
   const countryCodes = useMemo(() => (groups ? tripCountryCodes(groups) : []), [groups])
   const cities = useMemo(
     () =>

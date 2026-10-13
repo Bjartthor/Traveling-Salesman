@@ -16,6 +16,7 @@ import { decodeLayer } from '@/components/map/topo'
 import { colorForStatus } from '@/components/map/statusColor'
 import { routeLeg, type RouteLeg } from '@/components/trips/routeGeometry'
 import { cityFitBox } from '@/components/trips/tripMapFit'
+import { pixelSimplified } from '@/components/trips/pixelSimplify'
 import type { RouteStop } from '@/domain/tripRoute'
 import './TripRouteMap.css'
 
@@ -54,6 +55,23 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<Size>({ width: 0, height: 0 })
   const [worldTopo, setWorldTopo] = useState<TopoJson | null>(null)
+  // A Trips-tab stamp only builds its map once it scrolls near the screen —
+  // a long trip history otherwise path-generates every stamp's world map up
+  // front. The detail screen's map is always on screen, so it starts visible.
+  const [inView, setInView] = useState(!compact || typeof IntersectionObserver === 'undefined')
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (inView || !el) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setInView(true)
+      },
+      { rootMargin: '300px 0px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [inView])
 
   useEffect(() => {
     const el = containerRef.current
@@ -68,6 +86,7 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
   }, [])
 
   useEffect(() => {
+    if (!inView) return
     let cancelled = false
     void loadWorldTopology().then((topo) => {
       if (!cancelled) setWorldTopo(topo)
@@ -75,7 +94,7 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [inView])
 
   const features = useMemo(() => (worldTopo ? decodeLayer(worldTopo, 'countries', 'code') : []), [worldTopo])
   const tripCodeSet = useMemo(() => new Set(countryCodes), [countryCodes])
@@ -104,16 +123,26 @@ export function TripRouteMap({ countryCodes, countryStatus, cities, compact = fa
 
   const projection = useMemo(() => {
     if (size.width === 0 || size.height === 0 || features.length === 0) return null
-    return geoNaturalEarth1().fitExtent(
-      [
-        [12, 12],
-        [size.width - 12, size.height - 12],
-      ],
-      fitTarget,
-    )
+    // Clipped to the frame: a map zoomed onto one trip leaves most of the
+    // world off-screen, and those countries then produce an empty path (dropped
+    // below) instead of full-detail outlines nobody can see.
+    return geoNaturalEarth1()
+      .fitExtent(
+        [
+          [12, 12],
+          [size.width - 12, size.height - 12],
+        ],
+        fitTarget,
+      )
+      .clipExtent([
+        [0, 0],
+        [size.width, size.height],
+      ])
   }, [size.width, size.height, features.length, fitTarget])
 
-  const pathGen = useMemo(() => (projection ? geoPath(projection) : null), [projection])
+  // Country outlines go through the sub-pixel filter (this map never zooms);
+  // the sphere and the route keep using the plain projection.
+  const pathGen = useMemo(() => (projection ? geoPath(pixelSimplified(projection)) : null), [projection])
   const spherePath = useMemo(() => pathGen?.(SPHERE) ?? '', [pathGen])
 
   const countryPaths = useMemo(

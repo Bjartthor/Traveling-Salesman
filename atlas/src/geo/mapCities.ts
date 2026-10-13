@@ -1,12 +1,9 @@
-// In-memory city index for the world map's zoom-revealed city layer
-// (@/components/map/cityLayer). Same "build once, memoise, invalidate on
-// reseed" shape @/geo/search already established over this same ~170k-row
-// reference table — a second small, purpose-built index rather than a shared
-// one, since the two need different things (search needs substring-searchable
-// strings; this one needs population + capital ranking).
+// The logged cities the map's zoom-revealed city layer draws
+// (@/components/map/cityLayer), resolved to name/position/capital and cached.
 
 import { db } from '@/db/schema'
 import { normalize } from '@/geo/search'
+import { loadRefData } from '@/geo/refData'
 import { registerCensusCounter } from '@/debug/census'
 
 export interface MapCity {
@@ -24,45 +21,52 @@ export interface MapCity {
   isCapital: boolean
 }
 
-let indexPromise: Promise<MapCity[]> | null = null
+// Logged cities only, keyed by refId and kept: the map's city layer only ever
+// shows cities the user has an entry for (@/components/map/cityLayer), so it
+// loads just those rows instead of all ~170k — which used to cost a full table
+// read, a second 170k-object index next to @/geo/search's, and a 170k-row walk
+// in selectVisibleCities on every globe frame. `null` = no coordinates.
+// City rows never change after they're written (a reseed calls
+// invalidateMapCityIndex), so a cached row stays valid.
+const cache = new Map<string, MapCity | null>()
 
-// Census probe (@/debug/census): the resolved index size (~170k once loaded, 0
-// before). Steady-state, not a leak vector — but a crash breadcrumb showing it
-// far above the row count would mean it was rebuilt without the old one being
-// released.
-let indexLength = 0
-registerCensusCounter('cityIdx', () => indexLength)
+// Census probe (@/debug/census): how many logged cities the map has resolved.
+registerCensusCounter('cityIdx', () => cache.size)
 
-async function buildIndex(): Promise<MapCity[]> {
-  const [cities, countries] = await Promise.all([db.cities.toArray(), db.countries.toArray()])
-
-  const capitalNameByCountry = new Map<string, string>()
-  for (const country of countries) {
-    if (country.capital) capitalNameByCountry.set(country.code, normalize(country.capital))
-  }
-
-  const out: MapCity[] = []
-  for (const c of cities) {
-    if (c.lat === null || c.lon === null) continue // manual place with no coordinates
-    const capitalName = capitalNameByCountry.get(c.countryCode)
+async function fetchMissing(refIds: readonly string[]): Promise<void> {
+  const missing = refIds.filter((id) => !cache.has(id))
+  if (missing.length === 0) return
+  const [rows, ref] = await Promise.all([db.cities.bulkGet(missing.map(Number)), loadRefData()])
+  missing.forEach((refId, i) => {
+    const c = rows[i]
+    // No row yet (an entry synced ahead of its city): not cached, retried next call.
+    if (!c) return
+    if (c.lat === null || c.lon === null) {
+      cache.set(refId, null) // a manual place with no coordinates
+      return
+    }
+    const capital = ref.countryByCode.get(c.countryCode)?.capital
+    const capitalName = capital ? normalize(capital) : undefined
     const isCapital = capitalName !== undefined && (normalize(c.name) === capitalName || normalize(c.asciiName) === capitalName)
-    out.push({ refId: String(c.geonameId), name: c.name, lat: c.lat, lon: c.lon, population: c.population, isCapital })
+    cache.set(refId, { refId, name: c.name, lat: c.lat, lon: c.lon, population: c.population, isCapital })
+  })
+}
+
+/** Call after @/geo/loader reseeds `cities` — same trigger as the search index. */
+export function invalidateMapCityIndex(): void {
+  cache.clear()
+}
+
+/** The given logged cities (by refId) that can be drawn, biggest first. */
+export async function loadMapCities(refIds: readonly string[]): Promise<MapCity[]> {
+  await fetchMissing(refIds)
+  const out: MapCity[] = []
+  for (const id of refIds) {
+    const city = cache.get(id)
+    if (city) out.push(city)
   }
   // Population-descending, so anything that slices a "top N" off this array
   // keeps the biggest cities first — same rationale @/geo/search's own
   // pre-sort documents.
-  out.sort((a, b) => b.population - a.population)
-  indexLength = out.length
-  return out
-}
-
-/** Call after @/geo/loader reseeds `cities` — same trigger as the other two in-memory city indexes. */
-export function invalidateMapCityIndex(): void {
-  indexPromise = null
-  indexLength = 0
-}
-
-export function loadMapCities(): Promise<readonly MapCity[]> {
-  if (!indexPromise) indexPromise = buildIndex()
-  return indexPromise
+  return out.sort((a, b) => b.population - a.population)
 }

@@ -4,6 +4,7 @@ import { db } from '@/db/schema'
 import type { City } from '@/db/types'
 import { buildPlacesTree, type CityLookup, type PlacesFilter, type PlacesSort } from '@/domain/placesList'
 import { loadEntriesWithTripDates } from '@/domain/visitDates'
+import { loadRefData } from '@/geo/refData'
 import { PlaceSearch } from '@/components/places/PlaceSearch'
 import { PlacesList } from '@/components/places/PlacesList'
 import { BulkAddScreen } from '@/components/places/BulkAddScreen'
@@ -30,8 +31,9 @@ export function PlacesScreen() {
 
   // Dates as shown include each place's trips (minus any deleted since) — see @/domain/visitDates.
   const entries = useLiveQuery(loadEntriesWithTripDates)
-  const countries = useLiveQuery(() => db.countries.toArray())
-  const subdivisions = useLiveQuery(() => db.subdivisions.toArray())
+  const ref = useLiveQuery(loadRefData)
+  const countries = ref?.countries
+  const subdivisions = ref?.subdivisions
 
   const cityIds = useMemo(() => (entries ?? []).filter((e) => e.kind === 'city').map((e) => Number(e.refId)), [entries])
 

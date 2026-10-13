@@ -7,6 +7,8 @@
 import { db } from '@/db/schema'
 import { settingsRepo } from '@/db/repo'
 import { rebuildDerivedEntries } from '@/domain/cascadeRepo'
+import { nonBundledCities } from '@/geo/cityWrites'
+import { addToSearchIndex } from '@/geo/search'
 import type { SyncSnapshot } from '@/sync/types'
 
 /**
@@ -23,7 +25,8 @@ export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
     // Only the non-bundled rows (negative geonameId). Bundled cities are seeded
     // from committed data on every device, so syncing all ~170k would bloat the
     // doc for nothing; these are the handful an entry might dangle without.
-    db.cities.filter((c) => c.source !== 'bundled').toArray(),
+    // A primary-key range read, not a filter — a filter walks all ~170k rows.
+    nonBundledCities(),
     settingsRepo.get(),
   ])
   return {
@@ -53,6 +56,10 @@ export async function buildLocalSnapshot(): Promise<SyncSnapshot> {
  * complete for them.
  */
 export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
+  // Cities this device didn't have yet — added to the in-memory search index
+  // afterwards, so a place added on another device is searchable here too.
+  const knownCityIds = new Set(await db.cities.where('geonameId').below(0).primaryKeys())
+  const newCities = merged.cities.filter((c) => !knownCityIds.has(c.geonameId))
   await db.transaction(
     'rw',
     [db.entries, db.trips, db.tripEntries, db.settings, db.cities, db.syncState],
@@ -86,4 +93,5 @@ export async function applyMergedSnapshot(merged: SyncSnapshot): Promise<void> {
       await rebuildDerivedEntries()
     },
   )
+  for (const city of newCities) addToSearchIndex(city)
 }

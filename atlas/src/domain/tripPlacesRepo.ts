@@ -4,24 +4,15 @@
 // none of them re-derive the same joins independently.
 
 import { db } from '@/db/schema'
-import type { City, Country, Entry, Subdivision } from '@/db/types'
+import type { City, Entry, TripEntry } from '@/db/types'
+import { loadRefData, type RefData } from '@/geo/refData'
 import { tripEntryRowsForTrip } from '@/domain/tripRepo'
 import { groupTripPlaces, tripCountryCodes, type TripCountryGroup, type TripVisit } from '@/domain/tripPlaces'
 
-interface RefData {
-  countries: Country[]
-  subdivisions: Subdivision[]
-}
+type CityLookup = Map<string, Pick<City, 'name' | 'countryCode' | 'subdivisionId' | 'lat' | 'lon'>>
 
-async function loadRefData(): Promise<RefData> {
-  const [countries, subdivisions] = await Promise.all([db.countries.toArray(), db.subdivisions.toArray()])
-  return { countries, subdivisions }
-}
-
-async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryGroup[]> {
-  const tripEntries = await tripEntryRowsForTrip(tripId)
-  if (tripEntries.length === 0) return []
-
+/** One trip's visits, keyed by entry: the earliest dated visit and first addedAt feed the itinerary sort. */
+function visitMaps(tripEntries: readonly TripEntry[]) {
   // One row per visit; a place visited twice has two. The route uses every
   // visit; the itinerary sorts each place by its *first* one (earliest dated
   // visit, else none; earliest addedAt).
@@ -38,38 +29,69 @@ async function resolveGroups(tripId: string, ref: RefData): Promise<TripCountryG
     visitedDates.set(entryId, dates.length > 0 ? dates.reduce((a, b) => (b < a ? b : a)) : null)
     addedAts.set(entryId, list[0]!.addedAt)
   }
+  return { visits, visitedDates, addedAts }
+}
 
-  const rows = await db.entries.bulkGet([...visits.keys()])
+/** Active entries + city rows for a set of entry ids — one bulk read each, however many trips they span. */
+async function loadEntriesAndCities(entryIds: readonly string[]): Promise<{ entryById: Map<string, Entry>; cities: CityLookup }> {
+  const rows = await db.entries.bulkGet([...entryIds])
   const entries = rows.filter((e): e is Entry => e !== undefined && e.deletedAt === null)
-  if (entries.length === 0) return []
-
   const cityEntries = entries.filter((e) => e.kind === 'city')
   const cityRows = await db.cities.bulkGet(cityEntries.map((e) => Number(e.refId)))
-  const cities = new Map<string, Pick<City, 'name' | 'countryCode' | 'subdivisionId' | 'lat' | 'lon'>>()
+  const cities: CityLookup = new Map()
   cityEntries.forEach((e, i) => {
     const row = cityRows[i]
     if (row) cities.set(e.refId, { name: row.name, countryCode: row.countryCode, subdivisionId: row.subdivisionId, lat: row.lat, lon: row.lon })
   })
+  return { entryById: new Map(entries.map((e) => [e.id, e])), cities }
+}
 
+function groupsFor(tripEntries: readonly TripEntry[], entryById: ReadonlyMap<string, Entry>, cities: CityLookup, ref: RefData): TripCountryGroup[] {
+  if (tripEntries.length === 0) return []
+  const { visits, visitedDates, addedAts } = visitMaps(tripEntries)
+  const entries = [...visits.keys()].map((id) => entryById.get(id)).filter((e): e is Entry => e !== undefined)
+  if (entries.length === 0) return []
   return groupTripPlaces({ entries, countries: ref.countries, subdivisions: ref.subdivisions, cities, visitedDates, addedAts, visits })
 }
 
 export async function loadTripPlaces(tripId: string): Promise<TripCountryGroup[]> {
-  return resolveGroups(tripId, await loadRefData())
+  const [ref, tripEntries] = await Promise.all([loadRefData(), tripEntryRowsForTrip(tripId)])
+  if (tripEntries.length === 0) return []
+  const { entryById, cities } = await loadEntriesAndCities([...new Set(tripEntries.map((te) => te.entryId))])
+  return groupsFor(tripEntries, entryById, cities, ref)
+}
+
+/**
+ * `loadTripPlaces` for many trips at once: one read of `tripEntries`, one bulk
+ * read of the entries and cities they point at, the cached reference tables —
+ * instead of a separate set of queries per trip (the Trips tab's stamps and
+ * the trip statistics each used to run one per trip).
+ */
+export async function loadTripPlacesBatch(tripIds: readonly string[]): Promise<Map<string, TripCountryGroup[]>> {
+  const result = new Map<string, TripCountryGroup[]>()
+  if (tripIds.length === 0) return result
+  const wanted = new Set(tripIds)
+  const [ref, allTripEntries] = await Promise.all([loadRefData(), db.tripEntries.filter((te) => te.deletedAt === null && wanted.has(te.tripId)).toArray()])
+
+  const byTrip = new Map<string, TripEntry[]>()
+  for (const te of allTripEntries) {
+    const list = byTrip.get(te.tripId) ?? []
+    list.push(te)
+    byTrip.set(te.tripId, list)
+  }
+  const { entryById, cities } = await loadEntriesAndCities([...new Set(allTripEntries.map((te) => te.entryId))])
+  for (const tripId of tripIds) result.set(tripId, groupsFor(byTrip.get(tripId) ?? [], entryById, cities, ref))
+  return result
 }
 
 export async function loadTripCountryCodes(tripId: string): Promise<string[]> {
   return tripCountryCodes(await loadTripPlaces(tripId))
 }
 
-/** Same as `loadTripCountryCodes`, batched across trips so the (small, static) reference tables are only fetched once. */
+/** Same as `loadTripCountryCodes`, batched across trips (see loadTripPlacesBatch). */
 export async function loadTripCountryCodesBatch(tripIds: readonly string[]): Promise<Map<string, string[]>> {
-  const ref = await loadRefData()
-  const result = new Map<string, string[]>()
-  for (const tripId of tripIds) {
-    result.set(tripId, tripCountryCodes(await resolveGroups(tripId, ref)))
-  }
-  return result
+  const groups = await loadTripPlacesBatch(tripIds)
+  return new Map([...groups].map(([tripId, g]) => [tripId, tripCountryCodes(g)]))
 }
 
 /**

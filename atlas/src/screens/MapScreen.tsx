@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
+import { loadRefData } from '@/geo/refData'
 import { settingsRepo } from '@/db/repo'
 import { buildStatusIndex, metricCoverage, nextStatMode } from '@/stats/coverage'
 import { WorldMap } from '@/components/map/WorldMap'
@@ -27,7 +28,7 @@ import './MapScreen.css'
 // result cascades into 3 useMemos + the whole map render below — the
 // sharpest remaining liveQuery suspect once the shell-level ones were ruled
 // out flat across a real crash (see PROGRESS.md / memory).
-const queryCountries = countedQuery('lqCountries', () => db.countries.toArray())
+const queryCountries = countedQuery('lqCountries', () => loadRefData().then((r) => r.countries))
 const queryEntries = countedQuery('lqEntries', () => db.entries.filter((e) => e.deletedAt === null).toArray())
 const queryMapSettings = countedQuery('lqMapSettings', () => db.settings.get(1))
 

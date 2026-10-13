@@ -24,12 +24,10 @@
 import type { Status } from '@/db/types'
 import type { MapCity } from '@/geo/mapCities'
 
-// Kept low (rather than tied to ADMIN1_ZOOM_THRESHOLD or MIN_ZOOM) purely to
-// avoid loading the ~170k-row bundled city index (see @/geo/mapCities) on
-// every map mount — the index is still needed to resolve a marked city's
-// name/lat/lon, even though most of its rows will never be shown. Once
-// loaded, a logged city appears as soon as it's on screen; there's no
-// population-driven reason left to delay it further.
+// Kept low (rather than tied to ADMIN1_ZOOM_THRESHOLD or MIN_ZOOM): a logged
+// city appears as soon as it's on screen past a first small zoom step; there's
+// no population-driven reason left to delay it further. (@/geo/mapCities now
+// loads only the logged cities, so this no longer guards an expensive load.)
 export const CITY_MIN_SCALE = 1.5
 export const MAX_CITY_MARKERS = 150
 export const MAX_CITY_LABELS = 60

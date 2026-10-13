@@ -7,7 +7,7 @@ import { logError, logInfo } from '@/debug/log'
 import { setRenderVitals, resetRenderVitals, renderVitalsSummary } from '@/debug/renderVitals'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { STATUS_ORDER, colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
-import { CITY_MIN_SCALE, selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
+import { selectVisibleCities, type CityMarker } from '@/components/map/cityLayer'
 import { ADMIN1_ZOOM_THRESHOLD } from '@/components/map/WorldMap'
 import { clampScale, isFrontFacing, rotateByDrag, rotationTowardPoint, type Rotation } from '@/components/map/globeMath'
 import { globeFitView, type TripOverlay } from '@/components/map/tripMapView'
@@ -482,15 +482,13 @@ export function GlobeMap({
     }
   }, [selectedCode, settledZoom, draw])
 
-  // --- cities: lazy-loaded once past CITY_MIN_SCALE, same as WorldMap.
-  // Loaded once and kept — the ~170k-row index is reused however many times
-  // the user zooms back and forth across the threshold; selectVisibleCities'
-  // own scale gate (inside draw(), above) is what actually hides them again
-  // at low zoom, not clearing this. ---
+  // --- cities: just the logged ones (see @/geo/mapCities), reloaded when
+  // that set changes. selectVisibleCities' own scale gate (inside draw(),
+  // above) is what hides them at low zoom. ---
+  const cityIdsKey = useMemo(() => [...cityStatus.keys()].sort().join(','), [cityStatus])
   useEffect(() => {
-    if (settledZoom < CITY_MIN_SCALE || mapCitiesRef.current.length > 0) return
     let cancelled = false
-    loadMapCities()
+    loadMapCities(cityIdsKey ? cityIdsKey.split(',') : [])
       .then((cities) => {
         if (cancelled) return
         mapCitiesRef.current = cities
@@ -505,7 +503,7 @@ export function GlobeMap({
     return () => {
       cancelled = true
     }
-  }, [settledZoom, draw])
+  }, [cityIdsKey, draw])
 
   // --- drag-to-rotate, pinch/wheel-to-zoom, tap-to-select-or-deselect.
   // Bound once — callbacks and data are read through the refs kept in sync

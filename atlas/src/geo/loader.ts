@@ -8,6 +8,8 @@ import { db } from '@/db/schema'
 import type { City, Country, Subdivision } from '@/db/types'
 import { invalidateSearchIndex } from '@/geo/search'
 import { invalidateMapCityIndex } from '@/geo/mapCities'
+import { invalidateRefData } from '@/geo/refData'
+import { nonBundledCities } from '@/geo/cityWrites'
 import { registerCensusCounter } from '@/debug/census'
 
 // Bump when the committed artefacts change shape/content so an app update
@@ -96,6 +98,7 @@ export async function ensureReferenceData(
     await db.subdivisions.clear()
     await db.subdivisions.bulkPut(subdivisions)
   })
+  invalidateRefData()
   onProgress?.({ phase: 'countries', loaded: 1, total: 1 })
   onCountriesReady?.()
 
@@ -128,7 +131,7 @@ export async function ensureReferenceData(
   // their subdivisionId against the fresh subdivisions in case an admin1 code
   // was renamed or dropped upstream; their geonameId is always negative
   // (@/geo/cityWrites), so it can never collide with a fresh bundled row.
-  const preserved = (await db.cities.filter((c) => c.source !== 'bundled').toArray()).map((c) => ({
+  const preserved = (await nonBundledCities()).map((c) => ({
     ...c,
     subdivisionId: c.subdivisionId && subIds.has(c.subdivisionId) ? c.subdivisionId : null,
   }))

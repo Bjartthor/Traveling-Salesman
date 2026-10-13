@@ -6,6 +6,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/schema'
+import { loadRefData } from '@/geo/refData'
 import type { City, Country, Subdivision } from '@/db/types'
 import { normalize } from '@/geo/search'
 import { addManualCity } from '@/geo/cityWrites'
@@ -31,7 +32,7 @@ export function ManualPlaceForm({ initialName, onClose, onAdded }: ManualPlaceFo
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const countries = useLiveQuery(() => db.countries.toArray()) ?? NO_COUNTRIES
+  const countries = useLiveQuery(() => loadRefData().then((r) => r.countries)) ?? NO_COUNTRIES
   const selectedCountry = useMemo(() => countries.find((c) => c.code === countryCode) ?? null, [countries, countryCode])
   const filteredCountries = useMemo(() => {
     const q = normalize(countryQuery.trim())

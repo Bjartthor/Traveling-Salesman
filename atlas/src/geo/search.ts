@@ -10,6 +10,8 @@
 // fully offline. The rows are pre-sorted by population at build time.
 
 import { db } from '@/db/schema'
+import type { City } from '@/db/types'
+import { loadRefData } from '@/geo/refData'
 
 /** Lowercase + strip diacritics (NFD, drop combining marks). */
 export function normalize(s: string): string {
@@ -43,7 +45,7 @@ export interface CityResult {
   population: number
 }
 
-interface IndexRow {
+export interface IndexRow {
   id: number
   name: string
   ascii: string
@@ -61,18 +63,9 @@ interface IndexRow {
 const SEP = '\u0000'
 
 let indexPromise: Promise<IndexRow[]> | null = null
-let countryNames = new Map<string, string>()
-let subNames = new Map<string, string>()
 
-async function buildIndex(): Promise<IndexRow[]> {
-  const [cities, countries, subs] = await Promise.all([
-    db.cities.toArray(),
-    db.countries.toArray(),
-    db.subdivisions.toArray(),
-  ])
-  countryNames = new Map(countries.map((c) => [c.code, c.name]))
-  subNames = new Map(subs.map((s) => [s.id, s.name]))
-  const rows: IndexRow[] = cities.map((c) => ({
+export function toIndexRow(c: Pick<City, 'geonameId' | 'name' | 'asciiName' | 'countryCode' | 'subdivisionId' | 'population' | 'lat' | 'lon'>): IndexRow {
+  return {
     id: c.geonameId,
     name: c.name,
     ascii: c.asciiName,
@@ -82,7 +75,23 @@ async function buildIndex(): Promise<IndexRow[]> {
     pop: c.population,
     lat: c.lat,
     lon: c.lon,
-  }))
+  }
+}
+
+const BUILD_PAGE = 20_000
+
+async function buildIndex(): Promise<IndexRow[]> {
+  const rows: IndexRow[] = []
+  // Read in primary-key pages rather than one toArray(): just as fast (each
+  // page is a single getAll), but the full City objects never all exist at
+  // once next to the index being built — a lower peak heap on a phone.
+  let after = -Infinity
+  for (;;) {
+    const page = await db.cities.where('geonameId').above(after).limit(BUILD_PAGE).toArray()
+    for (const c of page) rows.push(toIndexRow(c))
+    if (page.length < BUILD_PAGE) break
+    after = page[page.length - 1]!.geonameId
+  }
   // Bundled cities are already population-sorted, but online-added ones (Phase 4)
   // will not be — keep the invariant the ranking relies on.
   rows.sort((a, b) => b.pop - a.pop)
@@ -92,6 +101,28 @@ async function buildIndex(): Promise<IndexRow[]> {
 /** Force a rebuild of the in-memory index (call after seeding new cities). */
 export function invalidateSearchIndex(): void {
   indexPromise = null
+}
+
+/**
+ * Slot one newly written city into an already-built index, keeping it
+ * population-sorted — instead of throwing the whole ~170k-row index away and
+ * rebuilding it on the next keystroke. A no-op if the index isn't built yet
+ * (it will read the row from Dexie when it is).
+ */
+export function addToSearchIndex(city: City): void {
+  if (!indexPromise) return
+  const row = toIndexRow(city)
+  indexPromise = indexPromise.then((rows) => {
+    let lo = 0
+    let hi = rows.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (rows[mid]!.pop >= row.pop) lo = mid + 1
+      else hi = mid
+    }
+    rows.splice(lo, 0, row)
+    return rows
+  })
 }
 
 function getIndex(): Promise<IndexRow[]> {
@@ -111,6 +142,34 @@ function matchWeight(hay: string, q: string): number {
   return 1 // interior substring
 }
 
+const MAX_WEIGHT = 3
+
+/**
+ * The best `limit` rows for an already-normalized query, scored
+ * `(pop + 1) × matchWeight`, best first; ties keep index order. `rows` must be
+ * population-descending — that is what lets the scan stop as soon as not even
+ * a best-weight match further down could beat the current last place, so a
+ * short, common query ("an") touches the biggest few thousand cities instead
+ * of scoring and sorting tens of thousands of matches.
+ */
+export function topMatches(rows: readonly IndexRow[], q: string, limit: number): IndexRow[] {
+  const best: { row: IndexRow; score: number }[] = []
+  if (limit <= 0) return []
+  for (const row of rows) {
+    if (best.length === limit && (row.pop + 1) * MAX_WEIGHT <= best[limit - 1]!.score) break
+    const weight = matchWeight(row.hay, q)
+    if (weight === 0) continue
+    const score = (row.pop + 1) * weight
+    if (best.length === limit && score <= best[limit - 1]!.score) continue
+    // Insert after any equal score, so ties keep their index order.
+    let i = best.length
+    while (i > 0 && best[i - 1]!.score < score) i--
+    best.splice(i, 0, { row, score })
+    if (best.length > limit) best.pop()
+  }
+  return best.map((b) => b.row)
+}
+
 /**
  * Search bundled cities. Ranks by population, weighted by match quality so a
  * prefix match is promoted over a same-size substring match (the brief's
@@ -122,24 +181,16 @@ function matchWeight(hay: string, q: string): number {
 export async function searchCities(query: string, limit = 20): Promise<CityResult[]> {
   const q = normalize(query).trim()
   if (q.length < 2) return []
-  const rows = await getIndex()
+  const [rows, ref] = await Promise.all([getIndex(), loadRefData()])
 
-  const scored: { row: IndexRow; score: number }[] = []
-  for (const row of rows) {
-    const weight = matchWeight(row.hay, q)
-    if (weight === 0) continue
-    scored.push({ row, score: (row.pop + 1) * weight })
-  }
-  scored.sort((a, b) => b.score - a.score)
-
-  return scored.slice(0, limit).map(({ row }) => ({
+  return topMatches(rows, q, limit).map((row) => ({
     geonameId: row.id,
     name: row.name,
     asciiName: row.ascii,
     countryCode: row.cc,
-    countryName: countryNames.get(row.cc) ?? row.cc,
+    countryName: ref.countryByCode.get(row.cc)?.name ?? row.cc,
     subdivisionId: row.sub,
-    subdivisionName: row.sub ? (subNames.get(row.sub) ?? null) : null,
+    subdivisionName: row.sub ? (ref.subdivisionById.get(row.sub)?.name ?? null) : null,
     lat: row.lat,
     lon: row.lon,
     population: row.pop,

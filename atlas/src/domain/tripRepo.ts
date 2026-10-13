@@ -139,7 +139,7 @@ export async function softDeleteTrip(tripId: string): Promise<void> {
  * own date (docs/superpowers/specs/2026-10-12-repeat-visits-on-a-trip-design.md).
  */
 async function liveVisits(tripId: string, entryId: string): Promise<TripEntry[]> {
-  return db.tripEntries.filter((te) => te.tripId === tripId && te.entryId === entryId && te.deletedAt === null).toArray()
+  return db.tripEntries.where('tripId').equals(tripId).filter((te) => te.entryId === entryId && te.deletedAt === null).toArray()
 }
 
 /**
@@ -188,7 +188,7 @@ export async function removeVisit(tripEntryId: string): Promise<void> {
 
 /** How many distinct places a trip has (a place visited twice counts once). */
 export async function countTripPlaces(tripId: string): Promise<number> {
-  const rows = await db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
+  const rows = await db.tripEntries.where('tripId').equals(tripId).filter((te) => te.deletedAt === null).toArray()
   return new Set(rows.map((te) => te.entryId)).size
 }
 
@@ -220,7 +220,7 @@ export async function autoAttachToCapturingTrip(entryId: string, visitedDate?: s
  * its own yet.
  */
 export async function nextBackfillDate(tripId: string, startDate: string): Promise<string> {
-  const rows = await db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
+  const rows = await db.tripEntries.where('tripId').equals(tripId).filter((te) => te.deletedAt === null).toArray()
   if (rows.length === 0) return startDate
   const latest = rows.reduce((a, b) => (a.addedAt > b.addedAt ? a : b))
   return latest.visitedDate ?? startDate
@@ -241,7 +241,7 @@ export interface TripAttachment {
  * first; undated visits last.
  */
 export async function tripAttachmentsForEntry(entryId: string): Promise<TripAttachment[]> {
-  const rows = await db.tripEntries.filter((te) => te.entryId === entryId && te.deletedAt === null).toArray()
+  const rows = await db.tripEntries.where('entryId').equals(entryId).filter((te) => te.deletedAt === null).toArray()
   if (rows.length === 0) return []
   const trips = await db.trips.bulkGet(rows.map((r) => r.tripId))
   const attachments: TripAttachment[] = []
@@ -254,5 +254,5 @@ export async function tripAttachmentsForEntry(entryId: string): Promise<TripAtta
 
 /** Active (non-deleted) tripEntries rows for one trip — one per visit, each carrying the entryId to resolve and that visit's date. */
 export async function tripEntryRowsForTrip(tripId: string): Promise<TripEntry[]> {
-  return db.tripEntries.filter((te) => te.tripId === tripId && te.deletedAt === null).toArray()
+  return db.tripEntries.where('tripId').equals(tripId).filter((te) => te.deletedAt === null).toArray()
 }

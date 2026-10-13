@@ -9,7 +9,7 @@ import { db } from '@/db/schema'
 import type { City } from '@/db/types'
 import { logError, logInfo } from '@/debug/log'
 import { breadcrumbDetail } from '@/debug/breadcrumb'
-import { invalidateSearchIndex } from '@/geo/search'
+import { addToSearchIndex } from '@/geo/search'
 
 // Previously "read the current closest-to-zero row, use one less" — a
 // counter that needs a read before every write. Two overlapping inserts (a
@@ -31,6 +31,15 @@ function randomNegativeId(): number {
   return -(n + 1)
 }
 
+/**
+ * Every 'online'/'manual' city. They're exactly the negative primary keys, so
+ * this is an index range read of a handful of rows rather than a scan of all
+ * ~170k bundled ones.
+ */
+export function nonBundledCities(): Promise<City[]> {
+  return db.cities.where('geonameId').below(0).toArray()
+}
+
 // Cheap insurance for the residual, near-negligible chance of a collision —
 // not the primary defence, the random range is.
 const MAX_INSERT_ATTEMPTS = 5
@@ -41,7 +50,7 @@ async function insertCity(fields: Omit<City, 'geonameId' | 'searchTokens'>): Pro
     try {
       const row: City = { ...fields, geonameId: randomNegativeId(), searchTokens: [] }
       await db.cities.add(row)
-      invalidateSearchIndex()
+      addToSearchIndex(row)
       return row
     } catch (e) {
       const isIdCollision = e instanceof Error && e.name === 'ConstraintError'

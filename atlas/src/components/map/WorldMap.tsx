@@ -10,7 +10,7 @@ import { setRenderVitals, resetRenderVitals } from '@/debug/renderVitals'
 import { registerCensusCounter } from '@/debug/census'
 import { decodeLayer, type MapFeature } from '@/components/map/topo'
 import { colorForStatus, UNVISITED_COLOR_VAR } from '@/components/map/statusColor'
-import { CITY_MIN_SCALE, selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
+import { selectVisibleCities, visibleRect } from '@/components/map/cityLayer'
 import { flatFitTransform, type TripOverlay } from '@/components/map/tripMapView'
 import { routeLeg, type RouteLeg } from '@/components/trips/routeGeometry'
 import { cityFitBox } from '@/components/trips/tripMapFit'
@@ -372,14 +372,12 @@ export function WorldMap({
     [pathGen, countryDetailFeature, size.width, size.height],
   )
 
-  // --- city layer: loaded lazily (the ~170k-row index costs real time to
-  // build, per @/geo/mapCities) the first time the user actually zooms in
-  // far enough to reveal cities at all, not on every map mount. ---
-  const citiesUnlocked = transform.k >= CITY_MIN_SCALE
+  // --- city layer: just the logged cities (see @/geo/mapCities), reloaded
+  // when the set of them changes — a handful of rows, so no zoom gate. ---
+  const cityIdsKey = useMemo(() => [...cityStatus.keys()].sort().join(','), [cityStatus])
   useEffect(() => {
-    if (!citiesUnlocked) return
     let cancelled = false
-    loadMapCities()
+    loadMapCities(cityIdsKey ? cityIdsKey.split(',') : [])
       .then((cities) => {
         if (!cancelled) setMapCities(cities)
       })
@@ -396,7 +394,7 @@ export function WorldMap({
     return () => {
       cancelled = true
     }
-  }, [citiesUnlocked])
+  }, [cityIdsKey])
 
   const cityMarkers = useMemo(
     () =>

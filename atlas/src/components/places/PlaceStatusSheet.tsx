@@ -87,7 +87,7 @@ function SheetContent({ place, onClose }: { place: PlaceRef; onClose: () => void
 
     const capturing = entry ? await getCapturingTrip() : null
     const onCapturingTrip = capturing
-      ? (await db.tripEntries.filter((te) => te.tripId === capturing.id && te.entryId === entry!.id && te.deletedAt === null).count()) > 0
+      ? (await db.tripEntries.where('entryId').equals(entry!.id).filter((te) => te.tripId === capturing.id && te.deletedAt === null).count()) > 0
       : false
 
     const state = await loadCascadeState().catch(() => null)
